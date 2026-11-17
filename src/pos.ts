@@ -95,7 +95,14 @@ const searchNoise = new Set(['bei', 'price', 'cost', 'picha', 'photo', 'image', 
 
 /** Gemini sometimes adds words like "camera" or "price" that no product name contains. */
 function searchTerms(search: string) {
-  const tokens = search.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  // "access point ya mita 300" is a coverage distance, not a product word. Left
+  // in, every advertised word must match, so the whole search returns nothing.
+  const cleaned = search
+    .replace(/\b(?:mita|metres?|meters?|mtr|metre)\s*[-–]?\s*\d{1,4}\b/gi, ' ')
+    .replace(/\b\d{1,4}\s*[-–]?\s*(?:mita|metres?|meters?|mtr|metre)\b/gi, ' ')
+    .replace(/\b(?:coverage|range|umbali|urefu|radius)\b/gi, ' ')
+    .replace(/\b(?:ya|za|kwa)\s+(?=\s|$)/gi, ' ');
+  const tokens = cleaned.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
   const kept = tokens.filter(token => token.length > 1 && !searchNoise.has(token));
   // A long request puts the model first ("Tplink omada ap 650 bei yake pamoja na mfumo").
   // Taking the last words loses it, so the model is matched as letters plus digits.
@@ -103,7 +110,7 @@ function searchTerms(search: string) {
   const pair = /([a-z]{2,6})[ ]?(\d{1,4})/.exec(phrase);
   const digits = kept.filter(token => /\d/.test(token));
   return {
-    primary: phrase || search.trim(),
+    primary: phrase || cleaned.trim(),
     narrow: kept.slice(-3).join(' '),
     model: pair ? `${pair[1]} ${pair[2]}` : digits.length ? digits[digits.length - 1] : '',
   };
@@ -121,12 +128,21 @@ export function isModelReference(text: string) {
   return kept.length > 0 && kept.length <= 4 && words.length <= 5 && kept.some(token => /\d/.test(token));
 }
 
-export async function searchProducts(search: string) {
-  if (shop) return searchShop(search);
+export async function searchProducts(search: string, limit = 6) {
+  // "Nahitaji access point ya mita 300" must reach the catalog as "access point",
+  // so the same cleaning runs for the shop database and the HTTP POS.
   const { primary, narrow, model } = searchTerms(search);
   // Every word must match, so try the model first and widen only when it is not stocked.
-  for (const term of [...new Set([model, primary, narrow].filter(Boolean))]) {
-    const result = await request('products', productListSchema, { search: term, limit: '6' });
+  const terms = [...new Set([model, primary, narrow].filter(Boolean))];
+  if (shop) {
+    for (const term of terms) {
+      const { items } = await searchShop(term, limit);
+      if (items.length) return { items };
+    }
+    return { items: [] };
+  }
+  for (const term of terms) {
+    const result = await request('products', productListSchema, { search: term, limit: String(limit) });
     if (result.items.length) return { items: result.items.map(proxyAssets) };
   }
   return { items: [] };

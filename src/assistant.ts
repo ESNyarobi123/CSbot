@@ -190,6 +190,16 @@ function fallback(text: string, memory: Conversation['memory']): Decision {
     // A broken system outranks a price lookup: someone whose portal will not open
     // is not shopping for a model.
     answer.intent = 'support';
+  } else if (moreModelsWords.test(text) && memory.productOptions?.length) {
+    // "Hauna model zingine?" widens the list the bot just sent instead of asking
+    // the customer for a product name they are already looking at.
+    answer.intent = 'product';
+    answer.query = '';
+  } else if (deviceQuery(text) && !packageWords.test(text)) {
+    // "Nahitaji access point ya mita 300" names a category, not a model, so the
+    // catalog is searched by category and the coverage distance is kept as advice.
+    answer.intent = 'product';
+    answer.query = deviceQuery(text);
   } else if (purchaseWords.test(text)) {
     const productText = text.replace(/\b(naomba|nataka|nipe|habari|hello|hey|hi|bei|price|cost|stock|picha|photo|image|gani|ngapi|je|ipo|zipo|inapatikana|available|nunua|buy|show|please|the|of|for|do|you|have|what|is|it|sasa|tuma|ya|na|kwa|how|much)\b/gi, ' ')
       .replace(/[^\p{L}\p{N} -]+/gu, ' ').replace(/\s+/g, ' ').trim();
@@ -282,6 +292,8 @@ Work through this order before choosing an intent:
 2. Did this chat already quote it? memory.product and memory.lastQuote carry the answer; a short reference like "ile" or "hiyo" means that item.
 3. If the message names a device, note in your reply that WoteFy suits Omada EAP and LubFy suits MikroTik, Cudy, Ruijie/Reyee, Cambium and UniFi. Suggest the match instead of asking the customer to choose.
 4. Installation is quoted per job and cable per metre; 15 metres is the usual length. Type A is the device we supply, Type B is the customer's own device. A question about fitting or cable is not a product search, and both variants plus the total are the answer.
+   A length next to a device is coverage, not cable: "access point ya mita 300" asks for an AP that covers 300 m. Only a cable word (waya/cable) or a fitting word makes metres a cable order.
+5. When the customer names a device category with no model ("access point", "router", "switch"), set product and return just the category as query ("access point") — never the whole sentence. When they ask for other models after a list ("hauna model zingine", "others?", "more"), set product with an empty query so the catalog list widens.
 Classify based on the newest customer messages. product covers purchase, price, stock or photo of hardware. A bare model such as "EAP 650" is a product price request, never small talk.
 support is any report that a system or device stopped working: portal not opening, payment not unlocking internet, device offline, voucher rejected, login failing, an error message. A support report is never product, plan or payment_reported. For support the bot must not guess a diagnosis: the code collects the problem, then which system (WoteFy or LubFy), then the account email before any answer. Use approved troubleshooting knowledge only for systems and models that appear in it.
 Return the exact brand/model or SKU as query, with an empty query for a reference to the remembered product.
@@ -353,13 +365,72 @@ const metreWords = /\b(mita|metres?|meters?|mtr)\b/i;
  * narrower than installationWords: "bei ya bidhaa jumla" is a product total,
  * not a request for the installation fee.
  */
-const serviceWords = /\b(installation|instalation|installationi|install|kufunga|kufungwa|kufungia|kusanikisha|kusanikua|kusanikwa|kuweka mfumo|kuniwekea|kutuwekea|kukuwekea|setup|kuset|ufungaji|waya|cable|kebo|nyaya|mita|metres?|meters?|mtr)\b/i;
+// A device category with no model is still a product request, not a fitting.
+const deviceTypeWords = /\b(access points?|ap|aps|router|routers|switch|switches|gateway|repeater|antenna|antena|hotspot|cpe|mikrotik|cudy|ruijie|reyee|omada|eap|unifi|cambium|comfast)\b/i;
+// Words that turn a length into a distance the customer needs covered.
+const coverageWords = /\b(coverage|range|umbali|urefu|eneo|enjo|area|radius|kufikia|cover|reach|signal)\b/i;
+// The category word a customer uses instead of a model.
+const devicePhrase = /\b(access points?|switches?|routers?|gateways?|repeaters?|antennas?|antena|outdoor cpe|cpe)\b/i;
 // Type B applies when the customer already owns the hardware.
 const ownEquipment = /\b(nina kifaa|kifaa changu|kifaa chetu|vifaa vyangu|vifaa vyetu|nina ap|nina access point|nina router|nina mikrotik|nimeshanunua|nilishanunua|already have|own equipment|kifaa cha mteja|vifaa vya mteja)\b/i;
 
+/** "mita 300" next to a device is the distance to cover, not a cable order. */
+export function coverageMeters(text: string) {
+  if (cableWords.test(text) || !metreWords.test(text)) return undefined;
+  return cableMeters(text);
+}
+
+/** Catalog descriptions arrive as HTML; a WhatsApp price list needs plain text. */
+export function cleanSpecs(text?: string | null) {
+  return (text ?? '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&').replace(/\s+/g, ' ').trim();
+}
+
+type Priced = { id: string; name: string; sku?: string; description?: string | null;
+  price?: { amount: number; currency: string } };
+/** One line of a model list: the name plus the figure, so no second round trip. */
+function optionOf(item: Priced) {
+  return { id: item.id, name: item.name, sku: item.sku,
+    price: item.price ? money(item.price) : undefined,
+    coverage: coverageOf(item.description)?.high };
+}
+function optionLine(item: { name: string; price?: string; coverage?: number }) {
+  return `• ${item.name}${item.price ? ' — ' + item.price : ''}`
+    + (item.coverage ? ` · hadi mita ${item.coverage}` : '');
+}
+
+/**
+ * The coverage distance a catalog description states ("COVERING 70-100 METRES").
+ * Only read from the description: a number the shop wrote, never a guess.
+ */
+export function coverageOf(text?: string | null) {
+  const clean = cleanSpecs(text).toLowerCase();
+  const match = /(\d{2,4})\s*(?:-|–|to\s+|hadi\s+)?\s*(\d{2,4})?\s*(?:metres?|meters?|mtr|m)(?![a-z0-9])/.exec(clean);
+  if (!match) return undefined;
+  const first = Number(match[1]);
+  const second = Number(match[2] ?? match[1]);
+  if (!first || !second) return undefined;
+  return { low: Math.min(first, second), high: Math.max(first, second) };
+}
+
+/** A customer asking for other models after a short list must get more models. */
+const moreModelsWords = /\b(zingine|nyingine|mengine|mwingine|wengine|zote|others?|more|other|all|full list|orodha|mifano|models? nyingine|gani zipo|zipi)\b/i;
+
+/** The category word the customer used ("access point"), used as the catalog query. */
+function deviceQuery(text: string) {
+  const match = devicePhrase.exec(text)?.[1]?.toLowerCase();
+  if (match) return match.replace(/s$/, '');
+  // "nahitaji AP" is the same request written short.
+  return /\b(?:ap|aps)\b/i.test(text) ? 'access point' : '';
+}
+
 /** True when the message asks about fitting or cable rather than a device price. */
 export function serviceQuestion(text: string) {
-  return serviceWords.test(text);
+  if (cableWords.test(text) || installationWords.test(text)) return true;
+  if (!metreWords.test(text)) return false;
+  // "Nahitaji access point ya mita 300" is coverage, not a cable order. Left
+  // unguarded, the bot quoted 300 m of CAT 6 to a customer asking for an AP.
+  return !(deviceTypeWords.test(text) || coverageWords.test(text));
 }
 
 /** "ndio" after the bot offered installation and cable on a quoted device. */
@@ -481,7 +552,8 @@ export function systemAdvice(
  */
 export async function installationOnlyAside(text: string, say: (sw: string, en: string) => string) {
   const wantsInstall = installationWords.test(text);
-  if (!wantsInstall && !cableWords.test(text) && !metreWords.test(text)) return '';
+  // A coverage distance ("access point ya mita 300") is not a cable order.
+  if (!wantsInstall && !cableWords.test(text) && !(metreWords.test(text) && !deviceTypeWords.test(text))) return '';
   try {
     const meters = cableMeters(text) ?? 15;
     const cable = await cableQuote(meters).catch(() => undefined);
@@ -820,6 +892,24 @@ export async function respond(
       const fees = await installationOnlyAside(newest, say);
       if (fees) return result(fees);
     }
+    // "Hauna model zingine?" is a follow-up on the list the bot just sent. Asking
+    // for the product name again loses a customer who is ready to pick one.
+    if (!memory.product && memory.optionQuery && moreModelsWords.test(newest) && !modelQuery(newest)) {
+      const search = await searchProducts(memory.optionQuery, 20).catch(() => undefined);
+      const seen = new Set((memory.productOptions ?? []).map(item => item.id));
+      const extra = (search?.items ?? [])
+        .filter(item => !seen.has(item.id) && item.type !== 'Service')
+        .slice(0, 8).map(optionOf);
+      if (extra.length) {
+        memory.productOptions = [...(memory.productOptions ?? []), ...extra].slice(0, 20);
+        return result(say('Hizi ndizo model zingine tulizonazo', 'These are the other models we stock') + '\n'
+          + extra.map(optionLine).join('\n')
+          + say('\n\nNiambie model unayochagua nikakupa maelezo yake yote na bei.',
+            '\n\nTell me which model you want and I will send its full details and price.'));
+      }
+      return result(say(`Kwa sasa hizo ${memory.productOptions?.length ?? 0} ndizo zilizopo kwenye "${memory.optionQuery}". Nikuunganishe na timu kama unahitaji model maalum?`,
+        `Those ${memory.productOptions?.length ?? 0} are all we currently stock for "${memory.optionQuery}". Should I connect you with the team for a specific model?`));
+    }
     if (!decision.query && !memory.product) {
       return result(say('Unaulizia bidhaa gani? Tuma jina, model au SKU nikague bei na stock.',
         'Which product? Send its name, model, or SKU so I can check price and stock.'));
@@ -862,9 +952,25 @@ export async function respond(
       })).sort((a, b) => b.score - a.score);
       const best = scored[0]?.score > 0 && scored[0].score > (scored[1]?.score ?? 0) ? scored[0].item : undefined;
       if (items.length > 1 && exact.length !== 1 && !best) {
-        memory.productOptions = items.slice(0, 5);
-        const choices = memory.productOptions.map(item => `• ${item.name}`).join('\n');
-        return result(say('Unamaanisha model ipi kati ya hizi?', 'Which of these models do you mean?') + '\n' + choices);
+        // Show a price with every choice: a bare name makes the customer ask
+        // again, and the catalog already carries the figure.
+        memory.productOptions = items.slice(0, 6).map(optionOf);
+        memory.optionQuery = decision.query;
+        const meters = coverageMeters(newest);
+        const choices = memory.productOptions.map(optionLine).join('\n');
+        // Say honestly what the catalog states, so "mita 300" is not answered
+        // with a model whose own description stops at 200 m.
+        const best = Math.max(0, ...memory.productOptions.map(item => item.coverage ?? 0));
+        const gap = meters && best && best < meters
+          ? say(`\n\nKwenye orodha hii coverage inayotajwa ni hadi mita ${best}. Kwa mita ${meters} niambie eneo ni la wazi au kuna vizuizi, na kama ni kubwa tunaweza kupanga AP zaidi ya moja.`,
+            `\n\nThese list a stated coverage of up to ${best} m. For ${meters} m, tell me whether the area is open or obstructed, and if it is large we may plan more than one AP.`)
+          : '';
+        return result(say('Hizi ndizo model zilizopo', 'These are the models we have') + '\n' + choices
+          + gap
+          + (meters && !gap ? say(`\n\nUmbali wa mita ${meters} ni coverage. Niambie eneo ni la wazi au kuna kizuizi (ukuta/miti) ili nikusaidie kuchagua.`,
+            `\n\nA distance of ${meters} m is coverage. Tell me whether the area is open or has walls/trees so I can help you choose.`) : '')
+          + say('\n\nUnayochagua ni ipi? Au niambie "model zingine" nikakuonyesha zaidi.',
+            '\n\nWhich one do you want? Or say "more models" and I will show you the rest.'));
       }
       const picked = (exact[0] ?? best ?? items[0]).id;
       // The catalog shares a single vCPU with the shop, so a slow reply is normal under
@@ -877,8 +983,13 @@ export async function respond(
       memory.lastQuote = `${product.name} — ${price}`;
       const details = [product.brand && `Brand: ${product.brand}`,
         product.category && `Category: ${product.category}`,
+        product.unit && product.unit.toLowerCase() !== 'pcs' && product.unit !== 'Job'
+          ? `Unit: ${product.unit}` : '',
         product.warranty ? `Warranty: ${product.warranty} month${product.warranty === 1 ? '' : 's'}` : '']
         .filter(Boolean).join(' · ');
+      // Specs are what the customer actually asked for ("details zake"). Clean the
+      // catalog HTML and give the text room instead of one clipped line.
+      const specs = cleanSpecs(product.description).slice(0, 700);
       const inStock = stock.available ?? stock.available_to_sell > 0;
       const availability = inStock ? say('Ipo stock kwa sasa.', 'Currently in stock.')
         : say('Imeisha stock kwa sasa.', 'Currently out of stock.');
@@ -895,7 +1006,7 @@ export async function respond(
       // fitting and cable quote instead of the greeting fallback.
       if (nextStep) memory.awaitingService = true; else delete memory.awaitingService;
       return result(`${product.name} — ${price}` + (details ? '\n' + details : '')
-        + (product.description ? '\n' + product.description.slice(0, 240) : '') + '\n' + availability
+        + (specs ? '\n' + specs : '') + '\n' + availability
         + (decision.sendImage && !imageUrl
           ? '\n' + say('Picha yake haipatikani kwa sasa.', 'The product photo is currently unavailable.') : '')
         + systemAdvice(product, say)

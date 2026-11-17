@@ -13,15 +13,15 @@ export const shop = config.CSOLUTION_POS_DB_URL ? new pg.Pool({
 }) : undefined;
 shop?.on('error', error => log.error({ code: error.name }, 'POS reader connection failed'));
 
-export async function searchShop(search: string) {
+export async function searchShop(search: string, limit = 6) {
   const tokens = search.toLowerCase().match(/[\p{L}\p{N}]+/gu)?.slice(0, 12) ?? [];
   if (!tokens.length) return { items: [] };
-  const { rows } = await shop!.query<{ id: string; name: string; sku: string }>(
-    `SELECT id,name,sku FROM csbot_catalog.products WHERE NOT EXISTS (
+  const { rows } = await shop!.query(`SELECT id,name,sku,brand,category,type,unit,description,retail_price,
+    currency,available_to_sell,warranty,image_id,image_url FROM csbot_catalog.products WHERE NOT EXISTS (
       SELECT 1 FROM unnest($2::text[]) AS term WHERE
-      strpos(lower(concat_ws(' ', name, sku, brand)), term)=0
-    ) ORDER BY (lower(sku)=lower($1)) DESC,(lower(name)=lower($1)) DESC,name,id LIMIT 6`, [search, tokens]);
-  return { items: rows };
+      strpos(lower(concat_ws(' ', name, sku, coalesce(brand,''), coalesce(category,''))), term)=0
+    ) ORDER BY (lower(sku)=lower($1)) DESC,(lower(name)=lower($1)) DESC,name,id LIMIT $3`, [search, tokens, limit]);
+  return { items: rows.map(shopProduct) };
 }
 
 export async function readShopProduct(id: string) {
@@ -59,18 +59,23 @@ export async function listShopCatalog(search: string, limit: number) {
       strpos(lower(concat_ws(' ',name,sku,coalesce(brand,''),coalesce(category,''),description)),term)=0)
     ORDER BY (lower(sku)=lower($1)) DESC,(lower(name)=lower($1)) DESC,(type='Service'),(available_to_sell=0),name
     LIMIT $3`, [search, tokens, limit]);
-  return rows.map(raw => {
-    const imageUrl = raw.image_id ? 'cspos-image:' + raw.image_id : raw.image_url;
-    const isService = raw.type === 'Service';
-    const available = isService || Number(raw.available_to_sell) > 0;
-    return {
-      id: raw.id, name: raw.name, sku: raw.sku, brand: raw.brand, category: raw.category,
-      type: raw.type, unit: raw.unit, description: raw.description, warranty: Number(raw.warranty),
-      price: { amount: Number(raw.retail_price), currency: raw.currency },
-      available_to_sell: isService ? 0 : Number(raw.available_to_sell), available,
-      images: imageUrl ? [{ url: imageUrl, primary: true }] : [],
-    };
-  });
+  return rows.map(shopProduct);
+}
+
+/** One catalog row in the shape the bot and dashboard both read. */
+function shopProduct(raw: Record<string, unknown>) {
+  const imageUrl = raw.image_id ? 'cspos-image:' + raw.image_id : raw.image_url;
+  const isService = raw.type === 'Service';
+  const available = isService || Number(raw.available_to_sell) > 0;
+  return {
+    id: raw.id as string, name: raw.name as string, sku: raw.sku as string,
+    brand: raw.brand as string | null, category: raw.category as string | null,
+    type: raw.type as string, unit: raw.unit as string, description: raw.description as string,
+    warranty: Number(raw.warranty),
+    price: { amount: Number(raw.retail_price), currency: raw.currency as string },
+    available_to_sell: isService ? 0 : Number(raw.available_to_sell), available,
+    images: imageUrl ? [{ url: imageUrl as string, primary: true }] : [],
+  };
 }
 
 export async function shopImage(ref: string) {

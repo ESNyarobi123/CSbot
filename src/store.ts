@@ -22,7 +22,9 @@ export interface Conversation {
     product?: { id: string; name: string };
     lastQuote?: string;
     plan?: { kind?: 'subscription' | 'wifi' | 'bundle'; site?: string };
-    productOptions?: { id: string; name: string; sku?: string }[];
+    productOptions?: { id: string; name: string; sku?: string; price?: string; coverage?: number }[];
+    /** The query behind productOptions, so "model zingine?" can widen the list. */
+    optionQuery?: string;
     quoteFor?: 'product' | 'plan';
     /** Set while the bot waits for "yes" to its installation/cable offer. */
     awaitingService?: boolean;
