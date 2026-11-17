@@ -34,7 +34,8 @@ export interface Outcome {
 
 const ai = config.GEMINI_API_KEY ? new GoogleGenAI({
   apiKey: config.GEMINI_API_KEY,
-  httpOptions: { timeout: 11000 },
+  // A customer waits for this call, so fail fast and let the next model answer.
+  httpOptions: { timeout: 6000 },
 }) : undefined;
 
 const packageWords = /\b(package|packages|kifurushi|vifurushi|plan|plans|subscription|usajili|bundle)\b/i;
@@ -138,7 +139,11 @@ async function decide(text: string, memory: Conversation['memory'], history: Cha
   const contents = JSON.stringify({ newest: text, memory: { system: memory.system, product: memory.product?.name, profile: memory.profile },
     history, approvedKnowledge: knowledge.map(entry => ({ ...entry, content: entry.content.slice(0, 3000) })) });
   const models = [...new Set([config.GEMINI_MODEL, config.GEMINI_FALLBACK_MODEL])];
+  // A customer is waiting. Free Gemini tiers answer 503 during demand spikes, so
+  // stop spending the reply budget once the deadline is close and use local rules.
+  const deadline = Date.now() + 9000;
   for (const model of models) {
+    if (Date.now() > deadline - 3500) break;
     try {
       const generated = await ai.models.generateContent({
         model,
