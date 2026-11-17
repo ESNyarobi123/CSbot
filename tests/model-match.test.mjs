@@ -17,6 +17,12 @@ const products = [
     brand: 'TP LINK OMADA', category: 'OUTDOOR ACCESS POINT',
     description: 'Wi-Fi 6 AX3000, PoE 802.3at.',
     price: { amount: 450000, currency: 'TZS' }, images: [] },
+  // Matches an "access point" search only through its description, which is how
+  // the cable ended up inside an access-point list in production.
+  { id: 'cat6', name: 'CAT 6 OUTDOOR', sku: 'CAT6', type: 'Product', unit: 'meter',
+    brand: 'CSOLUTION', category: 'CABLE',
+    description: 'Waya wa nje unaotumika kwenye installation ya access point.',
+    price: { amount: 1500, currency: 'TZS' }, images: [] },
 ];
 
 const server = createServer((req, res) => {
@@ -26,7 +32,8 @@ const server = createServer((req, res) => {
   if (url.pathname === '/products') {
     // A deliberately loose match: one shared word is enough to return the row.
     return reply({ items: products.filter(item => tokens.some(token =>
-      `${item.name} ${item.sku} ${item.brand ?? ''} ${item.category ?? ''}`.toLowerCase().includes(token))) });
+      `${item.name} ${item.sku} ${item.brand ?? ''} ${item.category ?? ''} ${item.description ?? ''}`
+        .toLowerCase().includes(token))) });
   }
   const availability = /^\/products\/([\w-]+)\/availability$/.exec(url.pathname);
   if (availability) return reply({ available_to_sell: 5 });
@@ -67,4 +74,14 @@ test('a named model answers with that model, not the first loose match', async (
 test('a model query that matches nothing is not answered with a stranger', async () => {
   const reply = await respond(client, conversation({}), 'Cudy AP 9999 ina band gani?', []);
   assert.doesNotMatch(reply.body, /Cudy AP 1300 —|COMFAST CF-WA 933 —/);
+});
+
+test('an access-point list holds devices, not the cable that mentions the words', async () => {
+  const reply = await respond(client, conversation({}), 'Nahitaji access point', []);
+  assert.doesNotMatch(reply.body, /CAT 6/);
+  assert.match(reply.body, /Cudy AP 1300 — TZS 250,000/);
+
+  // The cable is still sold when the customer asks for it by name.
+  const cable = await respond(client, conversation({}), 'CAT 6 OUTDOOR bei', []);
+  assert.match(cable.body, /CAT 6 OUTDOOR — TZS 1,500/);
 });

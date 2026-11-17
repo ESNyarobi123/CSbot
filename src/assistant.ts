@@ -427,6 +427,16 @@ async function missingProduct(
     + await planAside(newest, memory, say);
 }
 
+/**
+ * A cable or a fitting is never a candidate when the customer asked for a
+ * device category: "access point" must not answer with CAT 6 by the metre.
+ */
+function soldAsDevice(item: { type?: string; unit?: string; category?: string | null }) {
+  if (item.type === 'Service') return false;
+  if (/^(m|meter|metre|metres|meters)$/i.test(item.unit ?? '')) return false;
+  return !/cable|service/i.test(item.category ?? '');
+}
+
 /** The customer asks how far a device reaches, not what it costs. */
 const rangeWords = /\b(umbali|mbali gani|coverage|range|inafikia|kufikia|reach|distance|how far|radius|eneo gani|eneo kubwa)\b/i;
 
@@ -1096,9 +1106,8 @@ export async function respond(
       const search = await searchProducts(memory.optionQuery, 20).catch(() => undefined);
       const seen = new Set((memory.productOptions ?? []).map(item => item.id));
       const extra = (search?.items ?? [])
-        .filter(item => !seen.has(item.id) && item.type !== 'Service')
-        .slice(0, 8).map(optionOf);
-      if (extra.length) {
+        .filter(item => !seen.has(item.id) && soldAsDevice(item))
+        .slice(0, 8).map(optionOf);      if (extra.length) {
         memory.productOptions = [...(memory.productOptions ?? []), ...extra].slice(0, 20);
         return result(say('Hizi ndizo model zingine tulizonazo', 'These are the other models we stock') + '\n'
           + extra.map(optionLine).join('\n')
@@ -1120,6 +1129,13 @@ export async function respond(
       const choice = memory.productOptions?.find(item => [item.name, item.sku].some(value =>
         value?.toLowerCase() === decision.query.toLowerCase()));
       const items = choice ? [choice] : decision.query ? (await searchProducts(decision.query)).items : [memory.product!];
+      // A category request ("access point") is answered with devices; the loose
+      // catalog search also returns the cable and the fitting services.
+      const categoryOnly = !memory.product && !modelQuery(newest) && Boolean(deviceQuery(newest));
+      if (categoryOnly && items.length > 1) {
+        const devices = items.filter(item => soldAsDevice(item as { type?: string; unit?: string; category?: string | null }));
+        if (devices.length) items.splice(0, items.length, ...devices);
+      }
       if (!items.length) {
         log.debug({ query: decision.query }, 'Product search returned no matches');
         if (decision.sendImage && !purchaseWordsWithoutImage(newest)) {
