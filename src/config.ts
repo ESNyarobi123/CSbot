@@ -26,6 +26,10 @@ export const config = z.object({
   DEBOUNCE_MS: z.coerce.number().int().min(0).max(5000).default(1250),
   MEDIA_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(90),
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(4),
+  // A chat taken over by a human stays silent until an agent releases it. Real
+  // agents miss that, so an idle handoff returns to the bot after this window.
+  // 0 disables the resume. Notification-only sends use takeover:false instead.
+  HANDOFF_IDLE_MINUTES: z.coerce.number().int().min(0).max(10080).default(180),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error', 'silent']).default('info'),
 }).parse(process.env);
 

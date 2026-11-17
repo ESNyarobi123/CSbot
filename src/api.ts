@@ -335,7 +335,11 @@ class AdminController {
   async send(@Param('id') id: string, @Body() body: unknown) {
     read(recordId, id);
     const input = read(z.object({ text: bodyText, requestId: z.string().min(8).max(100),
-      imageUrl: z.url({ protocol: /^https$/ }).optional() }), body);
+      imageUrl: z.url({ protocol: /^https$/ }).optional(),
+      // A dashboard reply means "a human owns this chat". Automated notices
+      // (billing, reseller, payment alerts) must pass false or they silence the
+      // bot for every customer who receives one.
+      takeover: z.boolean().default(true) }), body);
     if (input.imageUrl && !imageAllowed(input.imageUrl)) {
       throw new BadRequestException('Image host is not listed in PRODUCT_IMAGE_HOSTS');
     }
@@ -350,7 +354,7 @@ class AdminController {
         }
         return { id: existing.id, state: existing.state };
       }
-      await setMode(client, id, 'human');
+      if (input.takeover) await setMode(client, id, 'human');
       return enqueue(client, { accountId: conversation.account_id, conversationId: id, jid: recipient(conversation),
         origin: 'admin', body: input.text, imageUrl: input.imageUrl, requestKey: input.requestId });
     });
