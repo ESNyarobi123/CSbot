@@ -84,6 +84,56 @@ export function emailOf(text: string) {
   return emailPattern.exec(text)?.[0]?.toLowerCase();
 }
 
+// Not everyone on this number is buying. "Mambo", "vipi" or "poa" is a person
+// saying hello, and answers itself — a pitch there reads like a call centre and
+// loses the friendly chats that later turn into customers.
+const smallTalkWords = new Set([
+  'mambo', 'mamboo', 'mamboz', 'vipi', 'vpp', 'vip', 'niaje', 'sasa', 'habari', 'hujambo', 'sijambo',
+  'shikamoo', 'marahaba', 'salama', 'poa', 'safi', 'fresh', 'nzuri', 'sana', 'asante', 'shukran',
+  'karibu', 'ok', 'okay', 'sawa', 'ndio', 'yes', 'hello', 'hi', 'hey', 'yo', 'sup', 'good',
+  'morning', 'afternoon', 'evening', 'asubuhi', 'mchana', 'jioni', 'chief', 'mzee', 'bro',
+  'brother', 'dada', 'kaka', 'yako', 'za', 'tu', 'je', 'basi', 'haya', 'aisee', 'dah', 'poa',
+]);
+const greetingWord = /^(mambo+|vipi|vpp|niaje|habari|hujambo|sijambo|shikamoo|salama|poa|safi|nzuri|hello+|hi+|hey+|yo|sup|sasa|morning|afternoon|evening|asubuhi|mchana|jioni|asante|shukran|thanks|thank|thx)$/;
+
+/** A message that is only a greeting, an acknowledgement or a thank-you. */
+export function smallTalkOnly(text: string) {
+  const words = text.toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, ' ').trim().split(/\s+/).filter(Boolean);
+  if (!words.length || words.length > 4) return false;
+  if (!words.every(word => smallTalkWords.has(word))) return false;
+  return words.some(word => greetingWord.test(word));
+}
+
+/** Answer in the same register the person used, then leave the door open. */
+function smallTalkReply(text: string, say: (sw: string, en: string) => string) {
+  const lower = text.toLowerCase();
+  if (/^(asante|shukran|thank you|thanks|thx)\b/.test(lower.trim())) {
+    return say('Karibu sana!', 'You’re welcome!');
+  }
+  if (/\bshikamoo\b/.test(lower)) {
+    return say('Marahaba! Karibu — niambie, nikusaidie nini leo?',
+      'Hello! Welcome — tell me, what can I help you with today?');
+  }
+  if (/\b(poa|safi|fresh|nzuri)\b/.test(lower) && !/\b(mambo|vipi|habari)\b/.test(lower)) {
+    return say('Vizuri! Karibu — niambie unahitaji nini.',
+      'Good to hear! Welcome — tell me what you need.');
+  }
+  if (/\b(mambo|vipi|vpp|niaje|sup|yo)\b/.test(lower)) {
+    return say('Mambo! Poa sana, karibu. Niambie — nikusaidie nini leo?',
+      'Hey! All good here. Tell me — what can I help you with today?');
+  }
+  if (/\b(habari|hujambo|salama|asubuhi|mchana|jioni|morning|afternoon|evening)\b/.test(lower)) {
+    return say('Habari! Nzuri, asante. Karibu — nikusaidie nini leo?',
+      'Hello! Very well, thanks. Welcome — what can I help you with today?');
+  }
+  if (/^(sawa|ok|okay|haya|ndio|yes)\b/.test(lower.trim())) {
+    return say('Sawa! Nipo hapa — niambie unahitaji nini.',
+      'Alright! I’m here — tell me what you need.');
+  }
+  return say('Karibu! Niambie — nikusaidie nini leo?',
+    'Welcome! Tell me — what can I help you with today?');
+}
+
 const systemLabel = (system: string) => system === 'wotefy' ? 'WoteFy' : system === 'lubfy' ? 'LubFy' : '';
 
 export function customerProfile(text: string, previous: Conversation['memory']['profile']) {
@@ -232,6 +282,7 @@ Return the exact brand/model or SKU as query, with an empty query for a referenc
 plan requires the customer to specify the kind: subscription for operator software, wifi for end-user internet, bundle for equipment + services.
 Use ambiguous_package if kind is unclear. Do not invent a site name. Distinguish asking how payments work from explicitly asking to pay for their purchase.
 Use payment_reported for claims of actual completed payment and ready_to_pay for explicit intent to pay. Use human for requests to speak to staff.
+Not everyone who writes here is buying. A greeting or small talk ("mambo", "vipi", "poa", "hi") is answered in the same friendly register with no pitch and no equipment question; only what they say next decides whether they are a customer.
 Only write reply for general intent. Ground reply in approved knowledge. Ask one focused question if needed. Answer like a helpful person: short sentences, no bullet lists, no headings.
 Never give prices, stock levels, payment details, links absent from approved knowledge, or confirmation of payment. Only claim compatibility where approved knowledge explicitly confirms the exact model.`,
         },
@@ -525,6 +576,7 @@ export function supportIntake(
     .replace(/\b(?:wotefy|lubfy)\b/gi, ' ')
     .replace(/[\s.,!?;:]+/g, ' ').trim();
   const onlyIdentityAnswer = rest.length < 3
+    || smallTalkOnly(rest)
     || /^(?:ndio|ndiyo|sawa|ok|okay|yes|no|hapana|ndo)$/i.test(rest);
   if (!next.problem && rest.length > 3 && !onlyIdentityAnswer) {
     next.problem = rest.slice(0, 500);
@@ -647,6 +699,13 @@ export async function respond(
     return result(say(`Asante. Nimepokea: ${facts}. Nimempa timu ya msaada taarifa hizi; watakagua akaunti yako na kukurudia muda mfupi.`,
       `Thanks. I have: ${facts}. I have passed these details to support, who will check your account and come back to you shortly.`),
     { handoff: true });
+  }
+  // Someone saying "mambo" is a person, not a lead yet. Answer the greeting in
+  // kind and let their next message show whether they are a customer at all.
+  // Skipped while a question is on the table ("ndio", "sawa" to a quote).
+  if (!onlyDetect && smallTalkOnly(newest) && !memory.awaitingService && !memory.support
+      && !memory.lastQuote && !memory.product) {
+    return result(smallTalkReply(newest, say));
   }
   if (decision.intent === 'payment_reported') {
     if (['paid', 'completed'].includes(conversation.stage)) {
@@ -842,8 +901,8 @@ export async function respond(
     return result(say('Kwa vifaa ulivyotaja, unapanga hotspot ya ndani au ya nje?',
       'For the equipment you mentioned, are you planning an indoor or outdoor hotspot?'));
   }
-  return result(say('Habari! Mimi ni msaidizi wa CSolution. Una kifaa tayari, au unahitaji msaada kuchagua mfumo wa Wi-Fi billing?',
-    'Hi! I’m CSolution’s assistant. Do you already have equipment, or would you like help choosing a Wi-Fi billing system?'));
+  return result(say('Karibu. Niambie unahitaji nini — mfumo, kifaa, au msaada wa tatizo lolote?',
+    'Welcome. Tell me what you need — a system, a device, or help with a problem?'));
 }
 
 async function uploadedPhoto(client: PoolClient, query: string) {
