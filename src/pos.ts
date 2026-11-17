@@ -159,8 +159,32 @@ export async function serviceCatalog(term: string) {
   return items.filter(item => item.type === 'Service');
 }
 
-export type InstallationOption = {
-  name: string;
+/**
+ * Cable is sold per metre, so an installation quote needs a length before it is a
+ * real total. Only per-metre lines are multiplied; a coiled pack would be wrong.
+ */
+export async function cableQuote(meters: number) {
+  const seen = new Set<string>();
+  const items: Product[] = [];
+  for (const term of ['cat 6', 'cable', 'waya']) {
+    try {
+      for (const item of (await catalog(term, 10)).items) {
+        if (seen.has(item.id)) continue;
+        seen.add(item.id);
+        items.push(item);
+      }
+    } catch {
+      // Try the next term; the quote simply omits the cable when nothing matches.
+    }
+  }
+  const cable = items.find(item => /\b(cat\s?6|cat6|utp|sftp|cable|kebo|waya)\b/i.test(item.name)
+    && item.price.amount > 0
+    && ['meter', 'metre', 'm', 'mita'].includes((item.unit ?? '').toLowerCase()));
+  if (!cable) return;
+  return { meters, product: cable, amount: cable.price.amount * meters, currency: cable.price.currency };
+}
+
+export type InstallationOption = {  name: string;
   /** True when the work covers hardware the shop supplies. */
   withOurEquipment: boolean;
   fee: number;

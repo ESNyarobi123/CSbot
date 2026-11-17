@@ -57,3 +57,17 @@ test('a bare model is a price request, not small talk', async () => {
   // The model is read from anywhere in a long sentence, not just the last words.
   assert.equal(modelQuery('bei ya kifaa cha Tplink omada ap 650 pamoja na mfumo'), 'ap 650');
 });
+
+test('installation quotes include cable and the device suggests a system', async () => {
+  const { cableMeters, systemAdvice } = await import('../dist/assistant.js');
+  // Cable is sold per metre, so the length comes from the message or the 15m default.
+  assert.equal(cableMeters('installation ya ap na waya mita 25'), 25);
+  assert.equal(cableMeters('mita 20 ya waya'), 20);
+  assert.equal(cableMeters('bei ya EAP 650'), undefined);
+  // An absurd length falls back to the default instead of quoting a wrong total.
+  assert.equal(cableMeters('mita 900'), undefined);
+  const say = (sw) => sw;
+  assert.match(systemAdvice({ name: 'TP LINK EAP 650', brand: 'TP LINK OMADA' }, say), /WoteFy/);
+  assert.match(systemAdvice({ name: 'MIKROTIK HAP AX2', brand: 'MIKROTIK' }, say), /LubFy/);
+  assert.equal(systemAdvice({ name: 'CAT 6 OUTDOOR' }, say), '');
+});
