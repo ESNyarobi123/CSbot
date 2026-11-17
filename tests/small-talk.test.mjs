@@ -51,3 +51,14 @@ test('a greeting after a live quote does not reset the conversation', async () =
   const reply = await respond(client, chat(memory), 'poa', []);
   assert.doesNotMatch(reply.body, /^Vizuri!/);
 });
+
+test('location and hours come from knowledge, never from generation', async () => {
+  const rows = [{ content: 'Ofisi iko Sinza Makaburini, Dar es Salaam.' }];
+  const withKnowledge = { query: async () => ({ rows }) };
+  const where = await respond(withKnowledge, chat(), 'unaishi wapi?', []);
+  assert.match(where.body, /Sinza/);
+  assert.doesNotMatch(where.body, /Nairobi/i);
+
+  const hours = await respond(withKnowledge, chat(), 'mnafanya kazi wikiendi?', []);
+  assert.match(hours.body, /Sinza/);
+});

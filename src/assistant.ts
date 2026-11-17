@@ -106,8 +106,10 @@ export function smallTalkOnly(text: string) {
   return words.some(word => greetingWord.test(word));
 }
 
-/** Answer in the same register the person used, then leave the door open. */
-function smallTalkReply(text: string, say: (sw: string, en: string) => string) {
+/** Where the business is and when it is reachable — only from approved knowledge. */
+const placeQuestion = /\b(unaishi|mnaishi|mko|mupo|mnapatikana|unapatikana|ofisi|office|mahali|address|anwani|ramani|location|mnafanya kazi|saa za kazi|opening|hours|wikendi|weekend|jumamosi|jumapili|mko wapi|upo wapi)\b/i;
+
+/** Answer in the same register the person used, then leave the door open. */function smallTalkReply(text: string, say: (sw: string, en: string) => string) {
   const lower = text.toLowerCase();
   if (/^(asante|shukran|thank you|thanks|thx)\b/.test(lower.trim())) {
     return say('Karibu sana!', 'You’re welcome!');
@@ -287,6 +289,7 @@ plan requires the customer to specify the kind: subscription for operator softwa
 Use ambiguous_package if kind is unclear. Do not invent a site name. Distinguish asking how payments work from explicitly asking to pay for their purchase.
 Use payment_reported for claims of actual completed payment and ready_to_pay for explicit intent to pay. Use human for requests to speak to staff.
 Not everyone who writes here is buying. A greeting or small talk ("mambo", "vipi", "poa", "hi") is answered in the same friendly register with no pitch and no equipment question; only what they say next decides whether they are a customer.
+Never invent a city, office, opening hours, phone number, price or staff availability. The office is in Sinza Makaburini, Dar es Salaam, Tanzania. If approved knowledge does not state a detail, say the team will confirm it rather than guessing.
 Only write reply for general intent. Ground reply in approved knowledge. Ask one focused question if needed. Answer like a helpful person: short sentences, no bullet lists, no headings.
 Never give prices, stock levels, payment details, links absent from approved knowledge, or confirmation of payment. Only claim compatibility where approved knowledge explicitly confirms the exact model.`,
         },
@@ -711,6 +714,14 @@ export async function respond(
   // Someone saying "mambo" is a person, not a lead yet. Answer the greeting in
   // kind and let their next message show whether they are a customer at all.
   // Skipped while a question is on the table ("ndio", "sawa" to a quote).
+  if (!onlyDetect && placeQuestion.test(newest) && !purchaseWords.test(newest) && !memory.support) {
+    // Gemini invented "Nairobi" for an office that is in Sinza, Dar es Salaam.
+    // Location and hours are facts, so they come from knowledge, not generation.
+    const place = await row<{ content: string }>(client, `SELECT content FROM knowledge
+      WHERE published AND id IN ('sinza','contact-office')
+      ORDER BY (id='sinza') DESC LIMIT 1`);
+    if (place?.content) return result(place.content);
+  }
   if (!onlyDetect && smallTalkOnly(newest) && !memory.awaitingService && !memory.support
       && !memory.lastQuote && !memory.product) {
     return result(smallTalkReply(newest, say));
