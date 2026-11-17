@@ -133,3 +133,12 @@ test('a bare model name does not flip a Kiswahili chat to English', async () => 
   assert.match(outcome.body, /Ipo stock kwa sasa/);
   assert.doesNotMatch(outcome.body, /Currently in stock/);
 });
+
+test('a category request wins over a single model the model picked', async () => {
+  // Gemini has been seen answering "access point" with one guessed model. The
+  // customer asked for the category, so the list is what they must get.
+  const outcome = await respond(client, conversation({}), 'Nahitaji access point kwa mita 300', []);
+  assert.ok(outcome.memory.productOptions?.length > 1, 'the reply must be a list, not one product');
+  assert.equal(outcome.memory.optionQuery, 'access point');
+  assert.match(outcome.body, /TZS \d/);
+});

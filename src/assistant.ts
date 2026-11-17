@@ -905,6 +905,12 @@ export async function respond(
     }
   }
   if (decision.intent === 'product') {
+    // A category word ("access point") is a list request, not a model. Gemini
+    // sometimes answers with one model it guessed, so the category it named wins.
+    if (!memory.product && !modelQuery(newest)) {
+      const category = deviceQuery(newest);
+      if (category) decision.query = category;
+    }
     // Fees only make sense with a device price; when no model is named, list them alone.
     if (!memory.product && !modelQuery(newest) && !imageWords.test(newest)) {
       const fees = await installationOnlyAside(newest, say);
