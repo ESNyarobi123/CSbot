@@ -162,8 +162,10 @@ export function customerProfile(text: string, previous: Conversation['memory']['
 
 // Kiswahili and English markers. A bare model name carries neither, so the chat
 // keeps the language it started in instead of flipping to English mid-order.
-const swMarkers = /\b(naomba|nahitaji|ninahitaji|nataka|bei|gani|ngapi|tafadhali|asante|sawa|ndio|habari|mambo|vipi|je|kwa|ya|za|nini|wapi|lini|kwanini|niletee|nipe|tafuta|ipo|zipo|haipo|hauna|mna|una|nina|sina|kama|lakini|bado|hii|hiyo|hizo|zile|wanangu|mimi|wewe|nataka)\b/i;
-const enMarkers = /\b(the|please|how|what|which|where|when|price|cost|stock|available|need|want|does|can|could|would|thanks|thank|hello|hi|hey|are|your|more|other|details|specs|specification)\b/i;
+const swMarkers = /\b(naomba|nahitaji|ninahitaji|nataka|bei|gani|ngapi|tafadhali|asante|sawa|ndio|habari|mambo|vipi|je|kwa|ya|za|nini|wapi|lini|kwanini|niletee|nipe|niambie|nijibu|tafuta|ipo|zipo|haipo|hauna|mna|una|nina|sina|kama|lakini|bado|hii|hiyo|hizo|zile|wanangu|mimi|wewe|zote|yote|kifaa|bidhaa|pamoja|maelezo|sifa|hadi)\b/i;
+// "details" and "specs" are typed by Kiswahili speakers too ("niambie details zote"),
+// so they say nothing about the language. Only unambiguously English words do.
+const enMarkers = /\b(the|please|how|what|which|where|when|price|cost|stock|available|need|want|does|can|could|would|thanks|thank|hello|hi|hey|are|your|more|other)\b/i;
 
 /** The language the customer just wrote, when the message makes it obvious. */
 export function messageLanguage(text: string): 'sw' | 'en' | undefined {
@@ -390,6 +392,40 @@ const coverageWords = /\b(coverage|range|umbali|urefu|eneo|enjo|area|radius|kufi
 const devicePhrase = /\b(access points?|switches?|routers?|gateways?|repeaters?|antennas?|antena|outdoor cpe|cpe)\b/i;
 // Type B applies when the customer already owns the hardware.
 const ownEquipment = /\b(nina kifaa|kifaa changu|kifaa chetu|vifaa vyangu|vifaa vyetu|nina ap|nina access point|nina router|nina mikrotik|nimeshanunua|nilishanunua|already have|own equipment|kifaa cha mteja|vifaa vya mteja)\b/i;
+
+/**
+ * Pick the item the customer actually named. The catalog search is loose — an
+ * "AP 3000" query also returns every other AX3000 kit — so the winner is the
+ * name sharing the most words with the model, and a single shared word is not
+ * enough to answer with the wrong device.
+ */
+async function bestMatch(query: string) {
+  const items = (await searchProducts(query, 8).catch(() => undefined))?.items ?? [];
+  const wanted = new Set(query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
+  let best: { item: (typeof items)[number]; score: number } | undefined;
+  for (const item of items) {
+    if (item.type === 'Service') continue;
+    const words = new Set(item.name.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
+    const score = [...wanted].filter(word => words.has(word)).length;
+    if (!best || score > best.score) best = { item, score };
+  }
+  return best && best.score >= 2 ? best.item : undefined;
+}
+
+/** "EAP 605" is not stocked: say so and list what is close, never a stranger. */
+async function missingProduct(
+  query: string, newest: string, memory: Conversation['memory'],
+  say: (sw: string, en: string) => string,
+) {
+  const nearby = await nearbyModels(query);
+  return say('Sijaipata bidhaa hiyo kwenye POS.', 'I couldn’t find that item in the POS.')
+    + (nearby.length
+      ? '\n' + say('Zilizopo karibu na hiyo:', 'Closest items we stock:') + '\n'
+        + nearby.map(name => `• ${name}`).join('\n')
+      : '\n' + say('Unaweza kutuma model au SKU iliyo kwenye kifaa?',
+        'Could you send the exact model or SKU from the device?'))
+    + await planAside(newest, memory, say);
+}
 
 /** The customer asks how far a device reaches, not what it costs. */
 const rangeWords = /\b(umbali|mbali gani|coverage|range|inafikia|kufikia|reach|distance|how far|radius|eneo gani|eneo kubwa)\b/i;
@@ -979,7 +1015,9 @@ export async function respond(
     let target = memory.product?.id;
     if (!target) {
       const model = modelQuery(newest);
-      const found = model ? (await searchProducts(model, 1).catch(() => undefined))?.items[0] : undefined;
+      // limit 1 returned whichever row the catalog listed first, so "Cudy AP 3000"
+      // was answered with the COMFAST it shares the AX3000 name with.
+      const found = model ? await bestMatch(model) : undefined;
       if (found) {
         target = found.id;
         memory.product = { id: found.id, name: found.name };
@@ -1090,26 +1128,32 @@ export async function respond(
         }
         // "EAP 605" is not stocked. Suggesting the nearest models is more useful
         // than asking the customer to retype a model that does not exist.
-        const nearby = await nearbyModels(decision.query);
-        return result(say('Sijaipata bidhaa hiyo kwenye POS.', 'I couldn’t find that item in the POS.')
-          + (nearby.length
-            ? '\n' + say('Zilizopo karibu na hiyo:', 'Closest items we stock:') + '\n'
-              + nearby.map(name => `• ${name}`).join('\n')
-            : '\n' + say('Unaweza kutuma model au SKU iliyo kwenye kifaa?',
-              'Could you send the exact model or SKU from the device?'))
-          + await planAside(newest, memory, say));
+        return result(await missingProduct(decision.query ?? '', newest, memory, say));
       }
       const exact = items.filter(item => [item.name, 'sku' in item ? item.sku : undefined].some(value =>
         typeof value === 'string' && value.toLowerCase() === decision.query.toLowerCase()));
       // A short query like "Cat6" can match a cable and a connector. Prefer the one whose
       // name shares the most words with what the customer actually wrote.
       const words = new Set(newest.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
-      const scored = items.map(item => ({
+      // A model number is a fact, not a similarity. "Cudy AP 9999" must not be
+      // answered with the 1300 we do stock, so every digit the customer typed as
+      // part of a model has to appear in the candidate's own name or SKU. A
+      // distance ("mita 300") is not a model and never filters anything.
+      const digits = modelQuery(newest).match(/\d{2,4}/g) ?? [];
+      const sharesModelNumber = (item: (typeof items)[number]) => {
+        if (!digits.length) return true;
+        const text = `${item.name} ${'sku' in item ? item.sku ?? '' : ''}`.toLowerCase();
+        return digits.every(value => text.includes(value));
+      };
+      const scored = items.filter(sharesModelNumber).map(item => ({
         item,
         score: [...new Set(`${item.name} ${'sku' in item ? item.sku ?? '' : ''}`
           .toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])]
           .filter(word => word.length > 2 && words.has(word)).length,
       })).sort((a, b) => b.score - a.score);
+      // Every candidate contradicted the model number, so nothing here is the
+      // item the customer means.
+      if (!scored.length) return result(await missingProduct(decision.query ?? '', newest, memory, say));
       const best = scored[0]?.score > 0 && scored[0].score > (scored[1]?.score ?? 0) ? scored[0].item : undefined;
       if (items.length > 1 && exact.length !== 1 && !best) {
         // Show a price with every choice: a bare name makes the customer ask

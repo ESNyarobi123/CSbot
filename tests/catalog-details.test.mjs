@@ -180,6 +180,8 @@ test('a plain details request lists what the catalog holds, not a range lecture'
   assert.match(outcome.body, /Brand: TP LINK/);
   assert.match(outcome.body, /ACCESS POINT/);
   assert.match(outcome.body, /TZS 450,000/);
+  // "details" is English but the sentence around it is not.
+  assert.doesNotMatch(outcome.body, /Currently in stock|Bands:|Power:/);
   // Nothing was asked about distance, so no wall-and-trees explanation.
   assert.doesNotMatch(outcome.body, /ukuta|miti|sitatoa namba/);
 });

@@ -1,0 +1,70 @@
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { after, test } from 'node:test';
+
+// The shop really stocks both a Cudy AP 1300 and a COMFAST CF-WA 933, and both
+// advertise the same speed class, so a loose catalog search returns the pair.
+const products = [
+  { id: 'cudy13', name: 'Cudy AP 1300', sku: 'AP1300', type: 'Product', unit: 'pcs',
+    brand: 'CUDY', category: 'OUTDOOR ACCESS POINT',
+    description: 'Outdoor AP ya Wi-Fi 5 AC1200 (300 Mbps 2.4 GHz + 867 Mbps 5 GHz), IP65.',
+    price: { amount: 250000, currency: 'TZS' }, images: [] },
+  { id: 'comfast', name: 'COMFAST CF-WA 933', sku: 'CFWA933', type: 'Product', unit: 'pcs',
+    brand: 'COMFAST', category: 'OUTDOOR ACCESS POINT',
+    description: 'Outdoor AP ya Wi-Fi 6 AX3000 (574 Mbps 2.4 GHz + 2400 Mbps 5.8 GHz), IP66.',
+    price: { amount: 550000, currency: 'TZS' }, images: [] },
+  { id: 'eap650', name: 'TP LINK EAP 650', sku: '650', type: 'Product', unit: 'pcs',
+    brand: 'TP LINK OMADA', category: 'OUTDOOR ACCESS POINT',
+    description: 'Wi-Fi 6 AX3000, PoE 802.3at.',
+    price: { amount: 450000, currency: 'TZS' }, images: [] },
+];
+
+const server = createServer((req, res) => {
+  const url = new URL(req.url, 'http://fixture');
+  const tokens = (url.searchParams.get('search') ?? '').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const reply = (body) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body));
+  if (url.pathname === '/products') {
+    // A deliberately loose match: one shared word is enough to return the row.
+    return reply({ items: products.filter(item => tokens.some(token =>
+      `${item.name} ${item.sku} ${item.brand ?? ''} ${item.category ?? ''}`.toLowerCase().includes(token))) });
+  }
+  const availability = /^\/products\/([\w-]+)\/availability$/.exec(url.pathname);
+  if (availability) return reply({ available_to_sell: 5 });
+  const product = products.find(item => url.pathname === `/products/${item.id}`);
+  if (product) return reply(product);
+  res.writeHead(404).end('{}');
+});
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+
+process.env.POS_BASE_URL = `http://127.0.0.1:${server.address().port}`;
+process.env.DATABASE_URL ??= 'postgres://localhost/csbot';
+delete process.env.GEMINI_API_KEY;
+delete process.env.CSOLUTION_POS_DB_URL;
+
+const { respond } = await import('../dist/assistant.js');
+const client = { query: async () => ({ rows: [] }) };
+const conversation = (memory) => ({
+  id: '1', account_id: 'a', customer_jid: 'x@s.whatsapp.net', customer_phone: null, customer_name: null,
+  mode: 'bot', stage: 'inquiry', unread_count: 0, last_body: null, last_at: null, memory,
+});
+
+after(() => server.close());
+
+test('a named model answers with that model, not the first loose match', async () => {
+  const cudy = await respond(client, conversation({}), 'Cudy AP 1300 ina band gani?', []);
+  assert.match(cudy.body, /Cudy AP 1300 — TZS 250,000/);
+  assert.doesNotMatch(cudy.body, /COMFAST/);
+
+  const comfast = await respond(client, conversation({}), 'COMFAST CF-WA 933 ina band gani?', []);
+  assert.match(comfast.body, /COMFAST CF-WA 933 — TZS 550,000/);
+  assert.doesNotMatch(comfast.body, /Cudy AP/);
+
+  const eap = await respond(client, conversation({}), 'TP LINK EAP 650 ina band gani?', []);
+  assert.match(eap.body, /TP LINK EAP 650/);
+  assert.doesNotMatch(eap.body, /Cudy|COMFAST/);
+});
+
+test('a model query that matches nothing is not answered with a stranger', async () => {
+  const reply = await respond(client, conversation({}), 'Cudy AP 9999 ina band gani?', []);
+  assert.doesNotMatch(reply.body, /Cudy AP 1300 —|COMFAST CF-WA 933 —/);
+});
