@@ -3,6 +3,7 @@ import { overview } from './overview.js';
 import { numbers } from './numbers.js';
 import { inbox } from './inbox.js';
 import { collection, sales } from './records.js';
+import { devices } from './devices.js';
 
 const app = document.querySelector('#app');
 const nav = [
@@ -12,6 +13,7 @@ const nav = [
   ['sales', 'Sales', 'bag'],
   ['knowledge', 'Knowledge', 'book'],
   ['products', 'Products', 'box'],
+  ['devices', 'Devices', 'settings'],
 ];
 let authorized = false;
 let loading;
@@ -176,6 +178,9 @@ async function render() {
       case 'knowledge':
       case 'products':
         await collection(page, signal, item[0]);
+        break;
+      case 'devices':
+        await devices(page, signal);
         break;
       default:
         await overview(page, signal);

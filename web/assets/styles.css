@@ -1306,6 +1306,17 @@ select {
 .form-stack textarea {
   resize: vertical;
 }
+/* Two short numeric fields sit side by side instead of stacking. */
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 520px) {
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+}
 .form-stack small {
   color: var(--muted);
   font-weight: 450;
