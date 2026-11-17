@@ -69,11 +69,13 @@ test('a fitting quote names both variants, the cable and the full total', async 
   assert.match(quote, /Type A ni unaponunua kifaa kwetu, Type B ni ukiwa na kifaa chako/);
   assert.match(quote, /Kifaa chetu · Type A/);
   assert.match(quote, /Kifaa chako · Type B/);
-  // 450,000 + 120,000 and 450,000 + 80,000, then + 15 x 2,500 cable.
-  assert.match(quote, /TZS 570,000/);
-  assert.match(quote, /TZS 530,000/);
+  // Type A carries the device we supply; Type B is fitting only because the
+  // customer brings the hardware.
+  assert.match(quote, /Kifaa chetu · Type A.*TZS 120,000 → jumla na kifaa TZS 570,000/);
+  assert.match(quote, /Kifaa chako · Type B.*TZS 80,000 → jumla \(kifaa ni chako\) TZS 80,000/);
+  assert.doesNotMatch(quote, /Kifaa chako · Type B.*TZS 530,000/);
   assert.match(quote, /Waya: CAT 6 CABLE — 15 mita = TZS 37,500/);
-  assert.match(quote, /Jumla kamili na waya: .*TZS 607,500.*TZS 567,500/);
+  assert.match(quote, /Jumla kamili na waya: .*TZS 607,500.*TZS 117,500/);
 });
 
 test('a fitting question with no device explains every price-list row', async () => {

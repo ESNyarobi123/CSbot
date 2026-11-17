@@ -230,7 +230,12 @@ export async function installationOptions(product: {
         variant,
         withOurEquipment,
         fee: service.price.amount,
-        total: product.price.amount + service.price.amount,
+        // Type A covers the device the shop supplies. Type B is fitting only —
+        // the customer already owns the hardware, so adding its price would
+        // quote them for something they are not buying.
+        total: withOurEquipment === true
+          ? product.price.amount + service.price.amount
+          : service.price.amount,
         currency: service.price.currency,
       };
     })

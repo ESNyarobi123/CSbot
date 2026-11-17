@@ -305,7 +305,10 @@ export async function installationAside(
       + (cable && cable.currency === option.currency ? cable.amount : 0);
     const lines = ordered.map(option => `• ${optionLabel(option, say)} (${option.name}): `
       + `${say('installation', 'fitting')} ${money({ amount: option.fee, currency: option.currency })}`
-      + ` → ${say('jumla na kifaa', 'total with the device')} ${money({ amount: option.total, currency: option.currency })}`);
+      + ` → ${option.withOurEquipment === false
+        ? say('jumla (kifaa ni chako)', 'total (your own device)')
+        : say('jumla na kifaa', 'total with the device')} `
+      + money({ amount: option.total, currency: option.currency }));
     const cableLine = cable
       ? `• ${say('Waya', 'Cable')}: ${cable.product.name} — ${meters} ${say('mita', 'metres')} = `
         + `${money({ amount: cable.amount, currency: cable.currency })}`
