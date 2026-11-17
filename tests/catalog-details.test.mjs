@@ -142,3 +142,32 @@ test('a category request wins over a single model the model picked', async () =>
   assert.equal(outcome.memory.optionQuery, 'access point');
   assert.match(outcome.body, /TZS \d/);
 });
+
+test('a question about how far a device reaches is not an installation quote', async () => {
+  const first = await respond(client, conversation({}), 'TP LINK EAP 610', []);
+  // The bot offered installation at the end of the quote; that offer must not
+  // turn a spec question into a fee message.
+  assert.equal(first.memory.awaitingService, true);
+  const outcome = await respond(client, conversation(first.memory), 'Nahitaji kujua ina uwezo wa Kwenda umbali gani', []);
+  assert.doesNotMatch(outcome.body, /Installation/);
+  assert.doesNotMatch(outcome.body, /TZS 35,000/);
+  // Coverage comes from the catalog description, not from a guess.
+  assert.match(outcome.body, /hadi mita 200/);
+  assert.match(outcome.body, /enen?o la wazi/);
+  assert.equal(outcome.memory.awaitingService, undefined);
+});
+
+test('a yes still quotes installation after the offer', async () => {
+  const first = await respond(client, conversation({}), 'TP LINK EAP 610', []);
+  const outcome = await respond(client, conversation(first.memory), 'Ndio', []);
+  assert.match(outcome.body, /Type A/);
+  assert.match(outcome.body, /installation TZS 120,000/);
+  assert.match(outcome.body, /Jumla kamili na waya/);
+});
+
+test('a device with no stated range gets an honest answer, never a guessed number', async () => {
+  const first = await respond(client, conversation({}), 'TP LINK EAP 650', []);
+  const outcome = await respond(client, conversation(first.memory), 'Ina uwezo wa kwenda umbali gani?', []);
+  assert.doesNotMatch(outcome.body, /Installation|TZS 35,000|TZS 50,000/);
+  assert.match(outcome.body, /hayataji umbali|sitatoa namba/);
+});

@@ -387,6 +387,15 @@ const devicePhrase = /\b(access points?|switches?|routers?|gateways?|repeaters?|
 // Type B applies when the customer already owns the hardware.
 const ownEquipment = /\b(nina kifaa|kifaa changu|kifaa chetu|vifaa vyangu|vifaa vyetu|nina ap|nina access point|nina router|nina mikrotik|nimeshanunua|nilishanunua|already have|own equipment|kifaa cha mteja|vifaa vya mteja)\b/i;
 
+/**
+ * The customer asks what a device can do — how far it reaches, which band it
+ * uses, or its specs. Answered from the catalog description, never with a fee.
+ */
+export function coverageQuestion(text: string) {
+  return /\b(umbali|coverage|range|inafikia|mbali gani|eneo gani|eneo kubwa|kufikia|reach|distance|how far|ina uwezo|uwezo gani|uwanja|signal gani|specs?|specification|specifications|details?|maelezo|sifa)\b/i
+    .test(text);
+}
+
 /** "mita 300" next to a device is the distance to cover, not a cable order. */
 export function coverageMeters(text: string) {
   if (cableWords.test(text) || !metreWords.test(text)) return undefined;
@@ -426,6 +435,50 @@ export function coverageOf(text?: string | null) {
   return { low: Math.min(first, second), high: Math.max(first, second) };
 }
 
+/**
+ * What the quoted device can do, from the catalog's own description. A customer
+ * asking "ina uwezo wa kwenda umbali gani" gets the stated coverage and the
+ * specs, not an installation price. No number is invented: when the catalog is
+ * silent the bot says so.
+ */
+export async function productCapability(
+  id: string, text: string, say: (sw: string, en: string) => string,
+) {
+  let product: Awaited<ReturnType<typeof readProduct>>['product'];
+  try {
+    product = (await readProduct(id)).product;
+  } catch {
+    return '';
+  }
+  const specs = cleanSpecs(product.description);
+  const coverage = coverageOf(specs);
+  const meters = coverageMeters(text);
+  const lines: string[] = [product.name];
+  if (specs) lines.push(specs.slice(0, 700));
+  if (coverage) {
+    const span = coverage.low === coverage.high
+      ? `mita ${coverage.high}`
+      : `mita ${coverage.low}–${coverage.high}`;
+    lines.push(say(`Coverage iliyotajwa kwenye maelezo ya bidhaa: hadi ${span} (eneo la wazi).`,
+      `Coverage stated in the product description: up to ${span} (open area).`));
+  }
+  lines.push(say('Umbali halisi hutegemea ukuta, miti, na urefu wa mahali kifaa kinapowekwa.',
+    'Real-world range depends on walls, trees and how high the device is mounted.'));
+  if (meters && coverage && coverage.high < meters) {
+    lines.push(say(`Kwa mita ${meters} unazoulizia, kifaa kimoja hakiwezi kufikia maelezo yake — tunaweza kupanga AP mbili au zaidi.`,
+      `For the ${meters} m you asked about, one unit is short of its stated range — we may plan two or more APs.`));
+  }
+  if (meters && !coverage) {
+    lines.push(say(`Kwa mita ${meters}, niambie eneo ni la wazi au kuna vizuizi ili nikusaidie kuchagua idadi ya AP.`,
+      `For ${meters} m, tell me whether the area is open or obstructed so I can help size the number of APs.`));
+  }
+  if (!coverage) {
+    lines.push(say('Maelezo ya bidhaa hayataji umbali maalum, kwa hiyo sitatoa namba ya kubahatisha. Niambie ukubwa wa eneo (mita kwa mita) na kama kuna kizuizi, nitakusaidia kuchagua.',
+      'The product description does not state a distance, so I will not guess a number. Tell me the size of the area (metres) and whether it is obstructed, and I will help you choose.'));
+  }
+  return lines.join('\n');
+}
+
 /** A customer asking for other models after a short list must get more models. */
 const moreModelsWords = /\b(zingine|nyingine|mengine|mwingine|wengine|zote|others?|more|other|all|full list|orodha|mifano|models? nyingine|gani zipo|zipi)\b/i;
 
@@ -448,6 +501,16 @@ export function serviceQuestion(text: string) {
 
 /** "ndio" after the bot offered installation and cable on a quoted device. */
 export function isAffirmation(text: string) {
+  const words = text.trim().split(/\s+/);
+  const lower = text.trim().toLowerCase();
+  // "Nahitaji kujua ina uwezo wa kwenda umbali gani" starts with "nahitaji" but
+  // is a question, not a yes. Only short replies and an explicit request for
+  // fitting count, so a spec question never gets an installation quote.
+  if (words.length > 6) return false;
+  if (/^(?:nahitaji|ninahitaji|nataka|tunahitaji)\s+(?:kujua|kuelewa|kufahamu|kuona|kuangalia|kujua zaidi|taarifa)/i.test(lower)) {
+    return false;
+  }
+  if (coverageQuestion(lower)) return false;
   return /^(?:ndio|ndiyo|naam|sawa|yes|yeah|yep|sure|ok|okay|nitahitaji|nahitaji|ninahitaji|tunahitaji|weka|ongeza)\b/i
     .test(text.trim());
 }
@@ -858,6 +921,17 @@ export async function respond(
   if (decision.intent === 'human') {
     return result(say('Sawa, nimekabidhi mazungumzo haya kwa timu yetu.', 'I’ve handed this conversation to our team.'),
       { handoff: true });
+  }
+  // A question about what the quoted device can do ("ina uwezo wa kwenda umbali
+  // gani") is answered from the catalog, never with a fitting fee. This runs
+  // before the service turn so the open installation offer cannot swallow it.
+  if (!onlyDetect && memory.product && coverageQuestion(newest)
+      && !cableWords.test(newest) && !installationWords.test(newest)) {
+    const specs = await productCapability(memory.product.id, newest, say);
+    if (specs) {
+      delete memory.awaitingService;
+      return result(specs, { stage: 'quoted' });
+    }
   }
   // Fitting and cable are quoted from the service price list. Solving this before
   // the product branch keeps the bot from searching the catalog for the sentence.
