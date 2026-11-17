@@ -90,3 +90,17 @@ test('a cable order keeps its metre price', async () => {
   assert.match(outcome.body, /1,500/);
   assert.doesNotMatch(outcome.body, /hadi mita 320/);
 });
+
+test('a spec question about a new model is not answered with the last device', async () => {
+  const first = await respond(client, conversation({}), 'TP LINK EAP 610', []);
+  assert.equal(first.memory.product?.name, 'TP LINK EAP 610');
+  const outcome = await respond(client, conversation(first.memory), 'Cudy AP 3000 ina ports ngapi?', []);
+  assert.match(outcome.body, /^Cudy AP 3000 — TZS 300,000/);
+  assert.match(outcome.body, /Outdoor AX3000 AP/);
+  assert.doesNotMatch(outcome.body, /EAP 610|hadi mita 200/);
+  assert.equal(outcome.memory.product?.name, 'Cudy AP 3000');
+  // The follow-up still belongs to the device just discussed.
+  const follow = await respond(client, conversation(outcome.memory), 'Ina uwezo wa kwenda umbali gani?', []);
+  assert.match(follow.body, /^Cudy AP 3000/);
+  assert.doesNotMatch(follow.body, /EAP 610/);
+});

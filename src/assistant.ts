@@ -1026,18 +1026,18 @@ export async function respond(
   // before the service turn so the open installation offer cannot swallow it.
   if (!onlyDetect && coverageQuestion(newest)
       && !cableWords.test(newest) && !installationWords.test(newest)) {
-    // Resolve the device: the one already quoted, or the model named right here.
+    // Resolve the device: a model named right here wins over the one quoted
+    // earlier, so "EAP 650 ina uwezo gani?" is never answered with the last
+    // device the customer discussed.
     let target = memory.product?.id;
-    if (!target) {
-      const model = modelQuery(newest);
-      // limit 1 returned whichever row the catalog listed first, so "Cudy AP 3000"
-      // was answered with the COMFAST it shares the AX3000 name with.
-      const found = model ? await bestMatch(model) : undefined;
-      if (found) {
-        target = found.id;
-        memory.product = { id: found.id, name: found.name };
-        memory.quoteFor = 'product';
-      }
+    const model = modelQuery(newest);
+    // limit 1 returned whichever row the catalog listed first, so "Cudy AP 3000"
+    // was answered with the COMFAST it shares the AX3000 name with.
+    const found = model ? await bestMatch(model) : undefined;
+    if (found) {
+      target = found.id;
+      memory.product = { id: found.id, name: found.name };
+      memory.quoteFor = 'product';
     }
     if (target) {
       const specs = await productCapability(target, newest, say);
