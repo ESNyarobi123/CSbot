@@ -29,6 +29,8 @@ export interface Outcome {
   body: string;
   stage?: Stage;
   handoff?: boolean;
+  /** Tell the admins without taking the chat away from the bot. */
+  notify?: boolean;
   imageUrl?: string;
   memory: Conversation['memory'];
 }
@@ -639,7 +641,7 @@ export async function respond(
         guidance.source_url ?? '',
         say('Kama hatua hizo hazijasaidia, niambie "nataka mhudumu" nikuunganishe na timu.',
           'If those steps do not help, say "I need a human" and I will bring in the team.'),
-      ].filter(Boolean).join('\n\n'));
+      ].filter(Boolean).join('\n\n'), { notify: true });
     }
     delete memory.support;
     return result(say(`Asante. Nimepokea: ${facts}. Nimempa timu ya msaada taarifa hizi; watakagua akaunti yako na kukurudia muda mfupi.`,

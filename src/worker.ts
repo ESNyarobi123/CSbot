@@ -68,10 +68,11 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         const sale = await currentSale(client, conversationId);
         await advanceSale(client, updated, sale, outcome.stage, 'customer_message');
       }
-      else if (canReply && outcome.handoff) {
+      else if (canReply && (outcome.handoff || outcome.notify)) {
         const closedOrder = conversation.stage === 'completed' || conversation.stage === 'paid';
         const memory = closedOrder ? withoutQuote(updated.memory) : updated.memory;
-        await alertAdmins(client, { ...updated, memory }, 'Mazungumzo yanahitaji mhudumu');
+        await alertAdmins(client, { ...updated, memory },
+          outcome.handoff ? 'Mazungumzo yanahitaji mhudumu' : 'Tatizo jipya la mfumo');
       }
       await client.query("UPDATE messages SET processing='done' WHERE id=ANY($1::bigint[])", [ids]);
     });
