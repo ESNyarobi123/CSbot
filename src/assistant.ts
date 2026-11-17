@@ -37,8 +37,10 @@ export interface Outcome {
 
 const ai = config.GEMINI_API_KEY ? new GoogleGenAI({
   apiKey: config.GEMINI_API_KEY,
-  // A customer waits for this call, so fail fast and let the next model answer.
-  httpOptions: { timeout: 6000 },
+  // The Gemini API rejects a manual deadline under 10s (400 INVALID_ARGUMENT),
+  // so a shorter client timeout silently disabled the whole AI path and every
+  // reply fell back to local rules. Keep this at or above the API minimum.
+  httpOptions: { timeout: 10000 },
 }) : undefined;
 
 const packageWords = /\b(package|packages|kifurushi|vifurushi|plan|plans|subscription|usajili|bundle)\b/i;
@@ -118,7 +120,7 @@ function smallTalkReply(text: string, say: (sw: string, en: string) => string) {
     return say('Vizuri! Karibu — niambie unahitaji nini.',
       'Good to hear! Welcome — tell me what you need.');
   }
-  if (/\b(mambo|vipi|vpp|niaje|sup|yo)\b/.test(lower)) {
+  if (/\b(mambo|vipi|vpp|niaje|sup|yo|hi|hey|hello)\b/.test(lower)) {
     return say('Mambo! Poa sana, karibu. Niambie — nikusaidie nini leo?',
       'Hey! All good here. Tell me — what can I help you with today?');
   }
@@ -257,9 +259,11 @@ async function decide(text: string, memory: Conversation['memory'], history: Cha
   const models = [...new Set([config.GEMINI_MODEL, config.GEMINI_FALLBACK_MODEL])];
   // A customer is waiting. Free Gemini tiers answer 503 during demand spikes, so
   // stop spending the reply budget once the deadline is close and use local rules.
-  const deadline = Date.now() + 9000;
+  // The 10s client timeout is the API minimum, so the budget must clear one full
+  // attempt; the second model only runs when the first failed fast.
+  const deadline = Date.now() + 14000;
   for (const model of models) {
-    if (Date.now() > deadline - 3500) break;
+    if (Date.now() > deadline - 4500) break;
     try {
       const generated = await ai.models.generateContent({
         model,
@@ -290,8 +294,12 @@ Never give prices, stock levels, payment details, links absent from approved kno
       });
       const value = decisionSchema.parse(JSON.parse(generated.text ?? ''));
       return resolveDecision(text, memory, value);
-    } catch {
-      log.warn(`Gemini model ${model} unavailable or returned invalid output; trying the next model`);
+    } catch (error) {
+      // A rejected request (bad schema, wrong timeout) is not a demand spike; it
+      // would otherwise look identical to a 503 in the logs and stay unnoticed.
+      log.warn({ model, code: (error as { status?: string })?.status,
+        error: String((error as Error)?.message ?? error).slice(0, 300) },
+      `Gemini model ${model} unavailable or returned invalid output; trying the next model`);
     }
   }
   log.warn('Every Gemini model failed; using local intent detection');
