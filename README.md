@@ -210,3 +210,20 @@ CSBOT_HTTP_PORT=18080 docker compose -p csbot-test -f compose.yaml -f tests/comp
 node tests/smoke.mjs
 docker compose -p csbot-test -f compose.yaml -f tests/compose.yaml down --volumes
 ```
+
+## Production (VPS)
+
+CSbot inaendesha kwenye VPS ile ile ya CSolution (`139.84.245.9`) na inafikika kwa **https://bot.yunigo.online**. Caddy iliyopo kwenye host inaelekeza jina hilo kwenye `127.0.0.1:8080`, hivyo API na dashboard zinatumia HTTPS moja.
+
+```sh
+ssh root@139.84.245.9
+cd /opt/csbot
+./scripts/deploy.sh
+```
+
+`deploy.sh` hufanya `git pull`, kujenga image ya `csbot-backend:local`, kuendesha migrations kisha kuwasha upya `api`, `worker` na `whatsapp-gateway`. Volume ya PostgreSQL haiguzwi, kwa hiyo chats na namba iliyounganishwa zinaendelea kuwepo.
+
+- `.env` ya production iko `/opt/csbot/.env` (haipo kwenye git). Token za dashboard: `grep '^ADMIN_API_TOKEN=' /opt/csbot/.env`.
+- `compose.prod.yaml` huweka memory limits kwa sababu VPS ina RAM ndogo na inatumiwa pia na CSolution.
+- Catalog: `POS_BASE_URL=https://csolution.yunigo.online/api/csbot/` na `POS_API_TOKEN` ni `CSBOT_CATALOG_TOKEN` ile ile ya `/opt/csolution/.env`.
+- Picha za bidhaa zinapitia `/v1/catalog/:id/image`; CSbot huzihifadhi kwa cache ya 16 MB na kuzirudisha kama `cspos-asset:` kwa WhatsApp.
