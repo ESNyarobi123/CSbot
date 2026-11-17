@@ -55,18 +55,18 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       [conversationId, new Date(Math.max(...pending.map(message => message.occurred_at.getTime())))])).rows.reverse();
       const newest = pending.map(message => message.body.slice(0, 1200)).join('\n').slice(-4500);
       // A chat parked in human mode answers nothing, forever. If no agent has
-      // written for the idle window (and the customer just did), give it back to
-      // the bot instead of leaving a paying customer on read.
+      // written for the idle window, give it back to the bot instead of leaving
+      // a paying customer on read. The pending messages were flagged
+      // auto_reply=false by the takeover, so re-arm them here.
       let mode = conversation.mode;
       if (mode === 'human' && config.HANDOFF_IDLE_MINUTES > 0) {
-        const lastAdmin = await row<{ at: Date | null }>(client,
-          "SELECT max(occurred_at) AS at FROM messages WHERE conversation_id=$1 AND actor='admin'", [conversationId]);
-        const lastAdminAt = lastAdmin?.at ? new Date(lastAdmin.at).getTime() : 0;
-        const newestAt = Math.max(...pending.map(message => message.occurred_at.getTime()));
-        const idle = config.HANDOFF_IDLE_MINUTES * 60_000;
-        if (newestAt - lastAdminAt >= idle && Date.now() - lastAdminAt >= idle) {
+        const since = conversation.human_since ? new Date(conversation.human_since).getTime() : 0;
+        if (!since || Date.now() - since >= config.HANDOFF_IDLE_MINUTES * 60_000) {
           await setMode(client, conversationId, 'bot');
+          await client.query(`UPDATE messages SET auto_reply=true
+            WHERE conversation_id=$1 AND processing='pending' AND direction='inbound'`, [conversationId]);
           mode = 'bot';
+          for (const message of pending) message.auto_reply = true;
           log.info({ conversation: conversationId }, 'Idle handoff released back to the bot');
         }
       }

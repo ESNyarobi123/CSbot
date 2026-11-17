@@ -12,6 +12,7 @@ export interface Conversation {
   customer_phone: string | null;
   customer_name: string | null;
   mode: 'bot' | 'human';
+  human_since: Date | null;
   stage: Stage;
   unread_count: number;
   last_body: string | null;
@@ -105,13 +106,22 @@ export async function ingest(message: Incoming) {
         unread_count=unread_count+CASE WHEN $4 THEN 1 ELSE 0 END WHERE id=$1`,
       [conversation.id, message.body, message.occurredAt, !fromMe]);
     }
-    if (fromMe && !historical) await setMode(client, conversation.id, 'human');
+    if (fromMe && !historical) {
+      // A message sent from another linked device (phone, or an automated
+      // notifier sharing the number) arrives as fromMe. Only treat it as a
+      // human takeover when the customer actually just wrote, so scheduled
+      // billing/withdrawal notices cannot silence the bot for hours.
+      const answering = await row(client, `SELECT 1 FROM messages WHERE conversation_id=$1 AND direction='inbound'
+        AND occurred_at > $2::timestamptz - interval '3 hours' LIMIT 1`, [conversation.id, message.occurredAt]);
+      if (conversation.mode === 'human' || answering) await setMode(client, conversation.id, 'human');
+    }
     return conversation.id;
   });
 }
 
 export async function setMode(client: PoolClient, id: string, mode: Conversation['mode']) {
-  await client.query('UPDATE conversations SET mode=$2, updated_at=now() WHERE id=$1', [id, mode]);
+  await client.query(`UPDATE conversations SET mode=$2,
+    human_since=CASE WHEN $2='human' THEN now() ELSE NULL END, updated_at=now() WHERE id=$1`, [id, mode]);
   if (mode === 'human') {
     await client.query(`UPDATE outbound SET state='canceled',reason='human_takeover'
       WHERE conversation_id=$1 AND origin IN ('bot','handoff') AND state IN ('queued','sending')`, [id]);
