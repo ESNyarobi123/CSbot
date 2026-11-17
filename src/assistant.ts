@@ -45,6 +45,9 @@ const ai = config.GEMINI_API_KEY ? new GoogleGenAI({
 
 const packageWords = /\b(package|packages|kifurushi|vifurushi|plan|plans|subscription|usajili|bundle)\b/i;
 const purchaseWords = /\b(bei|price|cost|stock|picha|photo|image|availability|ipo|zipo|inapatikana|available|nunua|order|buy)\b/i;
+// "Ofisi yenu inapatikana wapi" uses the same verb as "EAP 650 inapatikana?".
+// Only an explicit price, stock or photo word makes a message a product enquiry.
+const strongPurchaseWords = /\b(bei|price|cost|stock|picha|photo|image|nunua|order|buy|available)\b/i;
 const imageWords = /\b(picha|photo|image)\b/i;
 const modelName = /\b(?:cudy|eap|omada|mikrotik|ruijie|reyee|cambium|unifi|router|switch|access point|gateway|sku)\b|\b(?:eap|er|wr|rb)[- ]?\d+/i;
 const followUp = /\b(ile|hiyo|yake|that one|it)\b/i;
@@ -107,7 +110,7 @@ export function smallTalkOnly(text: string) {
 }
 
 /** Where the business is and when it is reachable — only from approved knowledge. */
-const placeQuestion = /\b(unaishi|mnaishi|mko|mupo|mnapatikana|unapatikana|ofisi|office|mahali|address|anwani|ramani|location|mnafanya kazi|saa za kazi|opening|hours|wikendi|weekend|jumamosi|jumapili|mko wapi|upo wapi)\b/i;
+const placeQuestion = /\b(unaishi|mnaishi|mko|mupo|mnapatikana|unapatikana|ofisi\w*|office|mahali|address|anwani|ramani|location|mnafanya kazi|saa za kazi|opening|hours|wikendi|weekend|jumamosi|jumapili|mko wapi|upo wapi)\b/i;
 
 /** Answer in the same register the person used, then leave the door open. */function smallTalkReply(text: string, say: (sw: string, en: string) => string) {
   const lower = text.toLowerCase();
@@ -702,7 +705,7 @@ export function relevantKnowledge(text: string, entries: Knowledge[], support = 
   let best: { entry: Knowledge; score: number } | undefined;
   for (const entry of entries) {
     if (entry.id === 'csolution') continue;
-    const title = entry.title.toLowerCase();
+    const title = (entry.title ?? '').toLowerCase();
     const body = `${title} ${entry.content}`.toLowerCase();
     let score = [...words].filter(word => body.includes(word)).length;
     // A matching system says who the answer is for, not which answer it is: every
@@ -868,7 +871,8 @@ export async function respond(
   // Someone saying "mambo" is a person, not a lead yet. Answer the greeting in
   // kind and let their next message show whether they are a customer at all.
   // Skipped while a question is on the table ("ndio", "sawa" to a quote).
-  if (!onlyDetect && placeQuestion.test(newest) && !purchaseWords.test(newest) && !memory.support) {
+  if (!onlyDetect && placeQuestion.test(newest) && !strongPurchaseWords.test(newest)
+      && !modelName.test(newest) && !memory.support) {
     // Gemini invented "Nairobi" for an office that is in Sinza, Dar es Salaam.
     // Location and hours are facts, so they come from knowledge, not generation.
     const place = await row<{ content: string }>(client, `SELECT content FROM knowledge

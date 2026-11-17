@@ -62,3 +62,21 @@ test('location and hours come from knowledge, never from generation', async () =
   const hours = await respond(withKnowledge, chat(), 'mnafanya kazi wikiendi?', []);
   assert.match(hours.body, /Sinza/);
 });
+
+test('"inapatikana wapi" asks where the office is, not whether a product is in stock', async () => {
+  const rows = [{ content: 'Ofisi iko Sinza Makaburini, Dar es Salaam.' }];
+  const withKnowledge = { query: async () => ({ rows }) };
+  for (const text of ['Ofisi yenu inapatikana wapi', 'Ofisi yenu inapatikana wapi?',
+    'ofisini kwenu ni wapi', 'je kuna ofisi sehemu nyingine', 'mko wapi']) {
+    const reply = await respond(withKnowledge, chat(), text, []);
+    assert.match(reply.body, /Sinza/, text);
+    assert.doesNotMatch(reply.body, /Sijaipata|POS/i, text);
+  }
+});
+
+test('a product availability question still goes to the catalog', async () => {
+  const rows = [{ content: 'Ofisi iko Sinza Makaburini, Dar es Salaam.' }];
+  const withKnowledge = { query: async () => ({ rows }) };
+  const reply = await respond(withKnowledge, chat(), 'EAP 650 inapatikana?', []);
+  assert.doesNotMatch(reply.body, /Sinza/);
+});
