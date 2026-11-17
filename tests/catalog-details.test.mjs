@@ -171,3 +171,11 @@ test('a device with no stated range gets an honest answer, never a guessed numbe
   assert.doesNotMatch(outcome.body, /Installation|TZS 35,000|TZS 50,000/);
   assert.match(outcome.body, /hayataji umbali|sitatoa namba/);
 });
+
+test('a coverage question still shows the price and stock of the device', async () => {
+  const first = await respond(client, conversation({}), 'TP LINK EAP 610', []);
+  const outcome = await respond(client, conversation(first.memory), 'Ina uwezo wa kwenda umbali gani?', []);
+  assert.match(outcome.body, /TP LINK EAP 610 — TZS 250,000/);
+  assert.match(outcome.body, /Ipo stock/);
+  assert.match(outcome.body, /hadi mita 200/);
+});

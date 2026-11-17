@@ -448,15 +448,21 @@ export async function productCapability(
   id: string, text: string, say: (sw: string, en: string) => string,
 ) {
   let product: Awaited<ReturnType<typeof readProduct>>['product'];
+  let stock: Awaited<ReturnType<typeof readProduct>>['stock'];
   try {
-    product = (await readProduct(id)).product;
+    ({ product, stock } = await readProduct(id));
   } catch {
     return '';
   }
   const specs = cleanSpecs(product.description);
   const coverage = coverageOf(specs);
   const meters = coverageMeters(text);
-  const lines: string[] = [product.name];
+  const inStock = stock.available ?? stock.available_to_sell > 0;
+  // Price and stock travel with the specs: the customer is still shopping, and a
+  // second round trip to learn the figure reads like the bot forgot the device.
+  const lines: string[] = [`${product.name} — ${money(product.price)}`,
+    inStock ? say('Ipo stock kwa sasa.', 'Currently in stock.')
+      : say('Imeisha stock kwa sasa.', 'Currently out of stock.')];
   if (specs) lines.push(specs.slice(0, 700));
   if (coverage) {
     const span = coverage.low === coverage.high
@@ -476,8 +482,8 @@ export async function productCapability(
       `For ${meters} m, tell me whether the area is open or obstructed so I can help size the number of APs.`));
   }
   if (!coverage) {
-    lines.push(say('Maelezo ya bidhaa hayataji umbali maalum, kwa hiyo sitatoa namba ya kubahatisha. Niambie ukubwa wa eneo (mita kwa mita) na kama kuna kizuizi, nitakusaidia kuchagua.',
-      'The product description does not state a distance, so I will not guess a number. Tell me the size of the area (metres) and whether it is obstructed, and I will help you choose.'));
+    lines.push(say('Maelezo ya bidhaa hayataji umbali maalum, kwa hiyo sitatoa namba ya kubahatisha. Niambie ukubwa wa eneo (mita kwa mita) na kama kuna kizuizi, nitakusaidia kuchagua; kama unahitaji vipimo rasmi vya mtengenezaji, nitakuunganisha na timu.',
+      'The product description does not state a distance, so I will not guess a number. Tell me the size of the area (metres) and whether it is obstructed and I will help you choose; if you need the manufacturer’s official figures I can bring in the team.'));
   }
   return lines.join('\n');
 }
@@ -929,12 +935,25 @@ export async function respond(
   // A question about what the quoted device can do ("ina uwezo wa kwenda umbali
   // gani") is answered from the catalog, never with a fitting fee. This runs
   // before the service turn so the open installation offer cannot swallow it.
-  if (!onlyDetect && memory.product && coverageQuestion(newest)
+  if (!onlyDetect && coverageQuestion(newest)
       && !cableWords.test(newest) && !installationWords.test(newest)) {
-    const specs = await productCapability(memory.product.id, newest, say);
-    if (specs) {
-      delete memory.awaitingService;
-      return result(specs, { stage: 'quoted' });
+    // Resolve the device: the one already quoted, or the model named right here.
+    let target = memory.product?.id;
+    if (!target) {
+      const model = modelQuery(newest);
+      const found = model ? (await searchProducts(model, 1).catch(() => undefined))?.items[0] : undefined;
+      if (found) {
+        target = found.id;
+        memory.product = { id: found.id, name: found.name };
+        memory.quoteFor = 'product';
+      }
+    }
+    if (target) {
+      const specs = await productCapability(target, newest, say);
+      if (specs) {
+        delete memory.awaitingService;
+        return result(specs, { stage: 'quoted' });
+      }
     }
   }
   // Fitting and cable are quoted from the service price list. Solving this before
