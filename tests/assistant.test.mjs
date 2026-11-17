@@ -46,3 +46,14 @@ test('WoteFy prices are in major units and LubFy prices are in minor units', () 
   assert.equal(lubfy.length, 1);
   assert.deepEqual(wotefy[0].price, lubfy[0].price);
 });
+
+test('a bare model is a price request, not small talk', async () => {
+  const { isModelReference, modelQuery } = await import('../dist/pos.js');
+  // Customers open with the model only: "AP 650", "eap 650 bei yake".
+  assert.equal(resolveDecision('EAP 650', {}).intent, 'product');
+  assert.equal(resolveDecision('ap 650 bei yake', {}).intent, 'product');
+  assert.equal(isModelReference('AP 650'), true);
+  assert.equal(isModelReference('Habari, mpo?'), false);
+  // The model is read from anywhere in a long sentence, not just the last words.
+  assert.equal(modelQuery('bei ya kifaa cha Tplink omada ap 650 pamoja na mfumo'), 'ap 650');
+});

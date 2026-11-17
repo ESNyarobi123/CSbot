@@ -3,7 +3,7 @@ import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { config } from './config.js';
 import { log, row } from './db.js';
-import { catalog, isModelReference, modelQuery, money, planKind, readPlans, readProduct, searchProducts, systemName } from './pos.js';
+import { catalog, installationOptions, isModelReference, modelQuery, money, planKind, readPlans, readProduct, searchProducts, serviceCatalog, systemName } from './pos.js';
 import type { Conversation, Stage } from './store.js';
 
 export interface ChatLine {
@@ -209,6 +209,56 @@ export async function nearbyModels(query: string) {
 
 const priceWords = /\b(bei|price|cost|nauli|shilingi|tsh|malipo)\b/i;
 
+// Installation is a separate job, so "bei ya EAP 650 na installation" needs both figures.
+const installationWords = /\b(installation|instalation|installationi|install|kufunga|kufungwa|kufungia|kusanikisha|kusanikua|kusanikwa|kuweka mfumo|kuniwekea|kutuwekea|kukuwekea|setup|kuset|ufungaji|jumla)\b/i;
+// Type B applies when the customer already owns the hardware.
+const ownEquipment = /\b(nina kifaa|kifaa changu|kifaa chetu|vifaa vyangu|vifaa vyetu|nina ap|nina access point|nina router|nina mikrotik|nimeshanunua|nilishanunua|already have|own equipment|kifaa cha mteja|vifaa vya mteja)\b/i;
+
+// Only fitted network equipment carries an installation fee; cables and adapters do not.
+const installedEquipment = /\b(access point|gateway|mikrotik|router|hap|hex|eap|omada|ruijie|reyee|unifi|cambium)\b/i;
+
+/**
+ * Quote the installation options that go with a device, with the combined total.
+ * Both variants are shown because the fee depends on whether the shop or the
+ * customer supplies the hardware, and the customer is the one who knows that.
+ */
+export async function installationAside(
+  product: { name: string; category?: string | null; type?: string; price: { amount: number; currency: string } },
+  text: string, say: (sw: string, en: string) => string,
+) {
+  if (product.type === 'Service' || !installationWords.test(text)) return '';
+  if (!installedEquipment.test(`${product.name} ${product.category ?? ''}`)) return '';
+  try {
+    const { equipment, options } = await installationOptions(product);
+    if (!options.length) return '';
+    const own = ownEquipment.test(text);
+    const ordered = own ? [...options].reverse() : options;
+    const lines = ordered.map(option => `• ${say(option.withOurEquipment ? 'Kifaa chetu' : 'Kifaa chako',
+      option.withOurEquipment ? 'Our device' : 'Your device')} (${option.name}): `
+      + `${money({ amount: option.fee, currency: option.currency })} → ${say('jumla', 'total')} `
+      + money({ amount: option.total, currency: option.currency }));
+    return '\n\n' + say(`Installation (${equipment}) inalipwa kando. Bei ya jumla na kifaa:`,
+      `Installation (${equipment}) is charged separately. Total with the device:`) + '\n' + lines.join('\n');
+  } catch {
+    return '';
+  }
+}
+
+/** A question about installation with no device named still deserves the fees. */
+export async function installationOnlyAside(text: string, say: (sw: string, en: string) => string) {
+  if (!installationWords.test(text)) return '';
+  try {
+    const services = await serviceCatalog('installation');
+    const priced = services.filter(service => service.price.amount > 0);
+    if (!priced.length) return '';
+    const lines = priced.map(service => `• ${service.name}: ${money(service.price)}`);
+    return [say('Installation inalipwa kwa kazi, sio kwa kifaa. Bei zilizopo:',
+      'Installation is charged per job, not per device. Current fees:'), ...lines].join('\n');
+  } catch {
+    return '';
+  }
+}
+
 /**
  * A single message often asks for a device price and a system price together,
  * e.g. "bei ya LubFy na bei ya EAP 605". The product branch owns that reply, so
@@ -338,6 +388,11 @@ export async function respond(
     }
   }
   if (decision.intent === 'product') {
+    // Fees only make sense with a device price; when no model is named, list them alone.
+    if (!memory.product && !modelQuery(newest) && !imageWords.test(newest)) {
+      const fees = await installationOnlyAside(newest, say);
+      if (fees) return result(fees);
+    }
     if (!decision.query && !memory.product) {
       return result(say('Unaulizia bidhaa gani? Tuma jina, model au SKU nikague bei na stock.',
         'Which product? Send its name, model, or SKU so I can check price and stock.'));
@@ -405,6 +460,7 @@ export async function respond(
         + (product.description ? '\n' + product.description.slice(0, 240) : '') + '\n' + availability
         + (decision.sendImage && !imageUrl
           ? '\n' + say('Picha yake haipatikani kwa sasa.', 'The product photo is currently unavailable.') : '')
+        + await installationAside(product, newest, say)
         + await planAside(newest, memory, say),
       { stage: 'quoted', imageUrl });
     } catch {

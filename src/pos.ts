@@ -151,6 +151,47 @@ export async function catalog(search: string, limit = 60) {
   return { items: result.items.map(proxyAssets), source: 'pos' as const };
 }
 
+/** Priced work such as installation, sold per job rather than per unit. */
+export async function serviceCatalog(term: string) {
+  if (!shop && !config.POS_BASE_URL) return [] as Product[];
+  const items = shop ? await listShopCatalog(term, 20) : (await request('products', productListSchema,
+    { search: term, limit: '20' })).items.map(proxyAssets);
+  return items.filter(item => item.type === 'Service');
+}
+
+export type InstallationOption = {
+  name: string;
+  /** True when the work covers hardware the shop supplies. */
+  withOurEquipment: boolean;
+  fee: number;
+  total: number;
+  currency: string;
+};
+
+/**
+ * Installation prices for a device. MikroTik routers and gateways use the GM
+ * rate; access points use AP. Both variants are returned because the fee differs
+ * depending on whether the customer buys the device from the shop or owns it.
+ */
+export async function installationOptions(product: {
+  name: string; category?: string | null; price: { amount: number; currency: string };
+}): Promise<{ equipment: 'AP' | 'GM'; options: InstallationOption[] }> {
+  const equipment = `${product.name} ${product.category ?? ''}`;
+  const kind = /\b(mikrotik|gateway|router|hap|hex)\b/i.test(equipment) ? 'GM' : 'AP';
+  const services = await serviceCatalog(kind === 'GM' ? 'GM installation' : 'AP installation');
+  const options = services
+    .filter(service => service.name.toUpperCase().startsWith(kind))
+    .map(service => ({
+      name: service.name,
+      withOurEquipment: /\bTYPE A\b|\bA$/i.test(service.name.replace(kind, '')),
+      fee: service.price.amount,
+      total: product.price.amount + service.price.amount,
+      currency: service.price.currency,
+    }))
+    .sort((a, b) => a.fee - b.fee);
+  return { equipment: kind, options };
+}
+
 /** Cover photo reference for the dashboard, without paying for a stock lookup. */
 export async function productImageRef(id: string) {
   if (shop) return (await readShopProduct(id)).product.images[0]?.url;
