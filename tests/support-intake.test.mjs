@@ -83,3 +83,26 @@ test('the support answer is the troubleshooting entry, not the overview', () => 
   const device = relevantKnowledge('kifaa kiko offline haionekani omada', entries, true);
   assert.equal(device.id, 'wotefy-device-offline');
 });
+
+test('respond asks for the system before diagnosing, then uses the knowledge', async () => {
+  const { respond } = await import('../dist/assistant.js');
+  const entries = [
+    { id: 'wotefy-portal-troubleshoot', system: 'wotefy', title: 'WoteFy — portal haifunguki / sign-in haitokei',
+      content: 'Hakikisha SSID ni open, jaribu portal moja kwa moja, ondoa probe domains kwenye pre-auth.', source_url: null },
+  ];
+  const client = { query: async () => ({ rows: entries }) };
+  const conversation = { id: 1, stage: 'inquiry', memory: {} };
+
+  const first = await respond(client, conversation, 'Portal haifunguki kwenye simu', []);
+  assert.match(first.body, /WoteFy au LubFy/);
+  assert.equal(first.notify, undefined);
+
+  const second = await respond(client, { ...conversation, memory: first.memory }, 'WoteFy', []);
+  assert.match(second.body, /email/i);
+
+  const third = await respond(client, { ...conversation, memory: second.memory }, 'asanileo@gmail.com', []);
+  assert.match(third.body, /SSID ni open/);
+  assert.equal(third.notify, true);
+  assert.equal(third.handoff, undefined);
+  assert.equal(third.memory.lastSupport.email, 'asanileo@gmail.com');
+});
