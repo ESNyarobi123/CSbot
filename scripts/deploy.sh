@@ -16,7 +16,8 @@ echo "==> Pulling latest changes"
 git pull --ff-only
 
 echo "==> Building images"
-"${compose[@]}" build api
+# Every service reuses the migrate image, which is the only one with a build block.
+"${compose[@]}" build migrate
 
 echo "==> Starting stack"
 "${compose[@]}" up -d
