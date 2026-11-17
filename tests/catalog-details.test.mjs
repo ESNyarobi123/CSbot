@@ -172,6 +172,27 @@ test('a device with no stated range gets an honest answer, never a guessed numbe
   assert.match(outcome.body, /hayataji umbali|sitatoa namba/);
 });
 
+test('a plain details request lists what the catalog holds, not a range lecture', async () => {
+  const first = await respond(client, conversation({}), 'TP LINK EAP 650', []);
+  const outcome = await respond(client, conversation(first.memory),
+    'Niambie details zote za kifaa hiki', []);
+  // Brand and category are recorded, so they must appear.
+  assert.match(outcome.body, /Brand: TP LINK/);
+  assert.match(outcome.body, /ACCESS POINT/);
+  assert.match(outcome.body, /TZS 450,000/);
+  // Nothing was asked about distance, so no wall-and-trees explanation.
+  assert.doesNotMatch(outcome.body, /ukuta|miti|sitatoa namba/);
+});
+
+test('a product with no description says so instead of inventing specs', async () => {
+  products.push({ id: 'ap-empty', name: 'TP LINK EAP 770', sku: 'EAP770', type: 'Product', unit: 'pcs',
+    brand: 'TP LINK', category: 'OUTDOOR ACCESS POINT', description: '',
+    price: { amount: 500000, currency: 'TZS' }, images: [] });
+  const outcome = await respond(client, conversation({}), 'TP LINK EAP 770 ina band gani na ports ngapi?', []);
+  assert.doesNotMatch(outcome.body, /\b(2\.4|5\s?GHz|Wi-Fi 6|802\.11)\b/i);
+  assert.match(outcome.body, /hayajaingizwa|kuthibitishie/i);
+});
+
 test('a coverage question still shows the price and stock of the device', async () => {
   const first = await respond(client, conversation({}), 'TP LINK EAP 610', []);
   const outcome = await respond(client, conversation(first.memory), 'Ina uwezo wa kwenda umbali gani?', []);

@@ -390,12 +390,15 @@ const devicePhrase = /\b(access points?|switches?|routers?|gateways?|repeaters?|
 // Type B applies when the customer already owns the hardware.
 const ownEquipment = /\b(nina kifaa|kifaa changu|kifaa chetu|vifaa vyangu|vifaa vyetu|nina ap|nina access point|nina router|nina mikrotik|nimeshanunua|nilishanunua|already have|own equipment|kifaa cha mteja|vifaa vya mteja)\b/i;
 
+/** The customer asks how far a device reaches, not what it costs. */
+const rangeWords = /\b(umbali|mbali gani|coverage|range|inafikia|kufikia|reach|distance|how far|radius|eneo gani|eneo kubwa)\b/i;
+
 /**
  * The customer asks what a device can do — how far it reaches, which band it
  * uses, or its specs. Answered from the catalog description, never with a fee.
  */
 export function coverageQuestion(text: string) {
-  return /\b(umbali|coverage|range|inafikia|mbali gani|eneo gani|eneo kubwa|kufikia|reach|distance|how far|ina uwezo|uwezo gani|uwanja|signal gani|specs?|specification|specifications|details?|maelezo|sifa)\b/i
+  return /\b(umbali|coverage|range|inafikia|mbali gani|eneo gani|eneo kubwa|kufikia|reach|distance|how far|ina uwezo|uwezo gani|uwanja|signal gani|specs?|specification|specifications|details?|maelezo|sifa|band|bands|ports?|ghz|frequency|antenna|poe|speed|mbps|concurrent|wateja wangapi|ngapi)\b/i
     .test(text);
 }
 
@@ -457,33 +460,50 @@ export async function productCapability(
   const specs = cleanSpecs(product.description);
   const coverage = coverageOf(specs);
   const meters = coverageMeters(text);
+  // "Details zake" asks for everything the catalog holds; only a question about
+  // distance needs the range explanation. Answering a plain details request with
+  // a paragraph about walls reads like the bot never looked at the product.
+  const rangeAsked = rangeWords.test(text) || meters !== undefined;
   const inStock = stock.available ?? stock.available_to_sell > 0;
   // Price and stock travel with the specs: the customer is still shopping, and a
   // second round trip to learn the figure reads like the bot forgot the device.
-  const lines: string[] = [`${product.name} — ${money(product.price)}`,
-    inStock ? say('Ipo stock kwa sasa.', 'Currently in stock.')
-      : say('Imeisha stock kwa sasa.', 'Currently out of stock.')];
+  const lines: string[] = [`${product.name} — ${money(product.price)}`];
+  const facts = [product.brand && `Brand: ${product.brand}`,
+    product.category && `Category: ${product.category}`,
+    product.unit && product.unit.toLowerCase() !== 'pcs' && product.unit !== 'Job' ? `Unit: ${product.unit}` : '',
+    product.warranty ? `Warranty: ${product.warranty} month${product.warranty === 1 ? '' : 's'}` : '']
+    .filter(Boolean).join(' · ');
+  if (facts) lines.push(facts);
+  lines.push(inStock ? say('Ipo stock kwa sasa.', 'Currently in stock.')
+    : say('Imeisha stock kwa sasa.', 'Currently out of stock.'));
   if (specs) lines.push(specs.slice(0, 700));
-  if (coverage) {
-    const span = coverage.low === coverage.high
-      ? `mita ${coverage.high}`
-      : `mita ${coverage.low}–${coverage.high}`;
-    lines.push(say(`Coverage iliyotajwa kwenye maelezo ya bidhaa: hadi ${span} (eneo la wazi).`,
-      `Coverage stated in the product description: up to ${span} (open area).`));
-  }
-  lines.push(say('Umbali halisi hutegemea ukuta, miti, na urefu wa mahali kifaa kinapowekwa.',
-    'Real-world range depends on walls, trees and how high the device is mounted.'));
-  if (meters && coverage && coverage.high < meters) {
-    lines.push(say(`Kwa mita ${meters} unazoulizia, kifaa kimoja hakiwezi kufikia maelezo yake — tunaweza kupanga AP mbili au zaidi.`,
-      `For the ${meters} m you asked about, one unit is short of its stated range — we may plan two or more APs.`));
-  }
-  if (meters && !coverage) {
-    lines.push(say(`Kwa mita ${meters}, niambie eneo ni la wazi au kuna vizuizi ili nikusaidie kuchagua idadi ya AP.`,
-      `For ${meters} m, tell me whether the area is open or obstructed so I can help size the number of APs.`));
-  }
-  if (!coverage) {
-    lines.push(say('Maelezo ya bidhaa hayataji umbali maalum, kwa hiyo sitatoa namba ya kubahatisha. Niambie ukubwa wa eneo (mita kwa mita) na kama kuna kizuizi, nitakusaidia kuchagua; kama unahitaji vipimo rasmi vya mtengenezaji, nitakuunganisha na timu.',
-      'The product description does not state a distance, so I will not guess a number. Tell me the size of the area (metres) and whether it is obstructed and I will help you choose; if you need the manufacturer’s official figures I can bring in the team.'));
+  if (rangeAsked) {
+    if (coverage) {
+      const span = coverage.low === coverage.high
+        ? `mita ${coverage.high}`
+        : `mita ${coverage.low}–${coverage.high}`;
+      lines.push(say(`Coverage iliyotajwa kwenye maelezo ya bidhaa: hadi ${span} (eneo la wazi).`,
+        `Coverage stated in the product description: up to ${span} (open area).`));
+    }
+    lines.push(say('Umbali halisi hutegemea ukuta, miti, na urefu wa mahali kifaa kinapowekwa.',
+      'Real-world range depends on walls, trees and how high the device is mounted.'));
+    if (meters && coverage && coverage.high < meters) {
+      lines.push(say(`Kwa mita ${meters} unazoulizia, kifaa kimoja hakiwezi kufikia maelezo yake — tunaweza kupanga AP mbili au zaidi.`,
+        `For the ${meters} m you asked about, one unit is short of its stated range — we may plan two or more APs.`));
+    }
+    if (meters && !coverage) {
+      lines.push(say(`Kwa mita ${meters}, niambie eneo ni la wazi au kuna vizuizi ili nikusaidie kuchagua idadi ya AP.`,
+        `For ${meters} m, tell me whether the area is open or obstructed so I can help size the number of APs.`));
+    }
+    if (!coverage) {
+      lines.push(say('Maelezo ya bidhaa hayataji umbali maalum, kwa hiyo sitatoa namba ya kubahatisha. Niambie ukubwa wa eneo (mita kwa mita) na kama kuna kizuizi, nitakusaidia kuchagua; kama unahitaji vipimo rasmi vya mtengenezaji, nitakuunganisha na timu.',
+        'The product description does not state a distance, so I will not guess a number. Tell me the size of the area (metres) and whether it is obstructed and I will help you choose; if you need the manufacturer’s official figures I can bring in the team.'));
+    }
+  } else if (!specs) {
+    // Saying nothing would let the customer assume the bot read the datasheet.
+    // State plainly what is recorded and offer the team for the manufacturer specs.
+    lines.push(say('Maelezo ya kina ya mtengenezaji bado hayajaingizwa kwenye mfumo kwa bidhaa hii. Nikakuuliza unachotaka kujua (umbali, band, ports) ili timu ikuthibitishie?',
+      'The manufacturer’s detailed specs are not in the system for this item yet. Tell me what you need to know (range, band, ports) and the team will confirm it?'));
   }
   return lines.join('\n');
 }
