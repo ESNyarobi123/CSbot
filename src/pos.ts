@@ -86,28 +86,50 @@ const searchNoise = new Set(['bei', 'price', 'cost', 'picha', 'photo', 'image', 
   'maelezo', 'specification', 'specifications', 'spec', 'camera', 'kamera', 'naitaji', 'nahitaji', 'ninahitaji',
   'tunahitaji', 'tunataka', 'niletee', 'nipa', 'nipe', 'niambie', 'tafuta', 'looking', 'need', 'want', 'would',
   'like', 'can', 'could', 'tell', 'about', 'original', 'new', 'latest', 'me', 'my', 'our', 'us', 'ikoje', 'je',
-  'vipi', 'what', 'which', 'does', 'this', 'that', 'there', 'give']);
+  'vipi', 'what', 'which', 'does', 'this', 'that', 'there', 'give',
+  // Words customers wrap around a model name. Left in, they break the search because
+  // the catalog requires every word to appear in the product.
+  'hiki', 'hii', 'hiyo', 'hilo', 'hicho', 'huyu', 'kifaa', 'bidhaa', 'cha', 'vya', 'vile', 'nini', 'mm', 'mimi',
+  'sasa', 'kwanza', 'pia', 'ila', 'lakini', 'kuhusu', 'kuhus', 'kujua', 'naulizia', 'unaulizia', 'kuniwekea',
+  'kuweka', 'pamoja', 'yake', 'yangu', 'hapa', 'mpaka', 'then', 'also', 'price', 'the']);
 
 /** Gemini sometimes adds words like "camera" or "price" that no product name contains. */
 function searchTerms(search: string) {
   const tokens = search.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
   const kept = tokens.filter(token => token.length > 1 && !searchNoise.has(token));
+  // A long request puts the model first ("Tplink omada ap 650 bei yake pamoja na mfumo").
+  // Taking the last words loses it, so the model is matched as letters plus digits.
+  const phrase = kept.join(' ');
+  const pair = /([a-z]{2,6})[ ]?(\d{1,4})/.exec(phrase);
+  const digits = kept.filter(token => /\d/.test(token));
   return {
-    primary: kept.join(' ') || search.trim(),
-    // Model names usually sit at the end of a request, so retry with the last tokens.
+    primary: phrase || search.trim(),
     narrow: kept.slice(-3).join(' '),
+    model: pair ? `${pair[1]} ${pair[2]}` : digits.length ? digits[digits.length - 1] : '',
   };
+}
+
+export function modelQuery(text: string) {
+  return searchTerms(text).model;
+}
+
+/** "EAP 650", "TP LINK EAP 650", "650" — a model on its own is a price request. */
+export function isModelReference(text: string) {
+  const words = text.trim().split(/\s+/);
+  const tokens = text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const kept = tokens.filter(token => !searchNoise.has(token));
+  return kept.length > 0 && kept.length <= 4 && words.length <= 5 && kept.some(token => /\d/.test(token));
 }
 
 export async function searchProducts(search: string) {
   if (shop) return searchShop(search);
-  const { primary, narrow } = searchTerms(search);
-  const first = await request('products', productListSchema, { search: primary, limit: '6' });
-  if (first.items.length || !narrow || narrow === primary.toLowerCase()) {
-    return { items: first.items.map(proxyAssets) };
+  const { primary, narrow, model } = searchTerms(search);
+  // Every word must match, so try the model first and widen only when it is not stocked.
+  for (const term of [...new Set([model, primary, narrow].filter(Boolean))]) {
+    const result = await request('products', productListSchema, { search: term, limit: '6' });
+    if (result.items.length) return { items: result.items.map(proxyAssets) };
   }
-  const fallback = await request('products', productListSchema, { search: narrow, limit: '6' });
-  return { items: fallback.items.map(proxyAssets) };
+  return { items: [] };
 }
 
 export async function readProduct(id: string): Promise<{ product: Product; stock: z.infer<typeof stockSchema> }> {

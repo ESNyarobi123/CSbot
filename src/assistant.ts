@@ -3,7 +3,7 @@ import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { config } from './config.js';
 import { log, row } from './db.js';
-import { catalog, money, planKind, readPlans, readProduct, searchProducts, systemName } from './pos.js';
+import { catalog, isModelReference, modelQuery, money, planKind, readPlans, readProduct, searchProducts, systemName } from './pos.js';
 import type { Conversation, Stage } from './store.js';
 
 export interface ChatLine {
@@ -100,6 +100,11 @@ function fallback(text: string, memory: Conversation['memory']): Decision {
       answer.intent = 'product';
       answer.query = memory.product && followUp.test(text) ? '' : productText.slice(0, 100);
     }
+  } else if (isModelReference(text)) {
+    // "EAP 650" on its own is a price request, not small talk. Without this branch it
+    // fell through to the knowledge dump and answered with a WoteFy description.
+    answer.intent = 'product';
+    answer.query = modelQuery(text) || text.trim().slice(0, 60);
   }
   return answer;
 }
@@ -225,6 +230,25 @@ async function planAside(text: string, memory: Conversation['memory'], say: (sw:
   } catch {
     return '';
   }
+}
+
+/**
+ * Answer from approved knowledge only when the entry covers the question.
+ * Without this check any unmatched message returned the whole WoteFy or LubFy
+ * description, which reads as nonsense to a customer asking about a device.
+ */
+function relevantKnowledge(text: string, entries: Knowledge[]) {
+  const named = systemFrom(text);
+  const words = new Set((text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(word => word.length > 3));
+  let best: { entry: Knowledge; score: number } | undefined;
+  for (const entry of entries) {
+    if (entry.title === 'Connect Solution') continue;
+    if (named && entry.system === named) return entry;
+    const body = `${entry.title} ${entry.content}`.toLowerCase();
+    const score = [...words].filter(word => body.includes(word)).length;
+    if (score >= 2 && (!best || score > best.score)) best = { entry, score };
+  }
+  return best?.entry;
 }
 
 export async function respond(
@@ -360,7 +384,10 @@ export async function respond(
         const choices = memory.productOptions.map(item => `• ${item.name}`).join('\n');
         return result(say('Unamaanisha model ipi kati ya hizi?', 'Which of these models do you mean?') + '\n' + choices);
       }
-      const { product, stock } = await readProduct((exact[0] ?? best ?? items[0]).id);
+      const picked = (exact[0] ?? best ?? items[0]).id;
+      // The catalog shares a single vCPU with the shop, so one timeout is worth a retry
+      // before telling the customer that staff must confirm the price.
+      const { product, stock } = await readProduct(picked).catch(() => readProduct(picked));
       const price = money(product.price);
       memory.product = { id: product.id, name: product.name };
       delete memory.productOptions;
@@ -387,7 +414,7 @@ export async function respond(
     }
   }
   if (decision.reply && !/\b(?:TZS|TSh|USD|KSh)\b|\b[\d,.]+\s*%|[$€£]/i.test(decision.reply)) return result(decision.reply);
-  const fact = knowledge.find(entry => entry.title !== 'Connect Solution');
+  const fact = relevantKnowledge(newest, knowledge);
   if (fact && decision.language === 'sw') {
     return result([fact.content, fact.source_url].filter(Boolean).join('\n'));
   }
