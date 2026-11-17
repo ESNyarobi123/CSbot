@@ -13,7 +13,7 @@ export interface ChatLine {
 }
 
 const decisionSchema = z.object({
-  intent: z.enum(['general', 'product', 'plan', 'ambiguous_package', 'ready_to_pay', 'payment_reported', 'human']),
+  intent: z.enum(['general', 'product', 'plan', 'ambiguous_package', 'ready_to_pay', 'payment_reported', 'human', 'support']),
   language: z.enum(['sw', 'en']),
   query: z.string().max(100),
   system: z.enum([...systemName.options, '']).default(''),
@@ -24,7 +24,7 @@ const decisionSchema = z.object({
 });
 
 type Decision = z.infer<typeof decisionSchema>;
-type Knowledge = { system: string; title: string; content: string; source_url: string | null };
+type Knowledge = { id: string; system: string; title: string; content: string; source_url: string | null };
 export interface Outcome {
   body: string;
   stage?: Stage;
@@ -63,6 +63,26 @@ const systemFrom = (text: string) => {
 
 const paymentDenied = /\b(sijalipa|hajalipa|sijakamilisha malipo|haven't paid|have not paid|not paid|didn’t pay|didn't pay)\b/i;
 const paymentQuestion = /\b(je nimelipa|nikisema nimelipa|kama nimelipa|did i pay|have i paid|if i paid)\b/i;
+
+/**
+ * A broken system is a support case, not a price request. Kept narrow enough
+ * that a stock question ("haipatikani?") does not become one.
+ */
+const supportWords = /\b(shida|tatizo|matatizo|haifanyi kazi|haifanyi vizuri|haifunguki|haionekani|haiongei|haifikii|imesimama|imekwama|imegoma|imefeli|imefail|imekataliwa na mtandao|siwezi kuingia|sijaweza kuingia|haikubali|inaleta error|naipata error|imebadilika ghafla|sina internet|hakuna internet|haipati internet|problem|issue|not working|doesn't work|does not work|can't log ?in|cannot log ?in|can't login|cannot login|failed|stuck|support|troubleshoot)\b/i;
+
+/** A first-line technical report, e.g. "Portal haifunguki kwenye simu". */
+export function supportQuestion(text: string) {
+  return supportWords.test(text);
+}
+
+const emailPattern = /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/u;
+
+/** Email the customer typed, used to find their account. */
+export function emailOf(text: string) {
+  return emailPattern.exec(text)?.[0]?.toLowerCase();
+}
+
+const systemLabel = (system: string) => system === 'wotefy' ? 'WoteFy' : system === 'lubfy' ? 'LubFy' : '';
 
 export function customerProfile(text: string, previous: Conversation['memory']['profile']) {
   const profile = { ...previous };
@@ -110,6 +130,10 @@ function fallback(text: string, memory: Conversation['memory']): Decision {
     // rows as "closest models", which is the 2026-11-17 KAHAMA chat.
     answer.intent = 'product';
     answer.query = '';
+  } else if (supportQuestion(text) && !purchaseWords.test(text.replace(/\b(sina|hakuna|haipati)\b/gi, ' '))) {
+    // A broken system outranks a price lookup: someone whose portal will not open
+    // is not shopping for a model.
+    answer.intent = 'support';
   } else if (purchaseWords.test(text)) {
     const productText = text.replace(/\b(naomba|nataka|nipe|habari|hello|hey|hi|bei|price|cost|stock|picha|photo|image|gani|ngapi|je|ipo|zipo|inapatikana|available|nunua|buy|show|please|the|of|for|do|you|have|what|is|it|sasa|tuma|ya|na|kwa|how|much)\b/gi, ' ')
       .replace(/[^\p{L}\p{N} -]+/gu, ' ').replace(/\s+/g, ' ').trim();
@@ -137,6 +161,10 @@ export function resolveDecision(text: string, memory: Conversation['memory'], ge
   if (['ready_to_pay', 'payment_reported', 'human'].includes(detected.intent)) {
     return { ...generated, intent: detected.intent, system: detected.system || generated.system };
   }
+  // A support report must not be read as a purchase, even when the model says product.
+  if (detected.intent === 'support') {
+    return { ...generated, intent: 'support', system: detected.system || generated.system };
+  }
   // Financial questions must reach the catalog even when the model treats them as general conversation.
   if (detected.intent !== 'general' && generated.intent === 'general') {
     return { ...detected, language: generated.language };
@@ -148,14 +176,26 @@ export function resolveDecision(text: string, memory: Conversation['memory'], ge
 }
 
 export async function retrieveKnowledge(client: PoolClient, text: string, system?: string): Promise<Knowledge[]> {
-  const tokens = [...new Set(text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])]
-    .filter(word => word.length > 2).slice(0, 25).join(' | ');
-  const result = await client.query<Knowledge>(`SELECT system,title,content,source_url FROM knowledge
+  const words = [...new Set(text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])]
+    .filter(word => word.length > 2).slice(0, 25);
+  const tokens = words.join(' | ');
+  const result = await client.query<Knowledge>(`SELECT id,system,title,content,source_url FROM knowledge
     WHERE published AND (id='csolution' OR system=NULLIF($2,'') OR
       to_tsvector('simple',title||' '||tags||' '||content) @@ to_tsquery('simple',$1))
-    ORDER BY (id='csolution') DESC, ts_rank(to_tsvector('simple',title||' '||tags||' '||content),
-      to_tsquery('simple',$1)) DESC, id LIMIT 5`, [tokens || 'csolution', system ?? '']);
-  return result.rows;
+    ORDER BY (id='csolution') DESC, COALESCE(system=NULLIF($2,''),false) DESC,
+      ts_rank(to_tsvector('simple',title||' '||tags||' '||content),
+      to_tsquery('simple',$1)) DESC, id LIMIT 6`, [tokens || 'csolution', system ?? '']);
+  if (result.rows.length > 1 || !words.length) return result.rows;
+  // A support report is full of words the price list never uses ("portal
+  // haifunguki"). Full-text search then matches nothing, so the candidate words
+  // are retried as plain substrings before the bot gives up on the knowledge.
+  const useful = words.filter(word => !/^\d+$/.test(word)).slice(0, 8);
+  if (!useful.length) return result.rows;
+  const like = useful.map((_, index) => `lower(title||' '||tags||' '||content) LIKE $${index + 2}`);
+  const fallback = await client.query<Knowledge>(`SELECT id,system,title,content,source_url FROM knowledge
+    WHERE published AND (id='csolution' OR system=NULLIF($1,'') OR ${like.join(' OR ')})
+    ORDER BY (id='csolution') DESC, COALESCE(system=NULLIF($1,''),false) DESC, id LIMIT 6`, [system ?? '', ...useful.map(word => `%${word}%`)]);
+  return fallback.rows.length ? fallback.rows : result.rows;
 }
 
 async function decide(text: string, memory: Conversation['memory'], history: ChatLine[], knowledge: Knowledge[]) {
@@ -185,6 +225,7 @@ Work through this order before choosing an intent:
 3. If the message names a device, note in your reply that WoteFy suits Omada EAP and LubFy suits MikroTik, Cudy, Ruijie/Reyee, Cambium and UniFi. Suggest the match instead of asking the customer to choose.
 4. Installation is quoted per job and cable per metre; 15 metres is the usual length. Type A is the device we supply, Type B is the customer's own device. A question about fitting or cable is not a product search, and both variants plus the total are the answer.
 Classify based on the newest customer messages. product covers purchase, price, stock or photo of hardware. A bare model such as "EAP 650" is a product price request, never small talk.
+support is any report that a system or device stopped working: portal not opening, payment not unlocking internet, device offline, voucher rejected, login failing, an error message. A support report is never product, plan or payment_reported. For support the bot must not guess a diagnosis: the code collects the problem, then which system (WoteFy or LubFy), then the account email before any answer. Use approved troubleshooting knowledge only for systems and models that appear in it.
 Return the exact brand/model or SKU as query, with an empty query for a reference to the remembered product.
 plan requires the customer to specify the kind: subscription for operator software, wifi for end-user internet, bundle for equipment + services.
 Use ambiguous_package if kind is unclear. Do not invent a site name. Distinguish asking how payments work from explicitly asking to pay for their purchase.
@@ -443,22 +484,77 @@ async function planAside(text: string, memory: Conversation['memory'], say: (sw:
  * Without this check any unmatched message returned the whole WoteFy or LubFy
  * description, which reads as nonsense to a customer asking about a device.
  */
-function relevantKnowledge(text: string, entries: Knowledge[]) {
+export function relevantKnowledge(text: string, entries: Knowledge[], support = false) {
   const named = systemFrom(text);
   const words = new Set((text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(word => word.length > 3));
   let best: { entry: Knowledge; score: number } | undefined;
   for (const entry of entries) {
-    if (entry.title === 'Connect Solution') continue;
-    if (named && entry.system === named) return entry;
-    const body = `${entry.title} ${entry.content}`.toLowerCase();
-    const score = [...words].filter(word => body.includes(word)).length;
-    if (score >= 2 && (!best || score > best.score)) best = { entry, score };
+    if (entry.id === 'csolution') continue;
+    const title = entry.title.toLowerCase();
+    const body = `${title} ${entry.content}`.toLowerCase();
+    let score = [...words].filter(word => body.includes(word)).length;
+    // A matching system says who the answer is for, not which answer it is: every
+    // WoteFy entry carries that tag, so it must not win on its own.
+    if (named && entry.system === named) score += 2;
+    // A support report needs an answer that fixes something, not an overview.
+    if (support && /troubleshoot|setup|install|apply|payment|malipo|portal|device|kifaa|speed|data|offline/.test(title)) score += 2;
+    if (score >= 3 && (!best || score > best.score)) best = { entry, score };
   }
   return best?.entry;
 }
 
-/** Read a product, giving the shared catalog server two more chances before failing. */
-async function readProductRetry(id: string) {
+/**
+ * Support intake. A customer with a broken system is asked for the problem, the
+ * system and the login email before any diagnosis, because "sijui nini
+ * kinaendelea" is not enough to open an account or read a log. Each answer is
+ * kept in memory, so the three questions are asked once and never repeated.
+ */
+export function supportIntake(
+  text: string, support: NonNullable<Conversation['memory']['support']>,
+  say: (sw: string, en: string) => string,
+): { support: NonNullable<Conversation['memory']['support']>; reply?: string; ready: boolean } {
+  const next = { ...support };
+  const email = emailOf(text);
+  if (email) next.email = email;
+  const detectedSystem = systemFrom(text);
+  if (detectedSystem) next.system = detectedSystem;
+  // The email answer itself is not the problem description.
+  const rest = text.replace(emailPattern, ' ')
+    .replace(/\b(?:wotefy|lubfy)\b/gi, ' ')
+    .replace(/[\s.,!?;:]+/g, ' ').trim();
+  const onlyIdentityAnswer = rest.length < 3
+    || /^(?:ndio|ndiyo|sawa|ok|okay|yes|no|hapana|ndo)$/i.test(rest);
+  if (!next.problem && rest.length > 3 && !onlyIdentityAnswer) {
+    next.problem = rest.slice(0, 500);
+  }
+  if (!next.problem) {
+    return { support: next, ready: false, reply: say(
+      'Pole sana. Nieleze kwa ufupi shida ipoje — nini kinatokea na ulikuwa unafanya nini wakati imetokea?',
+      'Sorry about that. In one or two sentences, what exactly happens and what were you doing when it started?') };
+  }
+  if (!next.system) {
+    return { support: next, ready: false, reply: say(
+      'Asante. Shida hii iko kwenye mfumo upi — WoteFy au LubFy?',
+      'Thanks. Which system is this about — WoteFy or LubFy?') };
+  }
+  if (!next.email) {
+    return { support: next, ready: false, reply: say(
+      'Asante. Nipe email uliyosajili nayo kwenye akaunti (ile unayoingia nayo) ili timu ifungue akaunti yako moja kwa moja.',
+      'Thanks. What is the email on your account (the one you sign in with)? I need it so the team opens the right account.') };
+  }
+  return { support: next, ready: true };
+}
+
+/** One line for the admin alert, so the team starts with the facts. */
+export function supportSummary(support: NonNullable<Conversation['memory']['support']>) {
+  return [
+    support.problem && `Tatizo: ${support.problem}`,
+    support.system && `Mfumo: ${systemLabel(support.system)}`,
+    support.email && `Email: ${support.email}`,
+  ].filter(Boolean).join(' · ');
+}
+
+/** Read a product, giving the shared catalog server two more chances before failing. */async function readProductRetry(id: string) {
   let last: unknown;
   for (const wait of [0, 400, 900]) {
     if (wait) await new Promise(resolve => setTimeout(resolve, wait));
@@ -515,6 +611,41 @@ export async function respond(
   const result = (body: string, changes: Partial<Omit<Outcome, 'body' | 'memory'>> = {}): Outcome =>
     ({ body, memory, ...changes });
   if (decision.system) memory.system = decision.system;
+  // Support intake runs before every sales branch. A customer whose system is
+  // broken gets three facts collected first — problem, system, login email —
+  // instead of the bot guessing or selling them a device. A clear purchase
+  // question abandons an intake the customer walked away from.
+  const awaitingSupport = Boolean(memory.support?.problem || memory.support?.email);
+  const shoppingNow = purchaseWords.test(newest) && !supportQuestion(newest)
+    && !emailOf(newest) && !systemFrom(newest);
+  if (shoppingNow && memory.support) delete memory.support;
+  const supportActive = !shoppingNow && (decision.intent === 'support' || awaitingSupport);
+  if (!onlyDetect && supportActive) {
+    const intake = supportIntake(newest, memory.support ?? {}, say);
+    memory.support = intake.support;
+    if (!intake.ready) return result(intake.reply ?? '');
+    memory.recentTopic = supportSummary(intake.support).slice(0, 280);
+    if (intake.support.system) memory.system = intake.support.system;
+    memory.lastSupport = intake.support;
+    const guidance = relevantKnowledge(`${intake.support.problem} ${newest}`, knowledge, true);
+    const facts = supportSummary(intake.support);
+    if (guidance) {
+      // Answer from the approved troubleshooting entry and keep the chat on the
+      // bot; the team is only pulled in when nothing matches.
+      delete memory.support;
+      return result([
+        say(`Nimeona tatizo: ${facts}`, `Noted: ${facts}`),
+        guidance.content,
+        guidance.source_url ?? '',
+        say('Kama hatua hizo hazijasaidia, niambie "nataka mhudumu" nikuunganishe na timu.',
+          'If those steps do not help, say "I need a human" and I will bring in the team.'),
+      ].filter(Boolean).join('\n\n'));
+    }
+    delete memory.support;
+    return result(say(`Asante. Nimepokea: ${facts}. Nimempa timu ya msaada taarifa hizi; watakagua akaunti yako na kukurudia muda mfupi.`,
+      `Thanks. I have: ${facts}. I have passed these details to support, who will check your account and come back to you shortly.`),
+    { handoff: true });
+  }
   if (decision.intent === 'payment_reported') {
     if (['paid', 'completed'].includes(conversation.stage)) {
       return result(say('Asante kwa taarifa. Timu yetu itaangalia malipo hayo na kuyalinganisha na oda husika.',

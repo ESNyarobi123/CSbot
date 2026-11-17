@@ -25,6 +25,10 @@ export interface Conversation {
     quoteFor?: 'product' | 'plan';
     /** Set while the bot waits for "yes" to its installation/cable offer. */
     awaitingService?: boolean;
+    /** Support intake: the problem, the system, and the login email. */
+    support?: { problem?: string; system?: 'wotefy' | 'lubfy'; email?: string };
+    /** Last completed support intake, kept for the admin alert and audits. */
+    lastSupport?: { problem?: string; system?: 'wotefy' | 'lubfy'; email?: string };
     recentTopic?: string;
     profile?: { equipment?: string; budget?: string; useCase?: string };
   };
@@ -140,9 +144,17 @@ export async function alertAdmins(
     return;
   }
   const customer = [conversation.customer_name, conversation.customer_phone, `chat #${id}`].filter(Boolean).join(' · ');
-  const subject = (memory.quoteFor === 'plan' ? memory.system : memory.product?.name ?? memory.system)
-    ?? 'Bidhaa au huduma inahitaji kufafanuliwa';
-  const detail = [memory.lastQuote && 'Bei ya kumbukumbu: ' + memory.lastQuote, memory.recentTopic?.slice(0, 280)].filter(Boolean).join('\n');
+  const support = memory.lastSupport;
+  const subject = support?.system
+    ? `Msaada wa kiufundi · ${support.system === 'wotefy' ? 'WoteFy' : 'LubFy'}`
+    : (memory.quoteFor === 'plan' ? memory.system : memory.product?.name ?? memory.system)
+      ?? 'Bidhaa au huduma inahitaji kufafanuliwa';
+  const detail = [
+    support?.problem && 'Tatizo: ' + support.problem,
+    support?.email && 'Email ya akaunti: ' + support.email,
+    !support && memory.lastQuote && 'Bei ya kumbukumbu: ' + memory.lastQuote,
+    !support && memory.recentTopic?.slice(0, 280),
+  ].filter(Boolean).join('\n');
   for (const admin of admins.rows) {
     await enqueue(client, { accountId, conversationId: id, jid: admin.phone + '@s.whatsapp.net',
       body: `CSbot — ${title}\n${customer}\n${subject}${detail ? '\n' + detail : ''}`, origin: 'alert', imageUrl });
