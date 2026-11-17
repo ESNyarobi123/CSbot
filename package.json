@@ -1,0 +1,42 @@
+{
+  "name": "csolution-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start:api": "node dist/api.js",
+    "start:worker": "node dist/worker.js",
+    "start:gateway": "node dist/gateway.js",
+    "migrate": "node dist/migrate.js",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "stack": "node scripts/csbot.mjs",
+    "pair": "node scripts/pair.mjs",
+    "catalog:check": "node --env-file-if-exists=.env scripts/catalog-check.mjs"
+  },
+  "dependencies": {
+    "@google/genai": "3.4.0",
+    "@nestjs/common": "11.2.10",
+    "@nestjs/core": "11.2.10",
+    "@nestjs/platform-express": "11.2.10",
+    "baileys": "7.0.0-rc14",
+    "bullmq": "6.7.7",
+    "ioredis": "6.0.0",
+    "pg": "^8.16.3",
+    "pino": "^9.14.0",
+    "qrcode": "^1.5.4",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "sharp": "0.34.5",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/pg": "^8.16.0",
+    "@types/qrcode": "^1.5.6",
+    "typescript": "~5.9.3"
+  }
+}

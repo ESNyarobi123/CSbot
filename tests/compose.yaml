@@ -1,0 +1,22 @@
+services:
+  api:
+    environment:
+      ALLOW_MOCK: "true"
+  whatsapp-gateway:
+    environment:
+      ALLOW_MOCK: "true"
+      CSOLUTION_POS_DB_URL: ""
+  worker:
+    environment:
+      GEMINI_API_KEY: ""
+      CSOLUTION_POS_DB_URL: ""
+      WOTEFY_PLANS_URL: ""
+      LUBFY_PLANS_URL: ""
+      POS_BASE_URL: http://fixture:9090
+      POS_API_TOKEN: ""
+      DEBOUNCE_MS: "1000"
+  fixture:
+    image: node:24-bookworm-slim
+    command: [node, /fixture.mjs]
+    volumes:
+      - ./tests/pos-fixture.mjs:/fixture.mjs:ro

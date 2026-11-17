@@ -1,0 +1,144 @@
+name: csbot
+
+x-base: &base
+  image: csbot-backend:local
+  pull_policy: never
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  extra_hosts:
+    - host.docker.internal:host-gateway
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+x-database-url: &database-url
+  DATABASE_URL: postgres://csbot:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/csbot
+
+services:
+  postgres:
+    image: postgres:16.15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: csbot
+      POSTGRES_USER: csbot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U csbot -d csbot]
+      interval: 4s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7.4.11-alpine
+    restart: unless-stopped
+    command: [redis-server, --appendonly, "yes", --maxmemory-policy, noeviction]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 4s
+      timeout: 3s
+      retries: 12
+
+  migrate:
+    <<: *base
+    build: .
+    command: [node, dist/migrate.js]
+    environment: *database-url
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *base
+    command: [node, dist/api.js]
+    restart: unless-stopped
+    stop_grace_period: 35s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${CSBOT_HTTP_PORT:-8080}:8080"
+    environment:
+      <<: *database-url
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:?Set ADMIN_API_TOKEN in .env}
+      SESSION_KEY: ${SESSION_KEY:?Set SESSION_KEY in .env}
+      ALLOW_MOCK: ${ALLOW_MOCK:-false}
+      POS_BASE_URL: ${POS_BASE_URL:-}
+      POS_API_TOKEN: ${POS_API_TOKEN:-}
+      POS_BRANCH_ID: ${POS_BRANCH_ID:-}
+      CSOLUTION_POS_DB_URL: ${CSOLUTION_POS_DB_URL:-}
+      PRODUCT_IMAGE_HOSTS: ${PRODUCT_IMAGE_HOSTS:-}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+
+  worker:
+    <<: *base
+    command: [node, dist/worker.js]
+    restart: unless-stopped
+    stop_grace_period: 40s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *database-url
+      REDIS_URL: redis://redis:6379
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite}
+      POS_BASE_URL: ${POS_BASE_URL:-}
+      POS_API_TOKEN: ${POS_API_TOKEN:-}
+      POS_BRANCH_ID: ${POS_BRANCH_ID:-}
+      CSOLUTION_POS_DB_URL: ${CSOLUTION_POS_DB_URL:-}
+      WOTEFY_PLANS_URL: ${WOTEFY_PLANS_URL-https://ssdomada.site/api/v1/plans}
+      LUBFY_PLANS_URL: ${LUBFY_PLANS_URL-https://lubfy.online/v1/public/plans}
+      PRODUCT_IMAGE_HOSTS: ${PRODUCT_IMAGE_HOSTS:-}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      DEBOUNCE_MS: ${DEBOUNCE_MS:-1250}
+      MEDIA_RETENTION_DAYS: ${MEDIA_RETENTION_DAYS:-90}
+    healthcheck:
+      test: [CMD, node, dist/health.js, worker, "45"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+
+  whatsapp-gateway:
+    <<: *base
+    command: [node, dist/gateway.js]
+    restart: unless-stopped
+    stop_grace_period: 40s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *database-url
+      SESSION_KEY: ${SESSION_KEY:?Set SESSION_KEY in .env}
+      ALLOW_MOCK: ${ALLOW_MOCK:-false}
+      POS_BASE_URL: ${POS_BASE_URL:-}
+      POS_API_TOKEN: ${POS_API_TOKEN:-}
+      CSOLUTION_POS_DB_URL: ${CSOLUTION_POS_DB_URL:-}
+      PRODUCT_IMAGE_HOSTS: ${PRODUCT_IMAGE_HOSTS:-}
+      SYNC_FULL_HISTORY: ${SYNC_FULL_HISTORY:-true}
+    healthcheck:
+      test: [CMD, node, dist/health.js, whatsapp-gateway, "45"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+
+volumes:
+  postgres_data:
+  redis_data:

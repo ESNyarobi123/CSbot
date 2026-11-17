@@ -1,0 +1,220 @@
+import { z } from 'zod';
+import { config } from './config.js';
+import { listShopCatalog, readShopProduct, searchShop, shop } from './csolution-pos.js';
+
+export const systemName = z.enum(['wotefy', 'lubfy']);
+export const planKind = z.enum(['subscription', 'wifi', 'bundle']);
+const productRef = z.object({ id: z.string().min(1), name: z.string().min(1), sku: z.string().optional() });
+const price = z.object({ amount: z.number().nonnegative(), currency: z.string().regex(/^[A-Z]{3}$/) });
+// POS photos are either proxied by CSbot (`cspos-asset:`) or a public HTTPS link.
+const assetPath = /\/api\/csbot\/image\/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const assetUrl = z.string().regex(/^cspos-asset:\/api\/csbot\/image\/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i);
+const productImage = z.union([assetUrl, z.string().regex(assetPath), z.url({ protocol: /^https$/ })]);
+const productSchema = productRef.extend({
+  brand: z.string().max(120).nullable().optional(),
+  category: z.string().max(120).nullable().optional(),
+  type: z.string().max(40).optional(),
+  unit: z.string().max(30).optional(),
+  description: z.string().max(4000).optional(),
+  warranty: z.number().int().nonnegative().optional(),
+  agent_price: z.number().nonnegative().nullable().optional(),
+  available_to_sell: z.number().int().nonnegative().optional(),
+  available: z.boolean().optional(),
+  price,
+  images: z.array(z.object({ url: productImage,
+    primary: z.boolean().optional() })).default([]),
+});
+const productListSchema = z.object({ items: z.array(productSchema), currency: z.string().optional() });
+const stockSchema = z.object({
+  available_to_sell: z.number().int().nonnegative(),
+  available: z.boolean().optional(),
+});
+type Product = z.infer<typeof productSchema>;
+
+// Relative POS paths become an internal reference so no token or host is stored in messages.
+function proxyAssets(product: Product): Product {
+  return { ...product, images: product.images.map(image => ({
+    ...image, url: image.url.startsWith('/') ? 'cspos-asset:' + image.url : image.url,
+  })) };
+}
+const planSchema = z.object({
+  name: z.string().min(1),
+  price: price.optional(),
+  percentage: z.number().min(0).max(100).optional(),
+  percentage_basis: z.string().optional(),
+  billing_period: z.string().optional(),
+  setup_fee: price.optional(),
+  features: z.array(z.string()).default([]),
+});
+
+export async function documentJson(response: Response): Promise<unknown> {
+  if (!response.ok) throw new Error(`Upstream HTTP ${response.status}`);
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('Empty upstream response');
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > 1024 * 1024) {
+      await reader.cancel();
+      throw new Error('Upstream response too large');
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
+async function request<T extends z.ZodType>(path: string, schema: T, params: Record<string, string> = {}) {
+  if (!config.POS_BASE_URL) throw new Error('POS is not configured');
+  const base = new URL(config.POS_BASE_URL);
+  if (base.username || base.password || base.search || base.hash) throw new Error('Invalid POS base URL');
+  if (!base.pathname.endsWith('/')) base.pathname += '/';
+  const url = new URL(path, base);
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+  if (config.POS_BRANCH_ID) url.searchParams.set('branch_id', config.POS_BRANCH_ID);
+  const headers: Record<string, string> = { accept: 'application/json' };
+  if (config.POS_API_TOKEN) headers.authorization = `Bearer ${config.POS_API_TOKEN}`;
+  const res = await fetch(url, { headers, redirect: 'error', signal: AbortSignal.timeout(5500) });
+  return schema.parse(await documentJson(res));
+}
+
+const searchNoise = new Set(['bei', 'price', 'cost', 'picha', 'photo', 'image', 'picture', 'ya', 'na', 'kwa', 'wa',
+  'ni', 'gani', 'ngapi', 'tafadhali', 'please', 'the', 'of', 'for', 'and', 'is', 'it', 'do', 'you', 'have', 'how',
+  'much', 'stock', 'available', 'ipo', 'zipo', 'inapatikana', 'nataka', 'naomba', 'show', 'nionesha', 'details',
+  'maelezo', 'specification', 'specifications', 'spec', 'camera', 'kamera', 'naitaji', 'nahitaji', 'ninahitaji',
+  'tunahitaji', 'tunataka', 'niletee', 'nipa', 'nipe', 'niambie', 'tafuta', 'looking', 'need', 'want', 'would',
+  'like', 'can', 'could', 'tell', 'about', 'original', 'new', 'latest', 'me', 'my', 'our', 'us', 'ikoje', 'je',
+  'vipi', 'what', 'which', 'does', 'this', 'that', 'there', 'give']);
+
+/** Gemini sometimes adds words like "camera" or "price" that no product name contains. */
+function searchTerms(search: string) {
+  const tokens = search.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const kept = tokens.filter(token => token.length > 1 && !searchNoise.has(token));
+  return {
+    primary: kept.join(' ') || search.trim(),
+    // Model names usually sit at the end of a request, so retry with the last tokens.
+    narrow: kept.slice(-3).join(' '),
+  };
+}
+
+export async function searchProducts(search: string) {
+  if (shop) return searchShop(search);
+  const { primary, narrow } = searchTerms(search);
+  const first = await request('products', productListSchema, { search: primary, limit: '6' });
+  if (first.items.length || !narrow || narrow === primary.toLowerCase()) {
+    return { items: first.items.map(proxyAssets) };
+  }
+  const fallback = await request('products', productListSchema, { search: narrow, limit: '6' });
+  return { items: fallback.items.map(proxyAssets) };
+}
+
+export async function readProduct(id: string): Promise<{ product: Product; stock: z.infer<typeof stockSchema> }> {
+  if (shop) return readShopProduct(id);
+  if (id === '.' || id === '..') throw new Error('Invalid product id');
+  const path = 'products/' + encodeURIComponent(id);
+  const [product, stock] = await Promise.all([
+    request(path, productSchema), request(path + '/availability', stockSchema),
+  ]);
+  if (product.id !== id) throw new Error('Mismatched product');
+  return { product: proxyAssets(product), stock };
+}
+
+/** Full live catalog for the dashboard. Falls back to the read-only database view. */
+export async function catalog(search: string, limit = 60) {
+  if (!shop && !config.POS_BASE_URL) return { items: [] as Product[], source: 'none' as const };
+  if (shop) return { items: await listShopCatalog(search, limit), source: 'database' as const };
+  const result = await request('products', productListSchema, { search, limit: String(limit) });
+  return { items: result.items.map(proxyAssets), source: 'pos' as const };
+}
+
+/** Cover photo reference for the dashboard, without paying for a stock lookup. */
+export async function productImageRef(id: string) {
+  if (shop) return (await readShopProduct(id)).product.images[0]?.url;
+  if (!config.POS_BASE_URL) return;
+  const product = proxyAssets(await request('products/' + encodeURIComponent(id), productSchema));
+  return (product.images.find(image => image.primary) ?? product.images[0])?.url;
+}
+
+/** Fetch product photo bytes from the POS with the catalog token attached. */
+export async function posAsset(path: string) {
+  if (!config.POS_BASE_URL) return;
+  if (!/^\/api\/csbot\/image\/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(path)) return;
+  const base = new URL(config.POS_BASE_URL);
+  const url = new URL(path, base);
+  if (url.origin !== base.origin) return;
+  const headers: Record<string, string> = { accept: 'image/png,image/jpeg,image/webp' };
+  if (config.POS_API_TOKEN) headers.authorization = `Bearer ${config.POS_API_TOKEN}`;
+  const response = await fetch(url, { headers, redirect: 'error', signal: AbortSignal.timeout(5000) });
+  const mimetype = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
+  if (!response.ok || !response.body || !mimetype || !['image/png', 'image/jpeg', 'image/webp'].includes(mimetype)) {
+    await response.body?.cancel();
+    return;
+  }
+  const chunks: Buffer[] = [];
+  let size = 0;
+  const reader = response.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > 5 * 1024 * 1024) {
+      await reader.cancel();
+      return;
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return { image: Buffer.concat(chunks), mimetype };
+}
+
+export async function readPlans(
+  system: z.infer<typeof systemName>, kind: z.infer<typeof planKind>, site?: string,
+): Promise<{ items: z.infer<typeof planSchema>[] }> {
+  const publicUrl = system === 'wotefy' ? config.WOTEFY_PLANS_URL : config.LUBFY_PLANS_URL;
+  if (kind !== 'subscription' || !publicUrl) {
+    return request('service-plans', z.object({ items: z.array(planSchema) }), { system, kind, ...(site ? { site } : {}) });
+  }
+  const url = z.url({ protocol: /^https$/ }).parse(publicUrl);
+  const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(5500) });
+  const payload = await documentJson(response);
+  return { items: publicSubscriptionPlans(system, payload) };
+}
+
+const currency = z.string().regex(/^[A-Z]{3}$/);
+const cycle = z.string().min(1).max(30);
+
+export function publicSubscriptionPlans(system: z.infer<typeof systemName>, payload: unknown): z.infer<typeof planSchema>[] {
+  if (system === 'wotefy') {
+    const { data } = z.object({ success: z.literal(true), data: z.array(z.object({
+      name: z.string(), price: z.number().nonnegative(), currency, interval: cycle,
+      maxSites: z.number().int().nullable(), maxDevices: z.number().int().nullable(), isActive: z.boolean(),
+    })) }).parse(payload);
+    return data.filter(item => item.isActive).map(item => ({
+      name: item.name, price: { amount: item.price, currency: item.currency }, billing_period: item.interval,
+      features: [item.maxSites === null ? '' : `${item.maxSites} site(s)`,
+        item.maxDevices === null ? '' : `${item.maxDevices} device(s)`].filter(Boolean),
+    }));
+  }
+  const { items } = z.object({ items: z.array(z.object({
+    display_name: z.string(), amount_minor: z.number().int().nonnegative(), currency,
+    billing_interval: cycle, status: z.string(),
+    features: z.object({ sites_limit: z.number().int().nonnegative().optional(),
+      routers_limit: z.number().int().nonnegative().optional() }).optional(),
+  })) }).parse(payload);
+  return items.filter(item => item.status === 'ACTIVE').map(item => ({
+    name: item.display_name, price: { amount: item.amount_minor / 100, currency: item.currency },
+    billing_period: item.billing_interval,
+    features: [item.features?.sites_limit === undefined ? '' : `${item.features.sites_limit} site(s)`,
+      item.features?.routers_limit === undefined ? '' : `${item.features.routers_limit} router(s)`].filter(Boolean),
+  }));
+}
+
+export function money(value: z.infer<typeof price>) {
+  // TZS has no minor units; dropping ".00" keeps WhatsApp quotes readable.
+  const digits = value.currency === 'TZS' ? 0 : 2;
+  const amount = new Intl.NumberFormat('en-TZ', {
+    minimumFractionDigits: 0, maximumFractionDigits: digits,
+  }).format(value.amount);
+  return `${value.currency} ${amount}`;
+}
