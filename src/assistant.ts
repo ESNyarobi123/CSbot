@@ -364,6 +364,20 @@ function relevantKnowledge(text: string, entries: Knowledge[]) {
   return best?.entry;
 }
 
+/** Read a product, giving the shared catalog server two more chances before failing. */
+async function readProductRetry(id: string) {
+  let last: unknown;
+  for (const wait of [0, 400, 900]) {
+    if (wait) await new Promise(resolve => setTimeout(resolve, wait));
+    try {
+      return await readProduct(id);
+    } catch (error) {
+      last = error;
+    }
+  }
+  throw last;
+}
+
 export async function respond(
   client: PoolClient, conversation: Conversation, newest: string, history: ChatLine[], onlyDetect = false,
 ): Promise<Outcome> {
@@ -446,8 +460,9 @@ export async function respond(
         { stage: 'quoted' });
     } catch {
       log.warn('Current plan prices unavailable');
-      return result(say('Timu yetu itaangalia bei ya package hiyo na kukujibu.', 'Our team will check the current price for that plan.'),
-        { handoff: true });
+      // Same as the product path: a slow upstream must not silence the bot for this chat.
+      return result(say('Kuna shida ya muda kufikia bei za packages. Nitajaribu tena — tafadhali tuma ujumbe mmoja.',
+        'The plan prices are slow to load right now. Please send one more message and I will try again.'));
     }
   }
   if (decision.intent === 'product') {
@@ -503,9 +518,9 @@ export async function respond(
         return result(say('Unamaanisha model ipi kati ya hizi?', 'Which of these models do you mean?') + '\n' + choices);
       }
       const picked = (exact[0] ?? best ?? items[0]).id;
-      // The catalog shares a single vCPU with the shop, so one timeout is worth a retry
-      // before telling the customer that staff must confirm the price.
-      const { product, stock } = await readProduct(picked).catch(() => readProduct(picked));
+      // The catalog shares a single vCPU with the shop, so a slow reply is normal under
+      // load. Two retries with a short gap stop a transient spike from losing the price.
+      const { product, stock } = await readProductRetry(picked);
       const price = money(product.price);
       memory.product = { id: product.id, name: product.name };
       delete memory.productOptions;
@@ -538,8 +553,10 @@ export async function respond(
       { stage: 'quoted', imageUrl });
     } catch {
       log.warn('Current product details unavailable');
-      return result(say('Timu yetu itathibitisha bei, stock na picha ya bidhaa hiyo.', 'Our team will verify the current price, stock, and photo for that product.'),
-        { handoff: true });
+      // A catalog timeout is temporary. Handing off here silences the bot for the rest
+      // of the chat, so the customer is told the price is coming while the chat stays on.
+      return result(say('Kuna shida ya muda kufikia bei kwa sasa. Nitajaribu tena — tafadhali tuma ujumbe mmoja au nikupe maelezo zaidi ya kifaa.',
+        'The price lookup is slow right now. Please send one more message and I will try again.'));
     }
   }
   if (decision.reply && !/\b(?:TZS|TSh|USD|KSh)\b|\b[\d,.]+\s*%|[$€£]/i.test(decision.reply)) return result(decision.reply);
