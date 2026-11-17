@@ -489,7 +489,10 @@ export async function productCapability(
         'These figures are from our shop records; the team will confirm them against the manufacturer datasheet.'));
     }
   }
-  if (specs) lines.push(specs.slice(0, 700));
+  // The catalog description often restates one number the datasheet already
+  // gave ("...COVERING UP TO 200 METRES"); printing both reads like a stutter.
+  const restatesSheet = Boolean(specs) && /^(?:[\p{L}\d\s×().-]*)(?:covering[^.]*\bmet(?:re|er)s?\b|concurrent users)[\s.]*$/iu.test(specs ?? '');
+  if (specs && !restatesSheet) lines.push(specs.slice(0, 700));
   if (rangeAsked) {
     // The datasheet row already printed the range; repeating it reads like a bot
     // that does not know what it just said.
