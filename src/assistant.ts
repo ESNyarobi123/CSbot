@@ -156,9 +156,22 @@ export function customerProfile(text: string, previous: Conversation['memory']['
   return Object.keys(profile).length ? profile : undefined;
 }
 
+// Kiswahili and English markers. A bare model name carries neither, so the chat
+// keeps the language it started in instead of flipping to English mid-order.
+const swMarkers = /\b(naomba|nahitaji|ninahitaji|nataka|bei|gani|ngapi|tafadhali|asante|sawa|ndio|habari|mambo|vipi|je|kwa|ya|za|nini|wapi|lini|kwanini|niletee|nipe|tafuta|ipo|zipo|haipo|hauna|mna|una|nina|sina|kama|lakini|bado|hii|hiyo|hizo|zile|wanangu|mimi|wewe|nataka)\b/i;
+const enMarkers = /\b(the|please|how|what|which|where|when|price|cost|stock|available|need|want|does|can|could|would|thanks|thank|hello|hi|hey|are|your|more|other|details|specs|specification)\b/i;
+
+/** The language the customer just wrote, when the message makes it obvious. */
+export function messageLanguage(text: string): 'sw' | 'en' | undefined {
+  const sw = swMarkers.test(text);
+  const en = enMarkers.test(text);
+  if (sw && !en) return 'sw';
+  if (en && !sw) return 'en';
+  return undefined;
+}
+
 function fallback(text: string, memory: Conversation['memory']): Decision {
-  const language = /\b(hello|hi|hey|please|what|how|do you|where|can i|i want|i need|i have|payment|price|plans|stock|show|thanks|is it|yes)\b/i.test(text)
-    && !/\b(bei|gani|ngapi|naomba|habari|nataka|nime|ipo|sawa|malipo|nipe)\b/i.test(text) ? 'en' : 'sw';
+  const language = messageLanguage(text) ?? memory.language ?? 'sw';
   const answer: Decision = {
     intent: 'general', language, system: systemFrom(text), query: '', kind: '', site: '', reply: '',
     sendImage: imageWords.test(text),
@@ -744,6 +757,11 @@ export async function respond(
     profile: customerProfile(newest, conversation.memory.profile) };
   const knowledge = onlyDetect ? [] : await retrieveKnowledge(client, newest, systemFrom(newest) || memory.system);
   const decision = await decide(newest, memory, history, knowledge);
+  // One chat speaks one language unless the customer clearly switches.
+  const said = messageLanguage(newest);
+  const language = said ?? memory.language ?? decision.language;
+  decision.language = language;
+  memory.language = language;
   const say = (sw: string, en: string) => decision.language === 'en' ? en : sw;
   const result = (body: string, changes: Partial<Omit<Outcome, 'body' | 'memory'>> = {}): Outcome =>
     ({ body, memory, ...changes });

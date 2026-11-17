@@ -33,6 +33,8 @@ export interface Conversation {
     /** Last completed support intake, kept for the admin alert and audits. */
     lastSupport?: { problem?: string; system?: 'wotefy' | 'lubfy'; email?: string };
     recentTopic?: string;
+    /** Chat language, so a bare model name does not flip the reply to English. */
+    language?: 'sw' | 'en';
     profile?: { equipment?: string; budget?: string; useCase?: string };
   };
 }

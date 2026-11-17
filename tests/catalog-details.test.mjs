@@ -123,3 +123,13 @@ test('picking a model from the list answers with its specs, not the whole catego
   assert.equal(outcome.memory.product?.name, 'RG RAP 52 OD');
   assert.equal(resolveDecision('RG RAP 52 OD', {}).intent, 'product');
 });
+
+test('a bare model name does not flip a Kiswahili chat to English', async () => {
+  const first = await respond(client, conversation({}), 'Nahitaji access point', []);
+  assert.equal(first.memory.language, 'sw');
+  const outcome = await respond(client, conversation({
+    productOptions: first.memory.productOptions, optionQuery: first.memory.optionQuery, language: 'sw',
+  }), 'TP LINK EAP 650', []);
+  assert.match(outcome.body, /Ipo stock kwa sasa/);
+  assert.doesNotMatch(outcome.body, /Currently in stock/);
+});
