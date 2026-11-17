@@ -723,6 +723,9 @@ function imageMimetype(bytes: Buffer) {
 class ApiModule {}
 
 const app = await NestFactory.create<NestExpressApplication>(ApiModule, { logger: ['error', 'warn', 'log'] });
+// The studio sends a device photo to the same vision path WhatsApp uses; the
+// default 1 MB JSON cap rejects a normal phone camera image.
+app.useBodyParser('json', { limit: '7mb' });
 // Caddy terminates TLS on the host and proxies to this port, so one trusted hop
 // makes req.secure and the dashboard origin check see https instead of http.
 app.set('trust proxy', 1);
