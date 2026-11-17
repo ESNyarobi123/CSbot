@@ -3,6 +3,7 @@ import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { config } from './config.js';
 import { log, row } from './db.js';
+import { specsFor, specLines } from './specs.js';
 import { cableQuote, catalog, installationOptions, isModelReference, modelQuery, money, planKind, readPlans, readProduct, searchProducts, serviceCatalog, systemName, variantLetter } from './pos.js';
 import type { InstallationOption } from './pos.js';
 import type { Conversation, Stage } from './store.js';
@@ -458,7 +459,12 @@ export async function productCapability(
     return '';
   }
   const specs = cleanSpecs(product.description);
-  const coverage = coverageOf(specs);
+  // The datasheet row is the detailed answer; the catalog description is the
+  // fallback written for the price list. Either can be missing, never guessed.
+  const sheet = await specsFor(product).catch(() => undefined);
+  const sheetLines = sheet ? specLines(sheet, say) : [];
+  const coverage = coverageOf(specs)
+    ?? (sheet?.coverage_m ? { low: sheet.coverage_m, high: sheet.coverage_m } : undefined);
   const meters = coverageMeters(text);
   // "Details zake" asks for everything the catalog holds; only a question about
   // distance needs the range explanation. Answering a plain details request with
@@ -476,9 +482,18 @@ export async function productCapability(
   if (facts) lines.push(facts);
   lines.push(inStock ? say('Ipo stock kwa sasa.', 'Currently in stock.')
     : say('Imeisha stock kwa sasa.', 'Currently out of stock.'));
+  if (sheetLines.length) {
+    lines.push(...sheetLines);
+    if (!sheet?.verified) {
+      lines.push(say('Viwango hivi ni vya kumbukumbu za duka; timu itathibitisha kwa datasheet ya mtengenezaji.',
+        'These figures are from our shop records; the team will confirm them against the manufacturer datasheet.'));
+    }
+  }
   if (specs) lines.push(specs.slice(0, 700));
   if (rangeAsked) {
-    if (coverage) {
+    // The datasheet row already printed the range; repeating it reads like a bot
+    // that does not know what it just said.
+    if (coverage && !sheet?.coverage_m) {
       const span = coverage.low === coverage.high
         ? `mita ${coverage.high}`
         : `mita ${coverage.low}–${coverage.high}`;
@@ -499,7 +514,7 @@ export async function productCapability(
       lines.push(say('Maelezo ya bidhaa hayataji umbali maalum, kwa hiyo sitatoa namba ya kubahatisha. Niambie ukubwa wa eneo (mita kwa mita) na kama kuna kizuizi, nitakusaidia kuchagua; kama unahitaji vipimo rasmi vya mtengenezaji, nitakuunganisha na timu.',
         'The product description does not state a distance, so I will not guess a number. Tell me the size of the area (metres) and whether it is obstructed and I will help you choose; if you need the manufacturer’s official figures I can bring in the team.'));
     }
-  } else if (!specs) {
+  } else if (!specs && !sheetLines.length) {
     // Saying nothing would let the customer assume the bot read the datasheet.
     // State plainly what is recorded and offer the team for the manufacturer specs.
     lines.push(say('Maelezo ya kina ya mtengenezaji bado hayajaingizwa kwenye mfumo kwa bidhaa hii. Nikakuuliza unachotaka kujua (umbali, band, ports) ili timu ikuthibitishie?',

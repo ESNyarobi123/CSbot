@@ -17,6 +17,7 @@ import { blockedLinkStates, codeDisplayMs, codeRequestMs, qrLifetimeMs } from '.
 import { catalog, productImageRef, readProduct } from './pos.js';
 import { advanceSale, currentSale, openSale, saleByRequest, salesHistory, withoutQuote } from './sales.js';
 import { seal, unseal } from './secrets.js';
+import { listSpecs, saveSpec } from './specs.js';
 import { enqueue, ingest, recipient, setMode, type Conversation } from './store.js';
 
 function read<T extends z.ZodType>(schema: T, input: unknown): z.infer<T> {
@@ -479,6 +480,37 @@ class AdminController {
       ON CONFLICT (id) DO UPDATE SET system=EXCLUDED.system,title=EXCLUDED.title,content=EXCLUDED.content,
       tags=EXCLUDED.tags,source_url=EXCLUDED.source_url,published=EXCLUDED.published,updated_at=now() RETURNING *`,
     [id, input.system, input.title, input.content, input.tags, input.sourceUrl ?? null, input.published]);
+  }
+
+  @Get('device-specs')
+  async deviceSpecs(@Query('limit') raw: unknown) {
+    return listSpecs(read(pageSize, raw));
+  }
+
+  /** The shop adds a new model here instead of waiting for a deploy. */
+  @Put('device-specs/:key')
+  async saveDeviceSpec(@Param('key') key: string, @Body() body: unknown) {
+    const input = read(z.object({
+      model: z.string().trim().min(2).max(120),
+      brand: z.string().trim().max(80).optional(),
+      deployment: z.enum(['indoor', 'outdoor', 'both']).optional(),
+      wifi: z.string().trim().max(120).optional(),
+      bands: z.string().trim().max(120).optional(),
+      ports: z.string().trim().max(120).optional(),
+      poe: z.string().trim().max(120).optional(),
+      coverageM: z.coerce.number().int().min(1).max(100000).optional(),
+      users: z.coerce.number().int().min(1).max(100000).optional(),
+      notes: z.string().trim().max(2000).optional(),
+      sourceUrl: z.url({ protocol: /^https$/ }).optional(),
+      verified: z.boolean().default(false),
+    }), body);
+    return saveSpec({
+      model_key: key, model: input.model, brand: input.brand ?? null,
+      deployment: input.deployment ?? null, wifi: input.wifi ?? null, bands: input.bands ?? null,
+      ports: input.ports ?? null, poe: input.poe ?? null, coverage_m: input.coverageM ?? null,
+      users: input.users ?? null, notes: input.notes ?? null,
+      source_url: input.sourceUrl ?? null, verified: input.verified,
+    });
   }
 
   @Get('products')
