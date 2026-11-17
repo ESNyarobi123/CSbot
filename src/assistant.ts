@@ -1061,7 +1061,8 @@ async function answer(
     // useful question rather than a generic "what do you need?".
     if (seen && /access point|router|switch|antenna|ap\b/i.test(seen.kind) && seen.confidence >= 0.3) {
       return result(say('Nimeona kifaa cha mtandao kwenye picha, lakini model haisomeki vizuri. Nipige picha ya karibu ya label (upande wa chini au nyuma) ili nikusomee model na nikakague bei?',
-        'I can see a network device in your photo, but the model is not legible. Send a close-up of the label (underneath or at the back) and I will read the model and check the price.'))
+        'I can see a network device in your photo, but the model is not legible. Send a close-up of the label (underneath or at the back) and I will read the model and check the price.'),
+      { trace: [`Photo read as ${seen.kind} (confidence ${seen.confidence.toFixed(2)})`, 'No model text visible on the label'] });
     }
   }
   if (decision.intent === 'payment_reported') {
