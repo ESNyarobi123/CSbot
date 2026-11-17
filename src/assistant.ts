@@ -116,33 +116,42 @@ export function smallTalkOnly(text: string) {
 /** Where the business is and when it is reachable — only from approved knowledge. */
 const placeQuestion = /\b(unaishi|mnaishi|mko|mupo|mnapatikana|unapatikana|ofisi\w*|office|mahali|address|anwani|ramani|location|mnafanya kazi|saa za kazi|opening|hours|wikendi|weekend|jumamosi|jumapili|mko wapi|upo wapi)\b/i;
 
-/** Answer in the same register the person used, then leave the door open. */function smallTalkReply(text: string, say: (sw: string, en: string) => string) {
+/** Answer in the same register the person used, then leave the door open. */
+function smallTalkReply(text: string, say: (sw: string, en: string) => string, last?: string) {
   const lower = text.toLowerCase();
-  if (/^(asante|shukran|thank you|thanks|thx)\b/.test(lower.trim())) {
-    return say('Karibu sana!', 'You’re welcome!');
-  }
-  if (/\bshikamoo\b/.test(lower)) {
-    return say('Marahaba! Karibu — niambie, nikusaidie nini leo?',
-      'Hello! Welcome — tell me, what can I help you with today?');
-  }
-  if (/\b(poa|safi|fresh|nzuri)\b/.test(lower) && !/\b(mambo|vipi|habari)\b/.test(lower)) {
-    return say('Vizuri! Karibu — niambie unahitaji nini.',
-      'Good to hear! Welcome — tell me what you need.');
-  }
-  if (/\b(mambo|vipi|vpp|niaje|sup|yo|hi|hey|hello)\b/.test(lower)) {
-    return say('Mambo! Poa sana, karibu. Niambie — nikusaidie nini leo?',
-      'Hey! All good here. Tell me — what can I help you with today?');
-  }
-  if (/\b(habari|hujambo|salama|asubuhi|mchana|jioni|morning|afternoon|evening)\b/.test(lower)) {
-    return say('Habari! Nzuri, asante. Karibu — nikusaidie nini leo?',
-      'Hello! Very well, thanks. Welcome — what can I help you with today?');
-  }
-  if (/^(sawa|ok|okay|haya|ndio|yes)\b/.test(lower.trim())) {
-    return say('Sawa! Nipo hapa — niambie unahitaji nini.',
-      'Alright! I’m here — tell me what you need.');
-  }
-  return say('Karibu! Niambie — nikusaidie nini leo?',
-    'Welcome! Tell me — what can I help you with today?');
+  const base = (() => {
+    if (/^(asante|shukran|thank you|thanks|thx)\b/.test(lower.trim())) {
+      return say('Karibu sana!', 'You’re welcome!');
+    }
+    if (/\bshikamoo\b/.test(lower)) {
+      return say('Marahaba! Karibu — niambie, nikusaidie nini leo?',
+        'Hello! Welcome — tell me, what can I help you with today?');
+    }
+    if (/\b(poa|safi|fresh|nzuri)\b/.test(lower) && !/\b(mambo|vipi|habari)\b/.test(lower)) {
+      return say('Vizuri! Karibu — niambie unahitaji nini.',
+        'Good to hear! Welcome — tell me what you need.');
+    }
+    if (/\b(mambo|vipi|vpp|niaje|sup|yo|hi|hey|hello)\b/.test(lower)) {
+      return say('Mambo! Poa sana, karibu. Niambie — nikusaidie nini leo?',
+        'Hey! All good here. Tell me — what can I help you with today?');
+    }
+    if (/\b(habari|hujambo|salama|asubuhi|mchana|jioni|morning|afternoon|evening)\b/.test(lower)) {
+      return say('Habari! Nzuri, asante. Karibu — nikusaidie nini leo?',
+        'Hello! Very well, thanks. Welcome — what can I help you with today?');
+    }
+    if (/^(sawa|ok|okay|haya|ndio|yes)\b/.test(lower.trim())) {
+      return say('Sawa! Nipo hapa — niambie unahitaji nini.',
+        'Alright! I’m here — tell me what you need.');
+    }
+    return say('Karibu! Niambie — nikusaidie nini leo?',
+      'Welcome! Tell me — what can I help you with today?');
+  })();
+  // A returning customer greets again weeks later; picking the thread up is what
+  // makes the memory feel like a person rather than a database.
+  const thanks = /^(asante|shukran|thank you|thanks|thx)\b/.test(lower.trim());
+  return !last || thanks ? base
+    : base + say(`\n\nTulikuwa tunaangalia ${last} — ungependa tuendelee na hiyo?`,
+      `\n\nWe were looking at ${last} — would you like to continue with it?`);
 }
 
 const systemLabel = (system: string) => system === 'wotefy' ? 'WoteFy' : system === 'lubfy' ? 'LubFy' : '';
@@ -924,6 +933,10 @@ export async function respond(
   // Site facts are kept per WhatsApp number, so the next chat starts where this
   // one left off. Failure to store must never cost the customer a reply.
   if (!onlyDetect && outcome.memory?.facts) {
+    // The device under discussion is the thread a returning customer picks up,
+    // so it is stored with the site facts rather than only on this conversation.
+    const model = outcome.memory.product?.name;
+    if (model) outcome.memory.facts = { ...outcome.memory.facts, last_model: model };
     await saveCustomerMemory(client, conversation.account_id, conversation.customer_jid, outcome.memory.facts);
   }
   return outcome;
@@ -1005,7 +1018,7 @@ async function answer(
   }
   if (!onlyDetect && smallTalkOnly(newest) && !memory.awaitingService && !memory.support
       && !memory.lastQuote && !memory.product) {
-    return result(smallTalkReply(newest, say));
+    return result(smallTalkReply(newest, say, stored.last_model));
   }
   // A customer photographing the box or its label is telling us which device
   // they have. Read it before the sales branches: the answer is that device's
@@ -1029,8 +1042,15 @@ async function answer(
         }).catch(() => undefined);
         const sheet = advised?.answer ?? await productCapability(found.id, newest, say);
         if (advised) memory.trace = [...trace, ...advised.trace];
+        // A photo is usually the start of a sale, not the end of one: name the
+        // next step instead of leaving the customer with a datasheet.
+        const next = memory.facts.place
+          ? say('\n\nUngependa jumla pamoja na waya na installation, au maelezo ya modeli nyingine ya kulinganisha?',
+            '\n\nWould you like the total with cable and installation, or details of another model to compare?')
+          : say('\n\nKifaa hiki kitawekwa ndani au nje? Nikakusaidia kuchagua eneo na nikakupatie jumla pamoja na waya na installation.',
+            '\n\nWill this device be installed indoors or outdoors? I can help with the placement and give you a total with cable and installation.');
         return result(say(`Nimeona kwenye picha: ${found.name}.`, `From your photo: ${found.name}.`)
-          + '\n\n' + sheet, { stage: 'quoted', trace: memory.trace });
+          + '\n\n' + sheet + next, { stage: 'quoted', trace: memory.trace });
       }
       memory.facts = { ...memory.facts, photo: model };
       return result(say(`Nimeona kwenye picha: ${model}. Kifaa hiki sijakipata kwenye POS kwa jina hilo — niambie model kamili iliyoandikwa kwenye label, au nitumie picha ya karibu zaidi ya label, nikakague bei na stock.`,
@@ -1298,27 +1318,47 @@ async function answer(
           return option;
         });
         memory.optionQuery = decision.query;
-        const choices = memory.productOptions.map(optionLine).join('\n');
-        // Say honestly what the shop recorded, so "mita 300" is not answered with
-        // a model whose own datasheet stops at 200 m.
-        const highest = Math.max(0, ...memory.productOptions.map(item => item.coverage ?? 0));
-        const reaches = Boolean(meters && highest >= meters!);
-        const gap = meters && highest && highest < meters
-          ? say(`\n\nKwenye orodha hii coverage inayotajwa ni hadi mita ${highest}. Kwa mita ${meters} niambie eneo ni la wazi au kuna vizuizi, na kama ni kubwa tunaweza kupanga AP zaidi ya moja.`,
-            `\n\nThese list a stated coverage of up to ${highest} m. For ${meters} m, tell me whether the area is open or obstructed, and if it is large we may plan more than one AP.`)
-          : '';
-        const caveat = !meters || gap ? '' : reaches
-          ? say('\n\nUmbali huo ni wa eneo la wazi. Kuta, miti na mahali pa kuweka AP huathiri signal — niambie eneo ni la wazi au kuna vizuizi.',
-            '\n\nThose figures assume open space. Walls, trees and AP placement affect the signal — tell me whether the site is open or obstructed.')
-          : say(`\n\nUmbali wa mita ${meters} ni coverage. Niambie eneo ni la wazi au kuna kizuizi (ukuta/miti) ili nikusaidie kuchagua.`,
-            `\n\nA distance of ${meters} m is coverage. Tell me whether the area is open or has walls/trees so I can help you choose.`);
-        return result((reaches
-          ? say(`Kwa mita ${meters}, modeli hizi zinafikia kulingana na vipimo zilizorekodiwa`,
-            `For ${meters} m, these reach it based on recorded specifications`)
-          : say('Hizi ndizo model zilizopo', 'These are the models we have')) + '\n' + choices
-          + gap + caveat
-          + say('\n\nUnayochagua ni ipi? Au niambie "model zingine" nikakuonyesha zaidi.',
-            '\n\nWhich one do you want? Or say "more models" and I will show you the rest.'));
+        const listed = memory.productOptions;
+        // A stated distance splits the list by what the datasheet actually says.
+        // Leading with a model that stops at 100 m reads like the bot ignored the
+        // requirement, so the ones that meet it come first and the rest are
+        // labelled as needing a second AP or a closer mounting point.
+        const fitting = meters ? listed.filter(item => (item.coverage ?? 0) >= meters!) : [];
+        const short = meters ? listed.filter(item => item.coverage !== undefined && item.coverage < meters!) : [];
+        const unknown = meters ? listed.filter(item => item.coverage === undefined) : [];
+        if (meters) {
+          const parts: string[] = [];
+          parts.push(fitting.length
+            ? say(`Kwa mita ${meters}, hizi zinafikia kulingana na vipimo zilizorekodiwa`,
+              `For ${meters} m, these reach it based on recorded specifications`)
+              + '\n' + fitting.map(optionLine).join('\n')
+            : say(`Kwa mita ${meters}, hakuna modeli iliyorekodiwa kufikia umbali huo peke yake.`,
+              `For ${meters} m, no model here records that range on its own.`));
+          if (short.length) {
+            parts.push(say(`Hizi zinafikia chini ya mita ${meters} peke yake — kwa eneo hilo zitahitaji AP ya pili au kuwekwa karibu zaidi:`,
+              `These stop short of ${meters} m on their own — for that area they need a second AP or a closer mounting point:`)
+              + '\n' + short.map(optionLine).join('\n'));
+          }
+          if (unknown.length && !fitting.length) {
+            parts.push(say('Hizi hazina umbali uliorekodiwa kwenye maelezo ya bidhaa:',
+              'These have no range recorded in the product description:')
+              + '\n' + unknown.slice(0, 3).map(optionLine).join('\n'));
+          }
+          parts.push(say('Umbali huo ni wa eneo la wazi. Kuta, miti na mahali pa kuweka AP huathiri signal — niambie eneo ni la wazi au kuna vizuizi.',
+            'Those figures assume open space. Walls, trees and AP placement affect the signal — tell me whether the site is open or obstructed.'));
+          // Coverage metres are not cable metres: the run is router to AP. Asking
+          // for it gets a real cable-and-fitting total instead of a made-up one.
+          parts.push(say('Kifaa kitawekwa umbali gani kutoka kwenye router? Nikakupa bei ya waya kwa mita na installation pamoja na kifaa.',
+            'How far from the router will the device sit? I can then price the cable per metre plus installation with the device.'));
+          parts.push(say('Ni model ipi unayochagua? Au niambie "model zingine" nikakuonyesha zaidi.',
+            'Which model do you want? Or say "more models" and I will show you the rest.'));
+          return result(parts.join('\n\n'));
+        }
+        const choices = listed.map(optionLine).join('\n');
+        return result(say('Hizi ni modeli tulizonazo, kila moja na bei yake', 'These are the models we stock, each with its price')
+          + '\n' + choices
+          + say(`\n\nKabla uchague: eneo ni la ndani au nje, na unataka Wi-Fi ifike mita ngapi kutoka kwenye kifaa? Nikakuchagulia kinachofaa. Au niambie "model zingine" nikakuonyesha zaidi.`,
+            '\n\nBefore you pick: is the site indoors or outdoors, and how many metres should the Wi-Fi reach from the device? I can then choose the right one. Or say "more models" and I will show you the rest.'));
       }
       const picked = (exact[0] ?? best ?? items[0]).id;
       // The catalog shares a single vCPU with the shop, so a slow reply is normal under

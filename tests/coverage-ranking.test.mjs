@@ -80,9 +80,11 @@ test('a stated distance leads with the model whose datasheet reaches it', async 
 
 test('a distance nothing reaches is stated honestly, with the highest recorded figure', async () => {
   const outcome = await respond(client, conversation({}), 'Nahitaji access point ya mita 500', []);
-  assert.doesNotMatch(outcome.body, /^Kwa mita 500/);
+  assert.doesNotMatch(outcome.body, /zinafikia kulingana na vipimo/);
+  assert.match(outcome.body, /Kwa mita 500, hakuna modeli iliyorekodiwa kufikia umbali huo/);
   assert.match(outcome.body, /hadi mita 320/);
-  assert.match(outcome.body, /tunaweza kupanga AP zaidi ya moja/);
+  // The short models are grouped as needing more than one unit, not sold as enough.
+  assert.match(outcome.body, /AP ya pili/);
 });
 
 test('a cable order keeps its metre price', async () => {

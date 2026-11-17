@@ -38,11 +38,14 @@ export async function studio(container, signal) {
             `<button type="button" class="starter" data-starter="${index}">${esc(text)}</button>`).join('')}
         </div>
         <form class="chat-form" id="chat-form">
+          <button type="button" class="chat-attach" id="chat-attach" aria-label="Attach a photo of the device">${icon('image', 17)}</button>
+          <input type="file" id="chat-file" accept="image/jpeg,image/png,image/webp" hidden>
           <label class="sr-only" for="chat-input">Message CSbot</label>
           <textarea id="chat-input" rows="1" maxlength="1200"
             placeholder="Andika kama mteja… (e.g. Nahitaji AP ya nje)"></textarea>
           <button class="btn primary" type="submit" aria-label="Send">${icon('send', 17)}</button>
         </form>
+        <p class="chat-attached" id="chat-attached" hidden></p>
       </section>
       <aside class="card trace-pane" id="trace-pane" aria-live="polite">
         ${traceEmpty()}
@@ -54,6 +57,16 @@ export async function studio(container, signal) {
   const form = container.querySelector('#chat-form');
   const field = container.querySelector('#chat-input');
   const status = container.querySelector('#chat-status');
+  const file = container.querySelector('#chat-file');
+  const attached = container.querySelector('#chat-attached');
+  // A photo is read by the same vision path the WhatsApp worker uses; the studio
+  // keeps it beside the message so the trace can prove what was recognised.
+  let pending = null;
+
+  function drawAttached() {
+    attached.hidden = !pending;
+    attached.textContent = pending ? `Photo attached — it will be read with your next message` : '';
+  }
 
   function scroll() {
     log.scrollTop = log.scrollHeight;
@@ -62,7 +75,8 @@ export async function studio(container, signal) {
   function draw() {
     container.querySelector('#chat-starters').hidden = turns.length > 0;
     log.innerHTML = turns.length ? turns.map((turn, index) => `
-      <div class="bubble customer">${esc(turn.customer)}</div>
+      <div class="bubble customer">${turn.photo ? `<span class="bubble-photo">${icon('image', 13)} Picha ya kifaa</span>` : ''}${esc(turn.customer)}
+      </div>
       <div class="bubble bot">
         ${esc(turn.reply).replace(/\n/g, '<br>')}
         <footer><span>${turn.ms} ms</span>${turn.stage ? stagePill(turn.stage) : ''}
@@ -110,24 +124,31 @@ export async function studio(container, signal) {
       </div>`;
   }
 
-  async function send(text) {
-    if (busy || !text.trim()) return;
+  async function send(text, photo = pending) {
+    const body = text.trim() || (photo ? 'Nimetuma picha ya kifaa' : '');
+    if (busy || !body) return;
     busy = true;
     const history = turns.map(turn => turn.customer);
-    history.push(text.trim());
+    history.push(body);
     log.insertAdjacentHTML('beforeend',
-      `<div class="bubble customer pending">${esc(text.trim())}</div><div class="bubble bot typing" id="typing">
+      `<div class="bubble customer pending">${photo ? `<span class="bubble-photo">${icon('image', 13)} Picha ya kifaa</span>` : ''}${esc(body)}</div><div class="bubble bot typing" id="typing">
         <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>`);
     scroll();
     try {
-      const result = await api('/playground', { method: 'POST', data: { messages: history.slice(-12) }, signal });
+      const data = { messages: history.slice(-12) };
+      if (photo) data.photo = { base64: photo.base64, mimetype: photo.mimetype };
+      const result = await api('/playground', { method: 'POST', data, signal });
       turns = result.turns;
       picked = turns.length - 1;
-      status.textContent = result.model ? `Answered with ${result.model}` : 'Rule engine only — Gemini is not configured';
+      if (photo) pending = null;
+      drawAttached();
+      status.textContent = result.vision
+        ? `Vision ready · ${result.model ?? 'Gemini'}`
+        : 'Rule engine only — Gemini is not configured, so photos cannot be read';
     } catch (error) {
       notify(error.message, true);
-      turns = turns.concat([{ customer: text.trim(), reply: 'CSbot could not answer that one. Try again.',
-        trace: [], facts: [], stage: null, ms: 0 }]);
+      turns = turns.concat([{ customer: body, reply: 'CSbot could not answer that one. Try again.',
+        trace: [], facts: [], stage: null, ms: 0, photo: Boolean(photo) }]);
     } finally {
       busy = false;
       draw();
@@ -154,9 +175,31 @@ export async function studio(container, signal) {
   };
   container.querySelectorAll('[data-starter]').forEach((button) =>
     (button.onclick = () => void send(starters[Number(button.dataset.starter)])));
+  container.querySelector('#chat-attach').onclick = () => file.click();
+  file.onchange = async () => {
+    const chosen = file.files?.[0];
+    file.value = '';
+    if (!chosen) return;
+    if (chosen.size > 4_000_000) return notify('Photo is too large — use one under 4 MB', true);
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(chosen.type)) {
+      return notify('Send a JPEG, PNG or WebP photo', true);
+    }
+    const url = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(chosen);
+    }).catch(() => undefined);
+    if (!url) return notify('That photo could not be read', true);
+    pending = { base64: url.split(',')[1], mimetype: chosen.type };
+    drawAttached();
+    field.focus();
+  };
   container.querySelector('[data-reset]').onclick = () => {
     turns = [];
     picked = 0;
+    pending = null;
+    drawAttached();
     status.textContent = 'Ready — Gemini not used for this answer yet';
     draw();
     trace();

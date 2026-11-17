@@ -105,6 +105,7 @@ export function factList(facts?: Facts) {
     coverage_m: 'Distance to cover', clients: 'Concurrent users', place: 'Indoor / outdoor',
     site: 'Site', system: 'Billing system', fleet: 'Existing fleet', equipment: 'Equipment already owned',
     use: 'Use case', budget: 'Budget', asked_mesh: 'Asked about mesh', also: 'Also interested in',
+    last_model: 'Last model discussed',
     photo: 'Model read from photo',
   };
   return Object.entries(facts)
@@ -115,7 +116,9 @@ export function factList(facts?: Facts) {
 /** Facts in one block for a prompt, newest site knowledge first. */
 export function factBrief(facts?: Facts) {
   if (!facts) return '';
-  return Object.entries(facts).filter(([, value]) => Boolean(value))
+  // The last model is continuity for the chat, not something the customer said
+  // about their site; handing it to the composer invites "you already own it".
+  return Object.entries(facts).filter(([key, value]) => Boolean(value) && key !== 'last_model')
     .map(([key, value]) => `${key}: ${value}`).join('\n');
 }
 

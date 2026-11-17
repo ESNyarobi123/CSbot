@@ -4020,6 +4020,47 @@ dialog[open]::backdrop {
   outline: 2px solid #d9d2fd;
   border-color: #c6bcf9;
 }
+.chat-attach {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border: 1px solid #e3e6ef;
+  border-radius: 10px;
+  background: #fff;
+  color: #5b5f73;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.chat-attach:hover {
+  background: var(--accent-soft);
+  border-color: #cfc6fb;
+  color: #4a3fbd;
+}
+.chat-attached {
+  margin: 0;
+  padding: 0 16px 10px;
+  font-size: 11.5px;
+  color: #4a3fbd;
+}
+.bubble-photo {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 7px;
+  padding: 2px 7px 2px 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  vertical-align: 1px;
+}
+.bubble.bot .bubble-photo {
+  background: var(--accent-soft);
+  color: #4a3fbd;
+}
 .trace-pane {
   position: sticky;
   top: 16px;

@@ -544,11 +544,17 @@ class AdminController {
   async playground(@Body() body: unknown) {
     const input = read(z.object({
       messages: z.array(z.string().trim().min(1).max(1200)).min(1).max(12),
+      // The same vision path the worker uses on WhatsApp, so the studio can show
+      // what a photographed device is read as before it goes live.
+      photo: z.object({
+        base64: z.string().min(16).max(6_000_000),
+        mimetype: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+      }).optional(),
     }), body);
     const memory: Conversation['memory'] = {};
     const turns: {
       customer: string; reply: string; trace: string[]; facts: ReturnType<typeof factList>;
-      stage: string | null; ms: number;
+      stage: string | null; ms: number; photo: boolean;
     }[] = [];
     const base = {
       id: 'playground', account_id: 'playground', customer_jid: 'playground@s.whatsapp.net',
@@ -557,22 +563,25 @@ class AdminController {
     };
     const client = await db.connect();
     try {
-      for (const text of input.messages) {
+      for (const [index, text] of input.messages.entries()) {
         const started = Date.now();
+        // A photo belongs to the message it arrived with, so only the last turn
+        // receives it; earlier turns were already answered from text.
+        const photo = index === input.messages.length - 1 ? input.photo : undefined;
         const outcome = await respond(client, { ...base, memory } as Conversation, text,
           turns.slice(-6).flatMap(turn => [{ direction: 'inbound' as const, body: turn.customer },
-            { direction: 'outbound' as const, body: turn.reply }]));
+            { direction: 'outbound' as const, body: turn.reply }]), false, photo);
         turns.push({
           customer: text, reply: outcome.body, trace: outcome.trace ?? [],
           facts: factList(outcome.memory.facts), stage: outcome.stage ?? null,
-          ms: Date.now() - started,
+          ms: Date.now() - started, photo: Boolean(photo),
         });
         Object.assign(memory, outcome.memory);
       }
     } finally {
       client.release();
     }
-    return { turns, model: config.GEMINI_API_KEY ? config.GEMINI_MODEL : null };
+    return { turns, vision: Boolean(config.GEMINI_API_KEY), model: config.GEMINI_API_KEY ? config.GEMINI_MODEL : null };
   }
 
   /** Live CSolution catalog: prices, stock, brand, description and photos. */

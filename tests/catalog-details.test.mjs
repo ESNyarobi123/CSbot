@@ -88,10 +88,11 @@ test('access point plus a distance lists AP models with prices, never cable', as
   assert.match(outcome.body, /COMFLAST CF-WA 933 — TZS 120,000/);
   assert.match(outcome.body, /TP LINK EAP 110 — TZS 95,000 · hadi mita 100/);
   assert.match(outcome.body, /TP LINK EAP 610 — TZS 250,000 · hadi mita 200/);
-  // The catalog's own coverage figures are stated, and 300 m is answered honestly
-  // instead of being silently matched to a 200 m model.
-  assert.match(outcome.body, /hadi mita 200\. Kwa mita 300/);
-  assert.match(outcome.body, /mita 300/);
+  // 300 m is answered honestly: nothing here records that range, and the models
+  // that stop short are grouped as needing a second AP rather than sold as enough.
+  assert.match(outcome.body, /Kwa mita 300, hakuna modeli iliyorekodiwa kufikia umbali huo/);
+  assert.match(outcome.body, /chini ya mita 300 peke yake/);
+  assert.match(outcome.body, /umbali gani kutoka kwenye router/);
   // "300Mbps" must never be read as a coverage distance.
   assert.doesNotMatch(outcome.body, /CF-E5 — TZS 85,000 · hadi mita 300/);
   assert.ok(outcome.memory.productOptions?.length >= 5);
