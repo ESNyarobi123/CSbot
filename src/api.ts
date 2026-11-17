@@ -621,6 +621,9 @@ function imageMimetype(bytes: Buffer) {
 class ApiModule {}
 
 const app = await NestFactory.create<NestExpressApplication>(ApiModule, { logger: ['error', 'warn', 'log'] });
+// Caddy terminates TLS on the host and proxies to this port, so one trusted hop
+// makes req.secure and the dashboard origin check see https instead of http.
+app.set('trust proxy', 1);
 app.useStaticAssets(dashboardDir + 'assets', { prefix: '/assets/', index: false });
 const shutdown = async () => { await app.close(); await db.end(); };
 for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => { void shutdown(); });

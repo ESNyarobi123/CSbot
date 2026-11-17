@@ -1,0 +1,48 @@
+# Production overrides for a small shared VPS (1 vCPU, ~1 GB RAM).
+#
+#   docker compose -f compose.yaml -f compose.prod.yaml up -d --build
+#
+# Memory limits stop one service from starving the shop that runs beside it.
+# A container that hits its cap is restarted by Docker, so the numbers below
+# leave room for the JVM-free Node heap plus BullMQ's Lua scripts.
+name: csbot
+
+services:
+  postgres:
+    # The default 128 MB shared_buffers is a large slice of a 1 GB machine.
+    command: [postgres, -c, shared_buffers=32MB, -c, max_connections=25, -c, effective_cache_size=192MB]
+    deploy:
+      resources:
+        limits:
+          memory: 240M
+
+  redis:
+    command: [redis-server, --appendonly, "yes", --maxmemory, 64mb, --maxmemory-policy, noeviction]
+    deploy:
+      resources:
+        limits:
+          memory: 112M
+
+  api:
+    environment:
+      NODE_OPTIONS: --max-old-space-size=192
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  worker:
+    environment:
+      NODE_OPTIONS: --max-old-space-size=288
+    deploy:
+      resources:
+        limits:
+          memory: 400M
+
+  whatsapp-gateway:
+    environment:
+      NODE_OPTIONS: --max-old-space-size=288
+    deploy:
+      resources:
+        limits:
+          memory: 400M
