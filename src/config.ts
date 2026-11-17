@@ -11,6 +11,8 @@ export const config = z.object({
   ALLOW_MOCK: z.enum(['true', 'false']).default('false').transform(value => value === 'true'),
   GEMINI_API_KEY: optional,
   GEMINI_MODEL: z.string().regex(/^[\w.-]+$/).default('gemini-3.1-flash-lite'),
+  // Flash models are occasionally saturated; a second model keeps replies smart.
+  GEMINI_FALLBACK_MODEL: z.string().regex(/^[\w.-]+$/).default('gemini-3.5-flash-lite'),
   SYNC_FULL_HISTORY: z.enum(['true', 'false']).default('true').transform(value => value === 'true'),
   POS_BASE_URL: z.preprocess(value => value === '' ? undefined : value,
     z.url({ protocol: /^https?$/ }).optional()),
