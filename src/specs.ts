@@ -55,6 +55,26 @@ export async function specsFor(
 }
 
 /**
+ * Every sheet for a shortlist in one round trip. A list of six devices must not
+ * cost six queries while the customer waits.
+ */
+export async function specsForMany(
+  products: { name: string; sku?: string | null; brand?: string | null }[],
+  client: Queryable = db,
+) {
+  const keys = [...new Set(products.flatMap(specKeys))];
+  if (!keys.length) return new Map<string, DeviceSpec>();
+  const found = await client.query<DeviceSpec>(
+    'SELECT * FROM device_specs WHERE model_key = ANY($1)', [keys]);
+  return new Map(found.rows.map(sheet => [sheet.model_key, sheet]));
+}
+
+/** The sheet belonging to one product, whatever key it was stored under. */
+export function sheetFor(sheets: Map<string, DeviceSpec>, product: { name: string; sku?: string | null; brand?: string | null }) {
+  return specKeys(product).map(key => sheets.get(key)).find(Boolean);
+}
+
+/**
  * The spec sheet in customer language. Only recorded fields are printed: an
  * empty column must never turn into a guessed band or a made-up range.
  */

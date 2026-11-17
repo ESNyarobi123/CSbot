@@ -25,6 +25,13 @@ export interface Conversation {
     productOptions?: { id: string; name: string; sku?: string; price?: string; coverage?: number }[];
     /** The query behind productOptions, so "model zingine?" can widen the list. */
     optionQuery?: string;
+    /** Order of the last model list, so "namba 2" means the second model shown. */
+    lastOptionIds?: string[];
+    /** What the site must do, collected before a model list is offered. */
+    requirements?: { coverageMeters?: number; users?: number;
+      obstacles?: 'open' | 'obstructed'; environment?: 'indoor' | 'outdoor' | 'mixed' };
+    /** Which planning flow produced the current shortlist. */
+    planning?: 'mesh' | 'coverage';
     quoteFor?: 'product' | 'plan';
     /** Set while the bot waits for "yes" to its installation/cable offer. */
     awaitingService?: boolean;

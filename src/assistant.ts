@@ -3,7 +3,7 @@ import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { config } from './config.js';
 import { log, row } from './db.js';
-import { specsFor, specLines } from './specs.js';
+import { sheetFor, specsFor, specsForMany, specLines } from './specs.js';
 import { cableQuote, catalog, installationOptions, isModelReference, modelQuery, money, planKind, readPlans, readProduct, searchProducts, serviceCatalog, systemName, variantLetter } from './pos.js';
 import type { InstallationOption } from './pos.js';
 import type { Conversation, Stage } from './store.js';
@@ -452,7 +452,12 @@ export function coverageQuestion(text: string) {
 /** "mita 300" next to a device is the distance to cover, not a cable order. */
 export function coverageMeters(text: string) {
   if (cableWords.test(text) || !metreWords.test(text)) return undefined;
-  return cableMeters(text);
+  // A yard can be longer than the cable reel, so coverage is not capped at the
+  // 300 m the shop keeps on the shelf.
+  const match = /\b(?:mita|mtr|metres?|meters?)\s*(\d{1,5})\b/i.exec(text)
+    ?? /\b(\d{1,5})\s*(?:mita|mtr|metres?|meters?)\b/i.exec(text);
+  const value = match ? Number(match[1]) : NaN;
+  return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 /** Catalog descriptions arrive as HTML; a WhatsApp price list needs plain text. */
@@ -1105,9 +1110,18 @@ export async function respond(
     if (!memory.product && memory.optionQuery && moreModelsWords.test(newest) && !modelQuery(newest)) {
       const search = await searchProducts(memory.optionQuery, 20).catch(() => undefined);
       const seen = new Set((memory.productOptions ?? []).map(item => item.id));
-      const extra = (search?.items ?? [])
-        .filter(item => !seen.has(item.id) && soldAsDevice(item))
-        .slice(0, 8).map(optionOf);      if (extra.length) {
+      const fresh = (search?.items ?? [])
+        .filter(item => !seen.has(item.id) && soldAsDevice(item)).slice(0, 8);
+      // The widened list carries the same facts as the first one, so a model that
+      // was missing from page one still shows how far it reaches.
+      const sheets = await specsForMany(fresh, client).catch(() => new Map());
+      const extra = fresh.map(item => {
+        const option = optionOf(item);
+        const coverage = sheetFor(sheets, item)?.coverage_m;
+        if (coverage) option.coverage = coverage;
+        return option;
+      });
+      if (extra.length) {
         memory.productOptions = [...(memory.productOptions ?? []), ...extra].slice(0, 20);
         return result(say('Hizi ndizo model zingine tulizonazo', 'These are the other models we stock') + '\n'
           + extra.map(optionLine).join('\n')
@@ -1172,23 +1186,53 @@ export async function respond(
       if (!scored.length) return result(await missingProduct(decision.query ?? '', newest, memory, say));
       const best = scored[0]?.score > 0 && scored[0].score > (scored[1]?.score ?? 0) ? scored[0].item : undefined;
       if (items.length > 1 && exact.length !== 1 && !best) {
+        const meters = coverageMeters(newest);
+        // A stated distance is a requirement, so the datasheet decides the order:
+        // "mita 300" must lead with the device that reaches 300 m even when the
+        // catalog buries it below the first five rows.
+        const stated = new Map<string, number>();
+        let shortlist = items;
+        if (meters) {
+          const wide = (await searchProducts(decision.query ?? '', 60).catch(() => undefined))?.items ?? items;
+          const devices = wide.filter(item => soldAsDevice(item as { type?: string; unit?: string; category?: string | null }));
+          shortlist = devices.length >= 2 ? devices : wide;
+          const sheets = await specsForMany(shortlist, client).catch(() => new Map());
+          for (const item of shortlist) {
+            const value = sheetFor(sheets, item)?.coverage_m ?? optionOf(item).coverage;
+            if (value) stated.set(item.id, value);
+          }
+          shortlist = [...shortlist].sort((a, b) =>
+            Number((stated.get(b.id) ?? 0) >= meters) - Number((stated.get(a.id) ?? 0) >= meters)
+            || (stated.get(b.id) ?? 0) - (stated.get(a.id) ?? 0));
+        }
         // Show a price with every choice: a bare name makes the customer ask
         // again, and the catalog already carries the figure.
-        memory.productOptions = items.slice(0, 6).map(optionOf);
+        memory.productOptions = shortlist.slice(0, 6).map(item => {
+          const option = optionOf(item);
+          const value = stated.get(item.id);
+          if (value) option.coverage = value;
+          return option;
+        });
         memory.optionQuery = decision.query;
-        const meters = coverageMeters(newest);
         const choices = memory.productOptions.map(optionLine).join('\n');
-        // Say honestly what the catalog states, so "mita 300" is not answered
-        // with a model whose own description stops at 200 m.
-        const best = Math.max(0, ...memory.productOptions.map(item => item.coverage ?? 0));
-        const gap = meters && best && best < meters
-          ? say(`\n\nKwenye orodha hii coverage inayotajwa ni hadi mita ${best}. Kwa mita ${meters} niambie eneo ni la wazi au kuna vizuizi, na kama ni kubwa tunaweza kupanga AP zaidi ya moja.`,
-            `\n\nThese list a stated coverage of up to ${best} m. For ${meters} m, tell me whether the area is open or obstructed, and if it is large we may plan more than one AP.`)
+        // Say honestly what the shop recorded, so "mita 300" is not answered with
+        // a model whose own datasheet stops at 200 m.
+        const highest = Math.max(0, ...memory.productOptions.map(item => item.coverage ?? 0));
+        const reaches = Boolean(meters && highest >= meters!);
+        const gap = meters && highest && highest < meters
+          ? say(`\n\nKwenye orodha hii coverage inayotajwa ni hadi mita ${highest}. Kwa mita ${meters} niambie eneo ni la wazi au kuna vizuizi, na kama ni kubwa tunaweza kupanga AP zaidi ya moja.`,
+            `\n\nThese list a stated coverage of up to ${highest} m. For ${meters} m, tell me whether the area is open or obstructed, and if it is large we may plan more than one AP.`)
           : '';
-        return result(say('Hizi ndizo model zilizopo', 'These are the models we have') + '\n' + choices
-          + gap
-          + (meters && !gap ? say(`\n\nUmbali wa mita ${meters} ni coverage. Niambie eneo ni la wazi au kuna kizuizi (ukuta/miti) ili nikusaidie kuchagua.`,
-            `\n\nA distance of ${meters} m is coverage. Tell me whether the area is open or has walls/trees so I can help you choose.`) : '')
+        const caveat = !meters || gap ? '' : reaches
+          ? say('\n\nUmbali huo ni wa eneo la wazi. Kuta, miti na mahali pa kuweka AP huathiri signal — niambie eneo ni la wazi au kuna vizuizi.',
+            '\n\nThose figures assume open space. Walls, trees and AP placement affect the signal — tell me whether the site is open or obstructed.')
+          : say(`\n\nUmbali wa mita ${meters} ni coverage. Niambie eneo ni la wazi au kuna kizuizi (ukuta/miti) ili nikusaidie kuchagua.`,
+            `\n\nA distance of ${meters} m is coverage. Tell me whether the area is open or has walls/trees so I can help you choose.`);
+        return result((reaches
+          ? say(`Kwa mita ${meters}, modeli hizi zinafikia kulingana na vipimo zilizorekodiwa`,
+            `For ${meters} m, these reach it based on recorded specifications`)
+          : say('Hizi ndizo model zilizopo', 'These are the models we have')) + '\n' + choices
+          + gap + caveat
           + say('\n\nUnayochagua ni ipi? Au niambie "model zingine" nikakuonyesha zaidi.',
             '\n\nWhich one do you want? Or say "more models" and I will show you the rest.'));
       }
