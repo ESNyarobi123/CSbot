@@ -156,7 +156,9 @@ export async function serviceCatalog(term: string) {
   if (!shop && !config.POS_BASE_URL) return [] as Product[];
   const items = shop ? await listShopCatalog(term, 20) : (await request('products', productListSchema,
     { search: term, limit: '20' })).items.map(proxyAssets);
-  return items.filter(item => item.type === 'Service');
+  // Some price lists mark fitting rows as Service and others as a plain product;
+  // the name is what makes it a job, so do not lose the row over its type.
+  return items.filter(item => item.type === 'Service' || /\b(?:installation|ufungaji)\b/i.test(item.name));
 }
 
 /**
@@ -184,18 +186,33 @@ export async function cableQuote(meters: number) {
   return { meters, product: cable, amount: cable.price.amount * meters, currency: cable.price.currency };
 }
 
-export type InstallationOption = {  name: string;
-  /** True when the work covers hardware the shop supplies. */
-  withOurEquipment: boolean;
+export type InstallationOption = {
+  name: string;
+  /** A when the shop supplies the device, B when the customer already owns it. */
+  variant: string;
+  /** Undefined when the price list uses a letter this bot does not understand. */
+  withOurEquipment?: boolean;
   fee: number;
   total: number;
   currency: string;
 };
 
 /**
+ * "TYPE A" and a trailing "A" both appear in the CSolution price list. The
+ * letter decides who supplies the hardware, so it is read once rather than
+ * inferred from the order the rows happen to come back in.
+ */
+export function variantLetter(name: string) {
+  const typed = /\bTYPE\s*([A-Z])\b/i.exec(name)?.[1];
+  if (typed) return typed.toUpperCase();
+  const tail = /\b([A-Z])$/.exec(name.trim());
+  return tail ? tail[1].toUpperCase() : '';
+}
+
+/**
  * Installation prices for a device. MikroTik routers and gateways use the GM
- * rate; access points use AP. Both variants are returned because the fee differs
- * depending on whether the customer buys the device from the shop or owns it.
+ * rate; access points use AP. Every priced variant is returned because Type A
+ * (shop supplies the device) and Type B (customer brings one) differ.
  */
 export async function installationOptions(product: {
   name: string; category?: string | null; price: { amount: number; currency: string };
@@ -204,14 +221,19 @@ export async function installationOptions(product: {
   const kind = /\b(mikrotik|gateway|router|hap|hex)\b/i.test(equipment) ? 'GM' : 'AP';
   const services = await serviceCatalog(kind === 'GM' ? 'GM installation' : 'AP installation');
   const options = services
-    .filter(service => service.name.toUpperCase().startsWith(kind))
-    .map(service => ({
-      name: service.name,
-      withOurEquipment: /\bTYPE A\b|\bA$/i.test(service.name.replace(kind, '')),
-      fee: service.price.amount,
-      total: product.price.amount + service.price.amount,
-      currency: service.price.currency,
-    }))
+    .filter(service => new RegExp(`\\b${kind}\\b`, 'i').test(service.name))
+    .map(service => {
+      const variant = variantLetter(service.name);
+      const withOurEquipment = variant === 'A' ? true : variant === 'B' ? false : undefined;
+      return {
+        name: service.name,
+        variant,
+        withOurEquipment,
+        fee: service.price.amount,
+        total: product.price.amount + service.price.amount,
+        currency: service.price.currency,
+      };
+    })
     .sort((a, b) => a.fee - b.fee);
   return { equipment: kind, options };
 }

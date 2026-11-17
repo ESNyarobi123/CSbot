@@ -23,6 +23,8 @@ export interface Conversation {
     plan?: { kind?: 'subscription' | 'wifi' | 'bundle'; site?: string };
     productOptions?: { id: string; name: string; sku?: string }[];
     quoteFor?: 'product' | 'plan';
+    /** Set while the bot waits for "yes" to its installation/cable offer. */
+    awaitingService?: boolean;
     recentTopic?: string;
     profile?: { equipment?: string; budget?: string; useCase?: string };
   };

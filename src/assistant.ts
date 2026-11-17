@@ -3,7 +3,7 @@ import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { config } from './config.js';
 import { log, row } from './db.js';
-import { cableQuote, catalog, installationOptions, isModelReference, modelQuery, money, planKind, readPlans, readProduct, searchProducts, serviceCatalog, systemName } from './pos.js';
+import { cableQuote, catalog, installationOptions, isModelReference, modelQuery, money, planKind, readPlans, readProduct, searchProducts, serviceCatalog, systemName, variantLetter } from './pos.js';
 import type { InstallationOption } from './pos.js';
 import type { Conversation, Stage } from './store.js';
 
@@ -44,6 +44,18 @@ const purchaseWords = /\b(bei|price|cost|stock|picha|photo|image|availability|ip
 const imageWords = /\b(picha|photo|image)\b/i;
 const modelName = /\b(?:cudy|eap|omada|mikrotik|ruijie|reyee|cambium|unifi|router|switch|access point|gateway|sku)\b|\b(?:eap|er|wr|rb)[- ]?\d+/i;
 const followUp = /\b(ile|hiyo|yake|that one|it)\b/i;
+/**
+ * True only when the message brings a model or a vendor, so a generic word
+ * ("router", "access point") or a cable length is not mistaken for a new device
+ * the customer wants priced.
+ */
+function namesNewDevice(text: string) {
+  const stripped = text
+    .replace(/\b(?:mita|metres?|meters?|mtr)\s*\d{1,3}\b/gi, ' ')
+    .replace(/\b\d{1,3}\s*(?:mita|metres?|meters?|mtr)\b/gi, ' ');
+  return Boolean(modelQuery(stripped))
+    || /\b(?:cudy|omada|mikrotik|ruijie|reyee|cambium|unifi|ubiquiti|comfast)\b/i.test(stripped);
+}
 const systemFrom = (text: string) => {
   const systems = systemName.options.filter(name => new RegExp(`\\b${name}\\b`, 'i').test(text));
   return systems.length === 1 ? systems[0] : '';
@@ -92,6 +104,12 @@ function fallback(text: string, memory: Conversation['memory']): Decision {
         : /\b(subscription|usajili|ya mfumo|ya mwezi|ya mwaka|licen[cs]e)\b/i.test(text) ? 'subscription' : memory.plan?.kind ?? '';
     answer.site = /\b(?:hotspot|site)\s+(?:ya\s+)?([\p{L}\p{N}][\p{L}\p{N} -]{1,78})\s*$/iu.exec(text)?.[1].trim() ?? '';
     answer.intent = answer.kind ? 'plan' : 'ambiguous_package';
+  } else if (serviceQuestion(text) && !modelName.test(text) && !packageWords.test(text)) {
+    // "bei ya installation na waya" is a service question. Searching the product
+    // catalog for that sentence finds nothing and then lists the installation
+    // rows as "closest models", which is the 2026-11-17 KAHAMA chat.
+    answer.intent = 'product';
+    answer.query = '';
   } else if (purchaseWords.test(text)) {
     const productText = text.replace(/\b(naomba|nataka|nipe|habari|hello|hey|hi|bei|price|cost|stock|picha|photo|image|gani|ngapi|je|ipo|zipo|inapatikana|available|nunua|buy|show|please|the|of|for|do|you|have|what|is|it|sasa|tuma|ya|na|kwa|how|much)\b/gi, ' ')
       .replace(/[^\p{L}\p{N} -]+/gu, ' ').replace(/\s+/g, ' ').trim();
@@ -165,7 +183,7 @@ Work through this order before choosing an intent:
 1. Which device or system is the newest message naming? Read the model wherever it sits in the sentence, not just at the end.
 2. Did this chat already quote it? memory.product and memory.lastQuote carry the answer; a short reference like "ile" or "hiyo" means that item.
 3. If the message names a device, note in your reply that WoteFy suits Omada EAP and LubFy suits MikroTik, Cudy, Ruijie/Reyee, Cambium and UniFi. Suggest the match instead of asking the customer to choose.
-4. Installation is quoted per job and cable per metre; 15 metres is the usual length. Mention both instead of repeating the device price alone.
+4. Installation is quoted per job and cable per metre; 15 metres is the usual length. Type A is the device we supply, Type B is the customer's own device. A question about fitting or cable is not a product search, and both variants plus the total are the answer.
 Classify based on the newest customer messages. product covers purchase, price, stock or photo of hardware. A bare model such as "EAP 650" is a product price request, never small talk.
 Return the exact brand/model or SKU as query, with an empty query for a reference to the remembered product.
 plan requires the customer to specify the kind: subscription for operator software, wifi for end-user internet, bundle for equipment + services.
@@ -192,7 +210,7 @@ export async function nearbyModels(query: string) {
   const words = [...new Set(tokens.filter(token => token.length > 2 && !/\d/.test(token)))];
   const numeric = [...new Set(tokens.filter(token => /\d/.test(token) && token.length > 2))];
   const wanted = [...words, ...numeric];
-  const pool = new Map<string, { name: string; score: number }>();
+  const pool = new Map<string, { name: string; score: number; service: boolean }>();
   // The catalog requires every word to appear, and the brand is stored as "TP LINK",
   // so single words are searched one by one and the results are ranked by overlap.
   for (const term of wanted.slice(0, 3)) {
@@ -203,65 +221,105 @@ export async function nearbyModels(query: string) {
         const score = wanted.filter(token => text.includes(token)).length
           + (wanted.some(token => !/\d/.test(token) && nameOnly.includes(token)) ? 1 : 0);
         const previous = pool.get(item.name);
-        if (!previous || previous.score < score) pool.set(item.name, { name: item.name, score });
+        if (!previous || previous.score < score) {
+          // A fitting fee is not a model. Listing "AP INSTALLATION TYPE A" as the
+          // closest item to an unknown model is what confused the KAHAMA chat.
+          pool.set(item.name, { name: item.name, score, service: item.type === 'Service' });
+        }
       }
     } catch {
       // Try the next term; a failed lookup must not break the reply.
     }
   }
-  return [...pool.values()].filter(entry => entry.score > 0)
+  return [...pool.values()].filter(entry => entry.score > 0 && !entry.service)
     .sort((a, b) => b.score - a.score).slice(0, 4).map(entry => entry.name);
 }
 
 const priceWords = /\b(bei|price|cost|nauli|shilingi|tsh|malipo)\b/i;
 
 // Installation is a separate job, so "bei ya EAP 650 na installation" needs both figures.
+// "jumla" (total) counts here because the combined figure is what the customer wants.
 const installationWords = /\b(installation|instalation|installationi|install|kufunga|kufungwa|kufungia|kusanikisha|kusanikua|kusanikwa|kuweka mfumo|kuniwekea|kutuwekea|kukuwekea|setup|kuset|ufungaji|jumla)\b/i;
+// Cable is sold by the metre, so a cable question is also a service quote.
+const cableWords = /\b(waya|cable|kebo|nyaya)\b/i;
+const metreWords = /\b(mita|metres?|meters?|mtr)\b/i;
+/**
+ * The message is about fitting or cable, not about a new device. Deliberately
+ * narrower than installationWords: "bei ya bidhaa jumla" is a product total,
+ * not a request for the installation fee.
+ */
+const serviceWords = /\b(installation|instalation|installationi|install|kufunga|kufungwa|kufungia|kusanikisha|kusanikua|kusanikwa|kuweka mfumo|kuniwekea|kutuwekea|kukuwekea|setup|kuset|ufungaji|waya|cable|kebo|nyaya|mita|metres?|meters?|mtr)\b/i;
 // Type B applies when the customer already owns the hardware.
 const ownEquipment = /\b(nina kifaa|kifaa changu|kifaa chetu|vifaa vyangu|vifaa vyetu|nina ap|nina access point|nina router|nina mikrotik|nimeshanunua|nilishanunua|already have|own equipment|kifaa cha mteja|vifaa vya mteja)\b/i;
+
+/** True when the message asks about fitting or cable rather than a device price. */
+export function serviceQuestion(text: string) {
+  return serviceWords.test(text);
+}
+
+/** "ndio" after the bot offered installation and cable on a quoted device. */
+export function isAffirmation(text: string) {
+  return /^(?:ndio|ndiyo|naam|sawa|yes|yeah|yep|sure|ok|okay|nitahitaji|nahitaji|ninahitaji|tunahitaji|weka|ongeza)\b/i
+    .test(text.trim());
+}
 
 // Only fitted network equipment carries an installation fee; cables and adapters do not.
 const installedEquipment = /\b(access point|gateway|mikrotik|router|hap|hex|eap|omada|ruijie|reyee|unifi|cambium)\b/i;
 
 /**
+ * Type A is a device the shop supplies; Type B is a device the customer already
+ * owns. The price list is the source of truth, so an unfamiliar letter is shown
+ * as-is instead of guessing who pays for the hardware.
+ */
+function optionLabel(option: InstallationOption, say: (sw: string, en: string) => string) {
+  const side = option.withOurEquipment === undefined ? ''
+    : option.withOurEquipment ? say('Kifaa chetu', 'Our device') : say('Kifaa chako', 'Your device');
+  const variant = option.variant ? `Type ${option.variant}` : '';
+  return [side, variant].filter(Boolean).join(' · ') || option.name;
+}
+
+/**
  * Quote the installation options that go with a device, with the combined total.
- * Both variants are shown because the fee depends on whether the shop or the
+ * Every variant is shown because the fee depends on whether the shop or the
  * customer supplies the hardware, and the customer is the one who knows that.
  */
 export async function installationAside(
   product: { name: string; category?: string | null; type?: string; price: { amount: number; currency: string } },
-  text: string, say: (sw: string, en: string) => string,
+  text: string, say: (sw: string, en: string) => string, quote: { force?: boolean } = {},
 ) {
-  if (product.type === 'Service' || !installationWords.test(text)) return '';
+  if (product.type === 'Service' || (!installationWords.test(text) && !quote.force)) return '';
   if (!installedEquipment.test(`${product.name} ${product.category ?? ''}`)) return '';
   try {
     const { equipment, options } = await installationOptions(product);
     if (!options.length) return '';
     const own = ownEquipment.test(text);
-    const ordered = own ? [...options].reverse() : options;
+    // Put the variant that matches what the customer said first; both stay visible.
+    const preferred = !own;
+    const ordered = [...options].sort((a, b) =>
+      Number(b.withOurEquipment === preferred) - Number(a.withOurEquipment === preferred));
     // Cable is bought by length, so a fitting quote without it surprises the customer.
     const stated = cableMeters(text);
     const meters = stated ?? 15;
     const cable = await cableQuote(meters).catch(() => undefined);
-    const total = (option: InstallationOption) => option.total
+    const withCable = (option: InstallationOption) => option.total
       + (cable && cable.currency === option.currency ? cable.amount : 0);
-    const lines = ordered.map(option => `• ${say(option.withOurEquipment ? 'Kifaa chetu' : 'Kifaa chako',
-      option.withOurEquipment ? 'Our device' : 'Your device')} (${option.name}): `
-      + `${money({ amount: option.fee, currency: option.currency })} → ${say('jumla na installation', 'total with fitting')} `
-      + money({ amount: option.total, currency: option.currency }));
+    const lines = ordered.map(option => `• ${optionLabel(option, say)} (${option.name}): `
+      + `${say('installation', 'fitting')} ${money({ amount: option.fee, currency: option.currency })}`
+      + ` → ${say('jumla na kifaa', 'total with the device')} ${money({ amount: option.total, currency: option.currency })}`);
     const cableLine = cable
-      ? `• ${say('Waya', 'Cable')} ${cable.product.name} (${say('mita', 'metres')} ${meters}): `
+      ? `• ${say('Waya', 'Cable')}: ${cable.product.name} — ${meters} ${say('mita', 'metres')} = `
         + `${money({ amount: cable.amount, currency: cable.currency })}`
       : '';
     const full = cable
       ? '\n' + say('Jumla kamili na waya:', 'Full total including cable:') + ' '
-        + ordered.map(option => `${say(option.withOurEquipment ? 'kifaa chetu' : 'kifaa chako',
-          option.withOurEquipment ? 'our device' : 'your device')} `
-          + money({ amount: total(option), currency: option.currency })).join(' · ')
+        + ordered.map(option => `${optionLabel(option, say)} `
+          + money({ amount: withCable(option), currency: option.currency })).join(' · ')
       : '';
     return '\n\n' + say(`Installation (${equipment}) inalipwa kando`, `Installation (${equipment}) is charged separately`)
-      + (cable ? say(` na waya wa ${cable.product.name} unahitajika (mita ${meters}${stated ? '' : ' kwa kawaida'}):`,
-        ` and ${cable.product.name} cable is needed (${meters} metres${stated ? '' : ' is typical'}):`) : ':')
+      + say(': Type A ni unaponunua kifaa kwetu, Type B ni ukiwa na kifaa chako.',
+        ': Type A is when you buy the device from us, Type B is when you bring your own.')
+      + (cable ? say(` Waya ni ${money(cable.product.price)} kwa mita; mita ${meters}${stated ? '' : ' (kawaida)'}:`,
+        ` Cable is ${money(cable.product.price)} per metre; ${meters} metres${stated ? '' : ' (typical)'}:`) : '')
       + '\n' + [lines.join('\n'), cableLine].filter(Boolean).join('\n') + full;
   } catch {
     return '';
@@ -308,15 +366,47 @@ export function systemAdvice(
   return '';
 }
 
-/** A question about installation with no device named still deserves the fees. */export async function installationOnlyAside(text: string, say: (sw: string, en: string) => string) {
-  if (!installationWords.test(text)) return '';
+/**
+ * A question about installation with no device named still deserves the fees.
+ * Each row is labelled with what its letter means, because the four price-list
+ * entries look identical without it (2026-11-17 KAHAMA chat).
+ */
+export async function installationOnlyAside(text: string, say: (sw: string, en: string) => string) {
+  const wantsInstall = installationWords.test(text);
+  if (!wantsInstall && !cableWords.test(text) && !metreWords.test(text)) return '';
   try {
-    const services = await serviceCatalog('installation');
-    const priced = services.filter(service => service.price.amount > 0);
-    if (!priced.length) return '';
-    const lines = priced.map(service => `• ${service.name}: ${money(service.price)}`);
-    return [say('Installation inalipwa kwa kazi, sio kwa kifaa. Bei zilizopo:',
-      'Installation is charged per job, not per device. Current fees:'), ...lines].join('\n');
+    const meters = cableMeters(text) ?? 15;
+    const cable = await cableQuote(meters).catch(() => undefined);
+    if (!wantsInstall) {
+      if (!cable) return '';
+      return [`${say('Waya', 'Cable')}: ${cable.product.name} — ${money(cable.product.price)} ${say('kwa mita', 'per metre')}.`,
+        `${say('Mita', 'Metres')} ${meters} = ${money({ amount: cable.amount, currency: cable.currency })}.`,
+        say('Nikupe jumla kamili ya installation pamoja na kifaa — ni model gani?',
+          'For the full total with installation and the device — which model?')].join('\n');
+    }
+    const services = (await serviceCatalog('installation'))
+      .filter(service => service.price.amount > 0);
+    if (!services.length) {
+      if (!cable) return '';
+      return [`${say('Waya', 'Cable')}: ${cable.product.name} — ${money(cable.product.price)} ${say('kwa mita', 'per metre')}.`,
+        `${say('Mita', 'Metres')} ${meters} = ${money({ amount: cable.amount, currency: cable.currency })}.`].join('\n');
+    }
+    const lines = services.map(service => {
+      const variant = variantLetter(service.name);
+      const side = variant === 'A' ? say('kifaa chetu', 'our device')
+        : variant === 'B' ? say('kifaa chako', 'your device') : '';
+      const withCable = cable && cable.currency === service.price.currency
+        ? ` · + ${say('waya', 'cable')} ${meters}${say('m', 'm')} ${money(cable)} = `
+          + `${money({ amount: service.price.amount + cable.amount, currency: service.price.currency })}`
+        : '';
+      return `• ${service.name}${side ? ` (${side})` : ''}: ${money(service.price)}${withCable}`;
+    });
+    return [say('Installation inalipwa kwa kazi, si kwa kifaa. Type A ni kifaa unachonunua kwetu, Type B ni kifaa chako:',
+      'Installation is charged per job, not per device. Type A is the device you buy from us, Type B is your own device:'),
+    ...lines,
+    say('Bei ya kifaa haimo hapa. Nitaje model (mf. EAP 650 au hAP ax2) nikupe jumla kamili na kifaa.',
+      'The device price is not included. Name a model (e.g. EAP 650 or hAP ax2) for the full total with the device.')]
+      .join('\n');
   } catch {
     return '';
   }
@@ -378,6 +468,39 @@ async function readProductRetry(id: string) {
   throw last;
 }
 
+/**
+ * Answer a fitting/cable question from the service price list instead of
+ * searching the product catalog for the sentence. 2026-11-17: "bei ya
+ * installation na waya meter 15 jumla shingapi" was routed as a product query,
+ * found nothing, and replied "Sijapata bidhaa hiyo kwenye POS" followed by the
+ * four installation rows — no fee, no cable, no total.
+ */
+async function serviceQuote(
+  text: string, memory: Conversation['memory'], say: (sw: string, en: string) => string, affirm = false,
+) {
+  const wantsInstall = installationWords.test(text) || affirm;
+  const meters = cableMeters(text) ?? 15;
+  if (memory.product) {
+    try {
+      const { product } = await readProductRetry(memory.product.id);
+      if (wantsInstall) {
+        const quote = await installationAside(product, text, say, { force: true });
+        if (quote) return quote;
+      }
+      const cable = await cableQuote(meters).catch(() => undefined);
+      if (cable) {
+        return '\n\n' + say(`Waya: ${cable.product.name} — ${money(cable.product.price)} kwa mita. `
+          + `Mita ${meters} = ${money({ amount: cable.amount, currency: cable.currency })}.`,
+        `Cable: ${cable.product.name} — ${money(cable.product.price)} per metre. `
+          + `${meters} metres = ${money({ amount: cable.amount, currency: cable.currency })}.`);
+      }
+    } catch {
+      // Fall through to the fee list; a slow catalog must not silence the reply.
+    }
+  }
+  return installationOnlyAside(text, say);
+}
+
 export async function respond(
   client: PoolClient, conversation: Conversation, newest: string, history: ChatLine[], onlyDetect = false,
 ): Promise<Outcome> {
@@ -430,6 +553,18 @@ export async function respond(
   if (decision.intent === 'human') {
     return result(say('Sawa, nimekabidhi mazungumzo haya kwa timu yetu.', 'I’ve handed this conversation to our team.'),
       { handoff: true });
+  }
+  // Fitting and cable are quoted from the service price list. Solving this before
+  // the product branch keeps the bot from searching the catalog for the sentence.
+  const serviceTurn = !onlyDetect && !packageWords.test(newest) && !namesNewDevice(newest)
+    && (serviceQuestion(newest) || (memory.awaitingService === true && isAffirmation(newest)));
+  if (serviceTurn) {
+    const affirm = !serviceQuestion(newest) && isAffirmation(newest);
+    const quote = await serviceQuote(newest, memory, say, affirm);
+    delete memory.awaitingService;
+    if (quote) return result(quote.trim(), memory.product ? { stage: 'quoted' } : {});
+    return result(say('Nikupe jumla kamili ya installation na waya — ni kifaa gani? (mf. EAP 650 au hAP ax2)',
+      'I can quote installation and cable in full — which device? (e.g. EAP 650 or hAP ax2)'));
   }
   if (decision.intent === 'ambiguous_package' || (decision.intent === 'plan' && !decision.kind)) {
     memory.plan = {};
@@ -542,6 +677,9 @@ export async function respond(
         ? say('\n\nJe, unahitaji pia installation na waya, au unajiwekea mwenyewe?',
           '\n\nDo you also need installation and cable, or will you set it up yourself?')
         : '';
+      // Remember that the question is open, so a plain "ndio" is answered with the
+      // fitting and cable quote instead of the greeting fallback.
+      if (nextStep) memory.awaitingService = true; else delete memory.awaitingService;
       return result(`${product.name} — ${price}` + (details ? '\n' + details : '')
         + (product.description ? '\n' + product.description.slice(0, 240) : '') + '\n' + availability
         + (decision.sendImage && !imageUrl
