@@ -757,9 +757,10 @@ export async function respond(
     profile: customerProfile(newest, conversation.memory.profile) };
   const knowledge = onlyDetect ? [] : await retrieveKnowledge(client, newest, systemFrom(newest) || memory.system);
   const decision = await decide(newest, memory, history, knowledge);
-  // One chat speaks one language unless the customer clearly switches.
+  // One chat speaks one language unless the customer clearly switches. Kiswahili
+  // is the default: a bare model name carries no signal, and most chats are Swahili.
   const said = messageLanguage(newest);
-  const language = said ?? memory.language ?? decision.language;
+  const language = said ?? memory.language ?? 'sw';
   decision.language = language;
   memory.language = language;
   const say = (sw: string, en: string) => decision.language === 'en' ? en : sw;
