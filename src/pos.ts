@@ -144,9 +144,30 @@ export async function posAsset(path: string) {
   const base = new URL(config.POS_BASE_URL);
   const url = new URL(path, base);
   if (url.origin !== base.origin) return;
+  const cached = assetCache.get(path);
+  if (cached) {
+    // Refresh insertion order so the least recently used photo is evicted first.
+    assetCache.delete(path);
+    assetCache.set(path, cached);
+    return cached;
+  }
+  const pending = assetInflight.get(path);
+  if (pending) return pending;
+  const request = downloadAsset(url, path);
+  assetInflight.set(path, request);
+  try {
+    return await request;
+  } finally {
+    assetInflight.delete(path);
+  }
+}
+
+async function downloadAsset(url: URL, path: string) {
   const headers: Record<string, string> = { accept: 'image/png,image/jpeg,image/webp' };
   if (config.POS_API_TOKEN) headers.authorization = `Bearer ${config.POS_API_TOKEN}`;
-  const response = await fetch(url, { headers, redirect: 'error', signal: AbortSignal.timeout(5000) });
+  // Shop photos are camera-sized, and the catalog server shares one CPU. A short
+  // timeout made the dashboard show empty tiles whenever several loaded at once.
+  const response = await fetch(url, { headers, redirect: 'error', signal: AbortSignal.timeout(20000) });
   const mimetype = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
   if (!response.ok || !response.body || !mimetype || !['image/png', 'image/jpeg', 'image/webp'].includes(mimetype)) {
     await response.body?.cancel();
@@ -159,13 +180,31 @@ export async function posAsset(path: string) {
     const { done, value } = await reader.read();
     if (done) break;
     size += value.byteLength;
-    if (size > 5 * 1024 * 1024) {
+    if (size > 8 * 1024 * 1024) {
       await reader.cancel();
       return;
     }
     chunks.push(Buffer.from(value));
   }
-  return { image: Buffer.concat(chunks), mimetype };
+  const asset = { image: Buffer.concat(chunks), mimetype };
+  rememberAsset(path, asset);
+  return asset;
+}
+
+const ASSET_CACHE_BYTES = 16 * 1024 * 1024;
+const assetCache = new Map<string, { image: Buffer; mimetype: string }>();
+const assetInflight = new Map<string, Promise<{ image: Buffer; mimetype: string } | undefined>>();
+let assetCacheBytes = 0;
+
+function rememberAsset(path: string, asset: { image: Buffer; mimetype: string }) {
+  if (asset.image.byteLength > ASSET_CACHE_BYTES / 4) return;
+  assetCache.set(path, asset);
+  assetCacheBytes += asset.image.byteLength;
+  for (const [key, value] of assetCache) {
+    if (assetCacheBytes <= ASSET_CACHE_BYTES) break;
+    assetCache.delete(key);
+    assetCacheBytes -= value.image.byteLength;
+  }
 }
 
 export async function readPlans(

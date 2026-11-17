@@ -235,8 +235,29 @@ function stockPill(item) {
 
 function productPhoto(item, size = 30) {
   return item.image
-    ? `<img src="${esc(item.image)}" alt="${esc(item.name)}" loading="lazy">`
+    ? `<img src="${esc(item.image)}" alt="${esc(item.name)}" loading="lazy" decoding="async">`
     : `<span class="product-photo-empty">${icon('box', size)}</span>`;
+}
+
+/** Shop photos are megabytes wide; a cold cache can lose the race, so retry once. */
+function retryPhotos(scope) {
+  const retry = (img) => {
+    const attempts = Number(img.dataset.attempts ?? '0');
+    if (!img.getAttribute('src') || attempts >= 1) {
+      img.closest('.product-media, .product-detail-media')?.classList.add('blank');
+      return;
+    }
+    img.dataset.attempts = String(attempts + 1);
+    window.setTimeout(() => {
+      const url = new URL(img.getAttribute('src'), location.href);
+      url.searchParams.set('retried', String(Date.now()));
+      img.src = url.pathname + url.search;
+    }, 600);
+  };
+  for (const img of scope.querySelectorAll('img')) {
+    img.addEventListener('error', () => retry(img));
+    if (img.complete && !img.naturalWidth) retry(img);
+  }
 }
 
 function openProduct(item) {
@@ -281,6 +302,7 @@ function openProduct(item) {
     }
   };
   const cover = dialog.querySelector('.product-detail-media img');
+  retryPhotos(dialog);
   if (cover && cover.complete && cover.naturalWidth && (cover.naturalWidth < 240 || cover.naturalHeight < 240)) {
     dialog.querySelector('.product-detail-media')?.classList.add('small');
   }
@@ -362,8 +384,8 @@ async function products(container, signal) {
           .join('')
       : empty(query ? 'No matching products' : 'No products yet',
           query ? 'Try a different name, SKU or brand.' : 'Add products in CSolution to see them here.', 'box');
+    retryPhotos(grid);
     grid.querySelectorAll('img').forEach((image) => {
-      image.onerror = () => image.parentElement?.classList.add('blank');
       const measure = () => {
         const media = image.closest('.product-media');
         // A 64px placeholder stretched over the card looks like a broken image, so keep it small.
