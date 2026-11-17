@@ -3,7 +3,7 @@ import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { config } from './config.js';
 import { log, row } from './db.js';
-import { money, planKind, readPlans, readProduct, searchProducts, systemName } from './pos.js';
+import { catalog, money, planKind, readPlans, readProduct, searchProducts, systemName } from './pos.js';
 import type { Conversation, Stage } from './store.js';
 
 export interface ChatLine {
@@ -175,6 +175,58 @@ Never give prices, stock levels, payment details, links absent from approved kno
   return resolveDecision(text, memory);
 }
 
+/** Nearest stocked models for a query like "EAP 605" that the shop does not carry. */
+export async function nearbyModels(query: string) {
+  const tokens = query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const words = [...new Set(tokens.filter(token => token.length > 2 && !/\d/.test(token)))];
+  const numeric = [...new Set(tokens.filter(token => /\d/.test(token) && token.length > 2))];
+  const wanted = [...words, ...numeric];
+  const pool = new Map<string, { name: string; score: number }>();
+  // The catalog requires every word to appear, and the brand is stored as "TP LINK",
+  // so single words are searched one by one and the results are ranked by overlap.
+  for (const term of wanted.slice(0, 3)) {
+    try {
+      for (const item of (await catalog(term, 8)).items) {
+        const text = `${item.name} ${item.sku ?? ''} ${item.brand ?? ''}`.toLowerCase();
+        const nameOnly = item.name.toLowerCase();
+        const score = wanted.filter(token => text.includes(token)).length
+          + (wanted.some(token => !/\d/.test(token) && nameOnly.includes(token)) ? 1 : 0);
+        const previous = pool.get(item.name);
+        if (!previous || previous.score < score) pool.set(item.name, { name: item.name, score });
+      }
+    } catch {
+      // Try the next term; a failed lookup must not break the reply.
+    }
+  }
+  return [...pool.values()].filter(entry => entry.score > 0)
+    .sort((a, b) => b.score - a.score).slice(0, 4).map(entry => entry.name);
+}
+
+const priceWords = /\b(bei|price|cost|nauli|shilingi|tsh|malipo)\b/i;
+
+/**
+ * A single message often asks for a device price and a system price together,
+ * e.g. "bei ya LubFy na bei ya EAP 605". The product branch owns that reply, so
+ * the plan prices are appended instead of being dropped.
+ */
+async function planAside(text: string, memory: Conversation['memory'], say: (sw: string, en: string) => string) {
+  const system = systemFrom(text);
+  if (!system || memory.quoteFor === 'plan' || !priceWords.test(text)) return '';
+  if (memory.system && memory.system !== system) return '';
+  try {
+    const { items } = await readPlans(system, 'subscription');
+    const lines = items.slice(0, 4).flatMap(plan => {
+      const rate = plan.price ? money(plan.price) : '';
+      return rate ? [`• ${plan.name}: ${rate}`] : [];
+    });
+    if (!lines.length) return '';
+    const label = system === 'wotefy' ? 'WoteFy' : 'LubFy';
+    return '\n\n' + say(`${label} — packages za sasa`, `${label} — current plans`) + '\n' + lines.join('\n');
+  } catch {
+    return '';
+  }
+}
+
 export async function respond(
   client: PoolClient, conversation: Conversation, newest: string, history: ChatLine[], onlyDetect = false,
 ): Promise<Outcome> {
@@ -280,8 +332,16 @@ export async function respond(
           const uploaded = await uploadedPhoto(client, decision.query);
           if (uploaded) return result(uploaded.body, { imageUrl: uploaded.imageUrl });
         }
-        return result(say('Sijaipata bidhaa hiyo kwenye POS. Unaweza kutuma model au SKU iliyo kwenye kifaa?',
-          'I couldn’t find that item in the POS. Could you send the exact model or SKU from the device?'));
+        // "EAP 605" is not stocked. Suggesting the nearest models is more useful
+        // than asking the customer to retype a model that does not exist.
+        const nearby = await nearbyModels(decision.query);
+        return result(say('Sijaipata bidhaa hiyo kwenye POS.', 'I couldn’t find that item in the POS.')
+          + (nearby.length
+            ? '\n' + say('Zilizopo karibu na hiyo:', 'Closest items we stock:') + '\n'
+              + nearby.map(name => `• ${name}`).join('\n')
+            : '\n' + say('Unaweza kutuma model au SKU iliyo kwenye kifaa?',
+              'Could you send the exact model or SKU from the device?'))
+          + await planAside(newest, memory, say));
       }
       const exact = items.filter(item => [item.name, 'sku' in item ? item.sku : undefined].some(value =>
         typeof value === 'string' && value.toLowerCase() === decision.query.toLowerCase()));
@@ -317,7 +377,8 @@ export async function respond(
       return result(`${product.name} — ${price}` + (details ? '\n' + details : '')
         + (product.description ? '\n' + product.description.slice(0, 240) : '') + '\n' + availability
         + (decision.sendImage && !imageUrl
-          ? '\n' + say('Picha yake haipatikani kwa sasa.', 'The product photo is currently unavailable.') : ''),
+          ? '\n' + say('Picha yake haipatikani kwa sasa.', 'The product photo is currently unavailable.') : '')
+        + await planAside(newest, memory, say),
       { stage: 'quoted', imageUrl });
     } catch {
       log.warn('Current product details unavailable');
