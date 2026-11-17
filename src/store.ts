@@ -43,6 +43,14 @@ export interface Conversation {
     /** Chat language, so a bare model name does not flip the reply to English. */
     language?: 'sw' | 'en';
     profile?: { equipment?: string; budget?: string; useCase?: string };
+    /**
+     * Open-ended site facts the bot picked up ("coverage_m": "300", "site":
+     * "obstructed", "equipment": "EAP 610 · OMADA"). Stored as text so a new
+     * question the shop starts asking does not need a schema change.
+     */
+    facts?: Record<string, string>;
+    /** Why the last answer said what it said, surfaced in the admin playground. */
+    trace?: string[];
   };
 }
 

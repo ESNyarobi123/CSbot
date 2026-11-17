@@ -9,6 +9,8 @@ import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import qrcode from 'qrcode';
 import { z } from 'zod';
+import { respond } from './assistant.js';
+import { factList } from './brain.js';
 import { config } from './config.js';
 import { adminAuthorized, DashboardController, dashboardDir, type DashboardRequest } from './dashboard.js';
 import { db, row, transaction } from './db.js';
@@ -503,6 +505,16 @@ class AdminController {
       notes: z.string().trim().max(2000).optional(),
       sourceUrl: z.url({ protocol: /^https$/ }).optional(),
       verified: z.boolean().default(false),
+      antenna: z.string().trim().max(160).optional(),
+      radios: z.string().trim().max(160).optional(),
+      gainDbi: z.coerce.number().min(0).max(60).optional(),
+      ipRating: z.string().trim().max(40).optional(),
+      mesh: z.boolean().optional(),
+      controller: z.string().trim().max(160).optional(),
+      poeWatts: z.coerce.number().min(0).max(2000).optional(),
+      mounting: z.string().trim().max(160).optional(),
+      highlights: z.array(z.string().trim().max(200)).max(8).optional(),
+      aliases: z.array(z.string().trim().max(80)).max(10).optional(),
     }), body);
     return saveSpec({
       model_key: key, model: input.model, brand: input.brand ?? null,
@@ -510,12 +522,57 @@ class AdminController {
       ports: input.ports ?? null, poe: input.poe ?? null, coverage_m: input.coverageM ?? null,
       users: input.users ?? null, notes: input.notes ?? null,
       source_url: input.sourceUrl ?? null, verified: input.verified,
+      antenna: input.antenna ?? null, radios: input.radios ?? null, gain_dbi: input.gainDbi ?? null,
+      ip_rating: input.ipRating ?? null, mesh: input.mesh ?? null, controller: input.controller ?? null,
+      poe_watts: input.poeWatts ?? null, mounting: input.mounting ?? null,
+      highlights: input.highlights ?? null, aliases: input.aliases ?? null,
     });
   }
 
   @Get('products')
   async products(@Query('limit') raw: unknown) {
     return (await db.query('SELECT * FROM products ORDER BY updated_at DESC,id LIMIT $1', [read(pageSize, raw)])).rows;
+  }
+
+  /**
+   * A sandbox for the reply engine. The admin types as a customer and sees the
+   * real answer, the memory it built and the steps it took — without touching a
+   * customer's chat, without sending anything to WhatsApp.
+   */
+  @Post('playground')
+  @HttpCode(200)
+  async playground(@Body() body: unknown) {
+    const input = read(z.object({
+      messages: z.array(z.string().trim().min(1).max(1200)).min(1).max(12),
+    }), body);
+    const memory: Conversation['memory'] = {};
+    const turns: {
+      customer: string; reply: string; trace: string[]; facts: ReturnType<typeof factList>;
+      stage: string | null; ms: number;
+    }[] = [];
+    const base = {
+      id: 'playground', account_id: 'playground', customer_jid: 'playground@s.whatsapp.net',
+      customer_phone: null, customer_name: null, mode: 'bot' as const, human_since: null,
+      stage: 'inquiry' as const, unread_count: 0, last_body: null, last_at: null,
+    };
+    const client = await db.connect();
+    try {
+      for (const text of input.messages) {
+        const started = Date.now();
+        const outcome = await respond(client, { ...base, memory } as Conversation, text,
+          turns.slice(-6).flatMap(turn => [{ direction: 'inbound' as const, body: turn.customer },
+            { direction: 'outbound' as const, body: turn.reply }]));
+        turns.push({
+          customer: text, reply: outcome.body, trace: outcome.trace ?? [],
+          facts: factList(outcome.memory.facts), stage: outcome.stage ?? null,
+          ms: Date.now() - started,
+        });
+        Object.assign(memory, outcome.memory);
+      }
+    } finally {
+      client.release();
+    }
+    return { turns, model: config.GEMINI_API_KEY ? config.GEMINI_MODEL : null };
   }
 
   /** Live CSolution catalog: prices, stock, brand, description and photos. */

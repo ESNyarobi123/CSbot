@@ -4,11 +4,13 @@ import { numbers } from './numbers.js';
 import { inbox } from './inbox.js';
 import { collection, sales } from './records.js';
 import { devices } from './devices.js';
+import { studio } from './studio.js';
 
 const app = document.querySelector('#app');
 const nav = [
   ['overview', 'Overview', 'grid'],
   ['inbox', 'Inbox', 'inbox'],
+  ['studio', 'Studio', 'bot'],
   ['numbers', 'WhatsApp numbers', 'phone'],
   ['sales', 'Sales', 'bag'],
   ['knowledge', 'Knowledge', 'book'],
@@ -82,9 +84,9 @@ function shell() {
       <div class="workspace-card"><span class="workspace-initials">CS</span><div><b>Connect Solution</b><small>Admin workspace</small></div></div>
       <nav aria-label="Admin navigation">
         <span class="nav-label">WORKSPACE</span>
-        ${nav.slice(0, 4).map(navLink).join('')}
+        ${nav.slice(0, 5).map(navLink).join('')}
         <span class="nav-label spaced">BOT CONTENT</span>
-        ${nav.slice(4).map(navLink).join('')}
+        ${nav.slice(5).map(navLink).join('')}
       </nav>
       <div class="sidebar-bottom"><span class="admin-avatar">CS</span><div><b>Administrator</b><small>CSbot workspace</small></div>
         <button class="icon-btn" title="Sign out" aria-label="Sign out" data-logout>${icon('logout', 17)}</button></div>
@@ -174,6 +176,9 @@ async function render() {
       }
       case 'sales':
         await sales(page, signal, segments);
+        break;
+      case 'studio':
+        await studio(page, signal);
         break;
       case 'knowledge':
       case 'products':

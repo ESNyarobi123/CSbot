@@ -17,8 +17,60 @@ import {
 } from './ui.js';
 
 const limit = 30;
-const modePill = (mode) => (mode === 'human' ? pill('Human', 'amber', false) : pill('CSbot', 'blue', false));
-const person = (name) => `<span class="person">${esc(initials(name))}</span>`;
+const modePill = (mode) => (mode === 'human' ? pill('Manual', 'amber') : pill('CSbot', 'blue'));
+const person = (name) => {
+  const tone = [...name].reduce((sum, letter) => sum + letter.codePointAt(0), 0) % 5;
+  return `<span aria-hidden="true" class="person tone-${tone}">${esc(initials(name))}</span>`;
+};
+const messageBody = (body) => esc(body).replace(/\*([^*\n]+)\*/g, '<strong>$1</strong>');
+
+function customerBrief(thread) {
+  const { profile = {}, requirements = {}, product, productOptions = [], language, support,
+    facts: siteFacts = {}, trace = [] } = thread.memory || {};
+  const environments = { indoor: 'Indoors', outdoor: 'Outdoors', mixed: 'Indoors and outdoors' };
+  const obstacles = { open: 'Open area', obstructed: 'Obstructions present' };
+  // The flexible memory the bot keeps between chats: whatever the customer said
+  // about their own site, shown with a human label.
+  const labels = {
+    coverage_m: 'Distance to cover', clients: 'Concurrent users', place: 'Indoor / outdoor',
+    site: 'Site conditions', system: 'Billing system', fleet: 'Existing fleet',
+    equipment: 'Equipment owned', use: 'Use case', budget: 'Budget', asked_mesh: 'Mesh',
+    also: 'Also interested in', photo: 'Model from photo',
+  };
+  const site = Object.entries(siteFacts)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => [labels[key] ?? key, value]);
+  const facts = [
+    ['Coverage requested', requirements.coverageMeters && `${requirements.coverageMeters} m`],
+    ['Users', requirements.users],
+    ['Environment', environments[requirements.environment]],
+    ['Site conditions', obstacles[requirements.obstacles]],
+    ['Mesh', requirements.mesh === true ? 'Requested' : requirements.mesh === false ? 'Not required' : ''],
+    ['Use case', profile.useCase],
+    ['Budget', profile.budget],
+    ['Equipment', profile.equipment],
+  ].filter(([, value]) => value !== undefined && value !== null && value !== '');
+  const name = customer(thread);
+  const contact = [thread.customer_phone && name !== phoneLabel(thread.customer_phone) && phoneLabel(thread.customer_phone),
+    language === 'sw' ? 'Kiswahili' : language === 'en' ? 'English' : ''].filter(Boolean).join(' · ');
+  const models = product ? [product] : productOptions;
+  return `<div class="details-person">${person(name)}<div><b>${esc(name)}</b>${contact ? `<small>${esc(contact)}</small>` : ''}</div></div>
+    <section class="details-section"><h3>${icon('book', 15)} Customer requirements</h3>
+      ${facts.length ? `<dl class="brief-facts">${facts.map(([label, value]) => `<div><dt>${label}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>` : '<p>No requirements recorded yet.</p>'}
+    </section>
+    ${site.length ? `<section class="details-section"><h3>${icon('search', 15)} What CSbot knows</h3>
+      <dl class="brief-facts">${site.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(String(value).replace(/\b\w/g, (char) => char.toUpperCase()))}</dd></div>`).join('')}</dl></section>` : ''}
+    ${models.length ? `<section class="details-section"><h3>${icon('box', 15)} Models discussed</h3>
+      <ul class="brief-models">${models.map((item) => `<li>${esc(item.name)}</li>`).join('')}</ul></section>` : ''}
+    ${support?.problem ? `<section class="details-section"><h3>${icon('alert', 15)} Support request</h3>
+      <p>${esc(support.problem)}</p></section>` : ''}
+    ${trace.length ? `<section class="details-section"><h3>${icon('book', 15)} Last answer, step by step</h3>
+      <ol class="brief-trace">${trace.map((step) => `<li>${esc(step)}</li>`).join('')}</ol></section>` : ''}
+    <section class="details-section"><h3>${icon('bag', 15)} Latest order</h3>
+      ${thread.sale ? `<div class="details-row"><a class="quiet-link" href="#sales/${esc(thread.id)}/${esc(thread.sale.id)}">Order #${esc(thread.sale.id)} ${icon('chevron', 13)}</a>${stagePill(thread.sale.stage)}</div>
+        ${thread.sale.quote?.text ? `<p class="details-quote">${esc(thread.sale.quote.text)}</p>` : ''}` : '<p>No order yet.</p>'}
+    </section>`;
+}
 
 export async function inbox(container, signal, segments, initialSearch = '') {
   const accounts = await api('/accounts', { signal });
@@ -36,37 +88,44 @@ export async function inbox(container, signal, segments, initialSearch = '') {
   let seen = new Set();
   let canLoadMore = false;
   let oldestReached = true;
-  let retrySend;
-  let submitting = false;
-  let actionPending = false;
+  const drafts = new Map();
+  const retryRequests = new Map();
+  const sending = new Set();
+  const switching = new Set();
+  let briefDialog;
+  let lastListPaint = '';
   let searchTimer;
   let pollTimer;
-  container.innerHTML = `${heading('Inbox', 'View customer messages and step in when a conversation needs you.')}
+  container.innerHTML = `${heading('Inbox', 'Customer conversations across your WhatsApp numbers.')}
     <section class="card inbox-panel ${selected ? 'has-active' : ''}">
-      <aside class="chat-list"><div class="inbox-filters"><label class="field-search">${icon('search', 16)}<input type="search" aria-label="Search conversations" placeholder="Search conversations" value="${esc(query)}"></label>
-        <div><select aria-label="Filter by WhatsApp number"><option value="">All numbers</option>${accounts.map((item) => `<option value="${esc(item.id)}" ${item.id === account ? 'selected' : ''}>${esc(item.label)}</option>`).join('')}</select>
-          <select aria-label="Filter by reply mode"><option value="">All replies</option><option value="bot">Bot</option><option value="human" ${mode ? 'selected' : ''}>Human</option></select></div></div>
-        <div id="conversation-list" class="conversation-list" aria-label="Conversations"></div></aside>
-      <div id="conversation-pane" class="conversation-pane"></div>
-      <aside id="conversation-details" class="conversation-details"></aside>
+      <aside class="chat-list" aria-label="Conversations"><div class="inbox-filters">
+        <div class="list-head"><h2>Chats</h2><select aria-label="Filter by WhatsApp number"><option value="">All numbers</option>${accounts.map((item) => `<option value="${esc(item.id)}" ${item.id === account ? 'selected' : ''}>${esc(item.label)}</option>`).join('')}</select></div>
+        <label class="field-search">${icon('search', 16)}<input type="search" aria-label="Search conversations" placeholder="Search chats" maxlength="80" value="${esc(query)}"></label>
+        <div class="reply-filters" role="group" aria-label="Filter by reply mode">${[['', 'All'], ['bot', 'CSbot'], ['human', 'Manual']].map(([value, label]) => `<button type="button" data-mode="${value}" aria-pressed="${mode === value}">${label}</button>`).join('')}</div>
+        </div><div id="conversation-list" class="conversation-list"></div></aside>
+      <section id="conversation-pane" class="conversation-pane" aria-label="Conversation"></section>
+      <aside id="conversation-details" class="conversation-details" aria-label="Customer brief"></aside>
     </section>`;
   const pane = container.querySelector('#conversation-pane');
   const details = container.querySelector('#conversation-details');
   const list = container.querySelector('#conversation-list');
   const panel = container.querySelector('.inbox-panel');
-  const [accountFilter, modeFilter] = container.querySelectorAll('.inbox-filters select');
+  const accountFilter = container.querySelector('.inbox-filters select');
+  const modeFilters = container.querySelectorAll('[data-mode]');
   const search = container.querySelector('.inbox-filters input');
 
   function listView(animate = false) {
     if (signal.aborted) return;
     const lastScroll = list.scrollTop;
-    list.innerHTML = chats.length
+    const focusedChat = document.activeElement?.dataset.conversation;
+    const markup = chats.length
       ? chats
           .map((chat) => {
             const name = customer(chat);
-            return `<button type="button" class="conversation-item ${chat.id === selected ? 'selected' : ''}" data-conversation="${chat.id}" aria-pressed="${chat.id === selected}">
-        ${person(name)}<span class="conversation-preview"><b>${esc(name)}</b><small>${esc(chat.last_body || 'Conversation started')}</small></span>
-        <span class="conversation-meta"><small>${dateLabel(chat.last_at || chat.updated_at)}</small>${chat.unread_count ? `<i>${chat.unread_count}</i>` : ''}</span>
+            return `<button type="button" class="conversation-item ${chat.id === selected ? 'selected' : ''}" data-conversation="${esc(chat.id)}" aria-pressed="${chat.id === selected}">
+        ${person(name)}<span class="conversation-preview"><span class="chat-line"><b>${esc(name)}</b><small>${dateLabel(chat.last_at || chat.updated_at)}</small></span>
+        <span class="preview-text">${esc(chat.last_body || 'Conversation started')}</span>
+        <span class="chat-line">${modePill(chat.mode)}${chat.unread_count ? `<span class="unread-count" aria-label="${esc(chat.unread_count)} unread">${esc(chat.unread_count)}</span>` : ''}</span></span>
       </button>`;
           })
           .join('') +
@@ -78,6 +137,10 @@ export async function inbox(container, signal, segments, initialSearch = '') {
           query || mode || account ? 'Try changing the inbox filters.' : 'New customer chats appear here.',
           'inbox',
         );
+    if (lastListPaint === markup) return;
+    lastListPaint = markup;
+    list.innerHTML = markup;
+    if (focusedChat) list.querySelector(`[data-conversation="${CSS.escape(focusedChat)}"]`)?.focus({ preventScroll: true });
     list.scrollTop = lastScroll;
     list.classList.remove('enter');
     if (animate) {
@@ -128,12 +191,31 @@ export async function inbox(container, signal, segments, initialSearch = '') {
     panel.classList.toggle('has-active', Boolean(selected));
     if (selected) {
       pane.innerHTML = `<header class="thread-head"><button class="icon-btn mobile-back" aria-label="Back to conversations" data-back>${icon('back', 20)}</button>
-        <div class="thread-customer"></div><div class="thread-actions"></div></header>
-        <div class="thread-messages"></div>
-        <form class="composer"><textarea placeholder="Write a reply…" aria-label="Reply message" maxlength="3500" rows="2" required></textarea>
-          <div class="composer-actions"><small>Sending a reply puts this chat in manual mode.</small><button class="btn primary" type="submit">${icon('send', 16)} Send</button></div></form>`;
+        <div class="thread-customer"></div><div class="thread-actions">
+        <button type="button" class="btn small" data-handoff disabled></button>
+        <button type="button" class="icon-btn brief-trigger" data-brief aria-haspopup="dialog" aria-label="Open customer brief" title="Customer brief" disabled>${icon('book', 17)}</button></div></header>
+        <div class="thread-messages" role="region" aria-label="Message history" tabindex="0"></div>
+        <form class="composer"><div class="compose-box"><textarea placeholder="Write a reply…" aria-label="Reply message" aria-describedby="compose-hint" maxlength="3500" rows="2" required></textarea>
+          <div class="composer-actions"><small id="compose-hint"></small><button class="btn primary" type="submit" title="Send reply (Ctrl or ⌘ + Enter)" disabled>${icon('send', 15)} Send</button></div></div></form>`;
       pane.querySelector('[data-back]').onclick = () => selectChat('');
-      pane.querySelector('form').onsubmit = send;
+      pane.querySelector('[data-handoff]').onclick = changeMode;
+      pane.querySelector('[data-brief]').onclick = () => {
+        if (thread) briefDialog = showModal('Customer brief', '', `<div class="brief-content">${customerBrief(thread)}</div>`, () => { briefDialog = undefined; });
+      };
+      const form = pane.querySelector('form');
+      form.onsubmit = send;
+      const input = form.querySelector('textarea');
+      input.value = drafts.get(selected) || '';
+      input.oninput = () => {
+        if (input.value) drafts.set(selected, input.value); else drafts.delete(selected);
+        updateComposer();
+      };
+      input.onkeydown = (event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !event.isComposing) {
+          event.preventDefault();
+          form.requestSubmit();
+        }
+      };
       pane.querySelector('.thread-messages').innerHTML =
         '<div class="inline-loading"><div class="spinner"></div><span>Loading messages…</span></div>';
     } else {
@@ -143,7 +225,7 @@ export async function inbox(container, signal, segments, initialSearch = '') {
         'inbox',
       );
     }
-    details.innerHTML = selected ? '' : `<div class="details-head">Customer details</div>`;
+    details.innerHTML = '';
   }
 
   function messagesView(keepPosition = false) {
@@ -168,8 +250,8 @@ export async function inbox(container, signal, segments, initialSearch = '') {
         return (
           divider +
           `<div class="bubble ${item.direction === 'outbound' ? 'outgoing' : ''} ${painted && fresh.has(item.id) ? 'bubble-new' : ''}">
-        ${item.media_id ? `<button type="button" class="media-link" data-image="${item.media_id}">${icon('image', 17)} View image</button>` : ''}
-        ${item.body ? `<div>${esc(item.body)}</div>` : ''}
+        ${item.media_id ? `<button type="button" class="media-link" data-image="${esc(item.media_id)}">${icon('image', 17)} View image</button>` : ''}
+        ${item.body ? `<div class="message-body">${messageBody(item.body)}</div>` : ''}
         <small>${item.actor === 'bot' ? 'CSbot · ' : item.actor === 'admin' ? 'Admin · ' : ''}${timeLabel(item.occurred_at)}</small>
       </div>`
         );
@@ -183,7 +265,7 @@ export async function inbox(container, signal, segments, initialSearch = '') {
       pending
         .map(
           (item) =>
-            `<div class="bubble outgoing delivery ${item.state === 'uncertain' ? 'uncertain' : ''}"><div>${esc(item.body)}</div><small>${item.state === 'uncertain' ? 'Delivery unconfirmed' : item.state === 'sending' ? 'Sending' : 'Queued'}</small></div>`,
+            `<div class="bubble outgoing delivery ${item.state === 'uncertain' ? 'uncertain' : ''}"><div class="message-body">${messageBody(item.body)}</div><small>${item.state === 'uncertain' ? 'Delivery unconfirmed' : item.state === 'sending' ? 'Sending' : 'Queued'}</small></div>`,
         )
         .join('');
     if (!target.innerHTML)

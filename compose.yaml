@@ -72,6 +72,9 @@ services:
       ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:?Set ADMIN_API_TOKEN in .env}
       SESSION_KEY: ${SESSION_KEY:?Set SESSION_KEY in .env}
       ALLOW_MOCK: ${ALLOW_MOCK:-false}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite}
+      GEMINI_FALLBACK_MODEL: ${GEMINI_FALLBACK_MODEL:-gemini-3.5-flash-lite}
       POS_BASE_URL: ${POS_BASE_URL:-}
       POS_API_TOKEN: ${POS_API_TOKEN:-}
       POS_BRANCH_ID: ${POS_BRANCH_ID:-}

@@ -163,6 +163,18 @@ Script inaonyesha kama API inajibu, idadi ya bidhaa, idadi yenye picha, inapakua
 
 **Usimamizi wa maudhui.** Weka taarifa rasmi kupitia `PUT /v1/knowledge/:id` kwa `system`, `title`, `content`, `tags`, `sourceUrl` na `published`. Worker hutumia rekodi zilizochapishwa pekee. `PUT /v1/products/:id` huweka `name`, `sku`, `description` na `imageUrl` za katalogi ya ndani. Bei na stock za kujibu wateja hutoka kwenye POS.
 
+## Akili ya CSbot: datasheet, memory na picha
+
+**Datasheet kwa kila model.** `device_specs` ndiyo ukweli wa kiufundi unaotumika kujibu. Mbali na `wifi`, `bands`, `ports`, `poe`, `coverage_m` na `users`, jedwali sasa lina `radios`, `antenna`, `gain_dbi`, `ip_rating`, `mesh`, `controller`, `poe_watts`, `mounting`, `highlights` na `aliases`. Ukurasa wa **Devices** unahariri vitu hivi vyote; `aliases` huruhusu mteja kuandika `RAP6262` na bado kufika kwenye `RG-RAP6262(G)`. Hakuna jibu la kubuni: ukanda ambao haujaandikwa hautaonekana kwenye jibu.
+
+**Jibu linalofikiri (grounded composer).** `src/brain.ts` huandika jibu kwa Kiswahili au Kiingereza kutoka kwa FACTS pekee: bei, stock, datasheet, model nyingine za category hiyo, site facts za mteja na maarifa yaliyoidhinishwa. Kila namba inayotokea kwenye jibu hulinganishwa na FACTS; namba isiyokuwepo inatupa jibu lile na kurudi kwenye mistari ya uhakika (`src/advisor.ts`). Sehemu ambayo haijaandikwa inasemwa kama "haipo kwenye rekodi", si kama "hakuna".
+
+**Memory ya kudumu.** Kila ujumbe husasisha `memory.facts` (`coverage_m`, `clients`, `site`, `place`, `use`, `fleet`, `equipment`, `budget`, `system`, `photo`). Facts huhifadhiwa kwenye `customer_memory` kwa namba ya mteja, hivyo mteja anayerudi kesho haanze kueleza eneo lake tena. `memory.trace` huhifadhi hatua za jibu la mwisho.
+
+**Picha.** Mteja akituma picha, worker husoma bytes za picha ya mwisho na `identifyDevice()` kuitambua kwa Gemini Vision (brand, model, kile kinachoonekana). Model ikitambulika, CSbot huipata kwenye catalog na kujibu kwa bei, stock na datasheet; ikiwa label haisomeki, huomba picha ya karibu. Picha ya malipo haitambuliki kama kifaa, hivyo mtiririko wa malipo haubadiliki.
+
+**Studio.** Ukurasa wa **Studio** kwenye dashboard ni simulator ya mteja inayotumia engine halisi: `POST /v1/playground` (`{"messages":["…","…"]}`) hurudisha jibu la kila hatua pamoja na `trace`, `facts` na `stage`. Hakuna ujumbe unaotumwa WhatsApp na hakuna conversation ya mteja inayoguswa.
+
 ## API ya inbox na mauzo
 
 Tuma `Authorization: Bearer <ADMIN_API_TOKEN>` kwa routes za `/v1`.
@@ -193,6 +205,7 @@ Tuma `Authorization: Bearer <ADMIN_API_TOKEN>` kwa routes za `/v1`.
 | `POST /v1/conversations/:id/sales` | Fungua oda kwa `{"requestId":"id-unique-per-order"}`. Kurudia request ID kunarudisha oda ileile |
 | `POST /v1/conversations/:id/sale` | Thibitisha `paid` au `completed` kupitia `{"saleId":"123","stage":"paid","reason":"Verified receipt"}` |
 | `GET /v1/knowledge`, `GET /v1/products` | Orodhesha maudhui ya katalogi na maarifa |
+| `POST /v1/playground` | Simulator ya engine halisi: `{"messages":["Nahitaji AP ya mita 300"]}` hurudisha jibu, `trace`, `facts` na `stage` kwa kila hatua bila kutuma WhatsApp |
 
 Mteja anapoomba maelekezo ya kulipa, chat husogea kwenye `ready_to_pay` na admin anaarifiwa. Mteja akiripoti kuwa amelipa, hatua huwa `payment_reported` hadi admin athibitishe. Arifa zinaonyesha mteja, mada na kiasi kilichotajwa kwenye mazungumzo. Admin akichukua chat, bot husubiri kuruhusiwa kuendelea. Baada ya oda kukamilika, ombi la bei likipata bidhaa au package kwenye katalogi linaweza kufungua oda mpya ikiwa bot imewashwa kwenye chat hiyo. Admin pia anaweza kufungua oda mpya mwenyewe. Rekodi ya bei na arifa za kila oda zinaendelea kupatikana kwenye historia. Tuma `saleId` ya oda unayothibitisha. Inahitajika mara chat inapokuwa na zaidi ya oda moja.
 

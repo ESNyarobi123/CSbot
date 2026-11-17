@@ -28,6 +28,26 @@ async function endPresence(presence: Presence | undefined) {
     [presence.accountId, presence.jid]).catch(() => undefined);
 }
 
+/**
+ * The newest inbound photo in this batch, base64-encoded for the vision model.
+ * Only images under the media size limit; anything else is ignored rather than
+ * failing the whole reply.
+ */
+async function newestPhoto(client: Parameters<typeof respond>[0], ids: string[]) {
+  if (!ids.length) return undefined;
+  try {
+    const found = await client.query<{ bytes: Buffer; mimetype: string }>(
+      `SELECT m.bytes, m.mimetype FROM messages msg JOIN media m ON m.id=msg.media_id
+       WHERE msg.id = ANY($1::bigint[]) AND m.mimetype IN ('image/jpeg','image/png','image/webp')
+       ORDER BY msg.id DESC LIMIT 1`, [ids]);
+    const image = found.rows[0];
+    if (!image || !image.bytes?.length || image.bytes.length > 4_000_000) return undefined;
+    return { base64: image.bytes.toString('base64'), mimetype: image.mimetype };
+  } catch {
+    return undefined;
+  }
+}
+
 const name = 'conversation-replies';
 const producer = new Redis(config.REDIS_URL, { maxRetriesPerRequest: 1, commandTimeout: 5000 });
 const consumer = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
@@ -44,8 +64,9 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       if (!conversation) return;
       const account = await row(client, 'SELECT enabled FROM accounts WHERE id=$1', [conversation.account_id]);
       if (!account?.enabled) return;
-      const pending = (await client.query<{ id: string; body: string; occurred_at: Date; auto_reply: boolean }>(
-        `SELECT id,body,occurred_at,auto_reply
+      const pending = (await client.query<{ id: string; body: string; occurred_at: Date; auto_reply: boolean;
+        media_id: string | null }>(
+        `SELECT id,body,occurred_at,auto_reply,media_id
         FROM messages WHERE conversation_id=$1 AND processing='pending' ORDER BY id LIMIT 20`, [conversationId])).rows;
       if (pending[0]?.id !== firstMessage) return;
       const ids = pending.map(message => message.id);
@@ -54,6 +75,10 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         AND occurred_at <= $2 ORDER BY occurred_at DESC,id DESC LIMIT 16`,
       [conversationId, new Date(Math.max(...pending.map(message => message.occurred_at.getTime())))])).rows.reverse();
       const newest = pending.map(message => message.body.slice(0, 1200)).join('\n').slice(-4500);
+      // A photo is part of the question: "hii ni nini?" with a picture of the
+      // box. The bytes go to the model only for identification, never stored in
+      // the prompt history.
+      const photo = await newestPhoto(client, ids);
       // A chat parked in human mode answers nothing, forever. If no agent has
       // written for the idle window, give it back to the bot instead of leaving
       // a paying customer on read. The pending messages were flagged
@@ -72,7 +97,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       }
       const canReply = mode === 'bot' && pending.some(message => message.auto_reply);
       const outcome = await respond(client, conversation, newest,
-        history.map(line => ({ ...line, body: line.body.slice(0, 700) })), !canReply);
+        history.map(line => ({ ...line, body: line.body.slice(0, 700) })), !canReply, photo);
       await client.query('UPDATE conversations SET memory=$2,updated_at=now() WHERE id=$1', [conversationId, outcome.memory]);
       if (canReply && outcome.handoff) await setMode(client, conversationId, 'human');
       if (canReply && outcome.body) await enqueue(client, {
