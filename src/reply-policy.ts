@@ -4,7 +4,7 @@ const business = /\b(?:wotefy|lubfy|mfumo|billing|router|wifi|wi-fi|access point
 const unrelated = /\b(?:game|gme|mpira|football|birthday|familia|family|chakula|dinner|lunch)\b/i;
 const detail = /\b(?:ap|eap|eneo|mita|meters?|metres?|km|kilomet\w*|wazi|nje|ndani|ukuta|kuta|miti|indoor|outdoor|users?|watumiaji|wateja|bajeti|budget|modeli?|models?|zingine|nyingine|nyengine|hii|hiyo|hiki|ile|kwenu|mnayo|ileile|same|picha|email|imeli|kifaa|navifaa|tatizo|shida|haifunguki|nje|ukumbini|jengo|majengo|shuleni|subscription|month|mwezi)\b/i;
 const bareLocation = /^(?:nipo|niko|tupo|i(?:’m|'m| am) in)\s+[\p{L} -]{2,48}[.! ]*$/iu;
-const salutation = /^(?:kaka|dada|mkuu|boss|bro|mambo|habari|vipi|sasa|hello|hi|hey|asante|thanks|poa|sawa|ok)[.!? ]*$/i;
+const salutation = /^(?:kaka|dada|mkuu|boss|bro|brother|chief|mzee|mambo|habari|vipi|sasa|hello|hi|hey|shikamoo|salama|poa|safi|nzuri|asante|thanks|sawa|ok)(?:[ ,]+(?:yako|yenu|zenu|za|tu|je|sana|basi|aisee|dah|there|kaka|dada|mkuu|boss|bro|ndugu|vipi|mambo|habari|poa|safi|nzuri|salama))*[.!? ]*$/i;
 
 // "Tatizo" or "shida" on its own is the customer telling us why they came. The
 // old gate treated it as a bare word and said nothing at all.
@@ -14,7 +14,13 @@ const emailOnly = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 export function replyEligible(text: string, memory: Conversation['memory'], history: { direction: string; body: string }[], photo: boolean) {
   const value = text.trim();
   if (unrelated.test(value) && !/\b(?:router|hotspot|wi-fi|wifi|portal|wotefy|lubfy|internet)\b/i.test(value)) return false;
-  if (salutation.test(value)) return false;
+  if (salutation.test(value)) {
+    // A greeting is worth one warm answer on first contact — that is how a new
+    // customer is invited to say what they need. Repeating it later is silence,
+    // not another "which system?".
+    const firstContact = history.every(line => line.direction !== 'outbound');
+    return firstContact && !memory.support && !memory.product && !memory.plan && !memory.planning;
+  }
   // An address is never idle chatter; it is someone asking to be helped.
   if (emailOnly.test(value)) return true;
   if (business.test(value) || trouble.test(value)

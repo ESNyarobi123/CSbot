@@ -10,10 +10,16 @@ const client = { query: async () => ({ rows: [] }) };
 const chat = (memory = {}) => ({ id: 'playground', account_id: 'a', customer_jid: 'a', stage: 'inquiry', memory });
 const say = (text, memory, history = []) => customerTurn(client, chat(memory), text, history);
 
-test('personal openers, a standalone location and off-topic replies stay in the inbox silently', async () => {
-  for (const text of ['Kaka', 'Nipo mtwara', 'Uko na gme', 'Nimelipa chakula']) {
+test('a greeting gets one warm welcome and asks what they need, then stays quiet', async () => {
+  const first = await say('Kaka');
+  assert.match(first.body, /nini|nini leo|kusaidia/i);
+  assert.doesNotMatch(first.body, /WoteFy|LubFy|bei/i);
+  // The same greeting after the bot has spoken is not worth another reply.
+  const again = await say('Kaka', {}, [{ direction: 'outbound', body: first.body }]);
+  assert.equal(again.body, '');
+  for (const text of ['Nipo mtwara', 'Nimelipa chakula', 'Uko na gme']) {
     const reply = await say(text, { support: { problem: 'Nipo Mtwara', system: 'lubfy' } });
-    assert.equal(reply.body, '');
+    assert.equal(reply.body, '', text);
     assert.equal(reply.stage, undefined);
     assert.equal(reply.handoff, undefined);
   }

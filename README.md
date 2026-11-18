@@ -213,7 +213,7 @@ Picha ya mteja huhifadhiwa kwenye table ya `media`. Arifa ya malipo huambatanish
 
 `memory.profile` huhifadhi maelezo mteja aliyosema wazi kuhusu vifaa anavyotumia, bajeti na matumizi ya mtandao. Maelezo hayo yanaendelea kutumika kwenye oda inayofuata ya chat hiyo. CSbot inasasisha maelezo ya profile mteja anapotoa taarifa mpya inayotambulika.
 
-CSbot huacha salamu za pekee, ujumbe binafsi na eneo lililotumwa bila swali la biashara kwenye inbox. Ujumbe unaofuata unaweza kuanzisha mauzo, usajili au msaada. **Customer brief** huonyesha hali hiyo na taarifa za mazungumzo. Kwa chaguo-msingi, chat ya **Take over** husubiri mhudumu abonyeze **Enable bot**. Weka `HANDOFF_IDLE_MINUTES` zaidi ya sifuri kuruhusu kurudi baada ya muda huo kwa ombi la biashara.
+CSbot husoma ujumbe kwanza kabla ya kujibu. Mteja mpya anayesalimu hupata karibu moja inayomuuliza anahitaji nini, kisha CSbot huendelea kulingana na jibu lake — kifaa, usajili au msaada. Salamu zinazorudiwa, eneo lililotumwa peke yake na mada zisizohusiana na biashara huachwa kwenye inbox bila jibu, ili mhudumu azione. **Customer brief** huonyesha hali hiyo na taarifa za mazungumzo. Kwa chaguo-msingi, chat ya **Take over** husubiri mhudumu abonyeze **Enable bot**. Weka `HANDOFF_IDLE_MINUTES` zaidi ya sifuri kuruhusu kurudi baada ya muda huo kwa ombi la biashara.
 
 ## Majaribio
 

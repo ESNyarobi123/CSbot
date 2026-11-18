@@ -106,7 +106,7 @@ const smallTalkWords = new Set([
   'morning', 'afternoon', 'evening', 'asubuhi', 'mchana', 'jioni', 'chief', 'mzee', 'bro',
   'brother', 'dada', 'kaka', 'yako', 'za', 'tu', 'je', 'basi', 'haya', 'aisee', 'dah', 'poa',
 ]);
-const greetingWord = /^(mambo+|vipi|vpp|niaje|habari|hujambo|sijambo|shikamoo|salama|poa|safi|nzuri|hello+|hi+|hey+|yo|sup|sasa|morning|afternoon|evening|asubuhi|mchana|jioni|asante|shukran|thanks|thank|thx)$/;
+const greetingWord = /^(mambo+|vipi|vpp|niaje|habari|hujambo|sijambo|shikamoo|salama|poa|safi|nzuri|hello+|hi+|hey+|yo|sup|sasa|morning|afternoon|evening|asubuhi|mchana|jioni|asante|shukran|thanks|thank|thx|kaka|dada|mkuu|boss|bro|brother|chief|mzee)$/;
 
 /** A message that is only a greeting, an acknowledgement or a thank-you. */
 export function smallTalkOnly(text: string) {
