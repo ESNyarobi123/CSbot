@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 
-const product = { id: 'wr3000', name: 'Cudy WR3000', sku: 'WR3000' };
+const product = { id: 'wr3000', name: 'Cudy WR3000', sku: 'WR3000', price: { amount: 95000, currency: 'TZS' } };
 let reads = 0;
 createServer((req, res) => {
   const url = new URL(req.url, 'http://fixture');

@@ -24,6 +24,15 @@ const clean = (value: string) => value.replace(/\s+/g, ' ').trim();
  * ------------------------------------------------------------------------- */
 
 const metres = /\b(?:mita|metres?|meters?|mtr)\s*(\d{1,5})\b|\b(\d{1,5})\s*(?:mita|metres?|meters?|mtr)\b/i;
+const kilometres = /\b(?:kilomet(?:er|re|a)s?|km)\s*(\d+(?:[.,]\d+)?)\b|\b(\d+(?:[.,]\d+)?)\s*(?:kilomet(?:er|re|a)s?|km)\b/i;
+export function siteDistance(text: string) {
+  if (/\b(?:waya|cable|kebo|cat ?6)\b/i.test(text)) return undefined;
+  const km = kilometres.exec(text);
+  const match = km || metres.exec(text);
+  if (!match) return undefined;
+  const value = Number((match[1] ?? match[2]).replace(',', '.')) * (km ? 1000 : 1);
+  return value > 0 && value <= 100000 ? Math.round(value) : undefined;
+}
 const users = /\b(\d{1,5})\s*(?:\+)?\s*(?:wateja|watumiaji|clients?|users?|devices?|simu)\b|\b(?:wateja|watumiaji|clients?|users?)\s*(?:hadi\s*|karibu\s*)?(\d{1,5})\b/i;
 const openArea = /\b(wazi|open area|bila kizuizi|no obstacles|open space)\b/i;
 const obstructed = /\b(kizuizi|vizui?zi|ukuta|kuta|miti|mti|walls?|trees?|obstructed|maghorofa|floors?)\b/i;
@@ -52,18 +61,20 @@ export function recall(text: string, previous?: Facts): Facts {
   const put = (key: string, value: string | undefined) => {
     if (value && value !== facts[key]) facts[key] = value;
   };
-  const distance = metres.exec(text);
-  if (distance) put('coverage_m', distance[1] ?? distance[2]);
+  const distance = siteDistance(text);
+  if (distance) put('coverage_m', String(distance));
   const people = users.exec(text);
   if (people) put('clients', people[1] ?? people[2]);
   if (/\b(ndani|indoor)\b/i.test(text)) put('place', 'indoor');
   if (/\b(nje|outdoor|uwani|shamba)\b/i.test(text)) put('place', 'outdoor');
-  if (obstructed.test(text)) put('site', 'obstructed');
+  if (/bila (?:kizuizi|vizuizi)|no obstacles/i.test(text)) put('site', 'open');
+  else if (obstructed.test(text)) put('site', 'obstructed');
   else if (openArea.test(text)) put('site', 'open');
   const system = systems.exec(text)?.[1]?.toLowerCase();
   if (system) put('system', system);
-  if (omada.test(text)) put('fleet', 'omada');
-  else if (multiVendor.test(text)) put('fleet', 'multivendor');
+  const owns = /\b(?:nina|tuna|natumia|ninatumia|tunatumia|i have|we have|i use|we use|already have)\b/i.test(text);
+  if (owns && omada.test(text)) put('fleet', 'omada');
+  else if (owns && multiVendor.test(text)) put('fleet', 'multivendor');
   for (const [pattern, label] of useCases) {
     if (pattern.test(text)) { put('use', label); break; }
   }
@@ -72,7 +83,7 @@ export function recall(text: string, previous?: Facts): Facts {
   const models = [...new Set((text.match(modelLike) ?? []).map(clean).map(item => item.toUpperCase()))]
     .filter(item => /\d/.test(item) && !/^(MITA|METRES?|METERS?|WATEJA|USERS?|WATU)\b/.test(item))
     .slice(0, 4);
-  if (models.length) {
+  if (owns && models.length) {
     const known = new Set((facts.equipment ?? '').split(' · ').filter(Boolean));
     for (const model of models) known.add(model);
     put('equipment', [...known].slice(0, 8).join(' · '));
@@ -91,7 +102,7 @@ export function recall(text: string, previous?: Facts): Facts {
   }
   const budget = /\b(?:bajeti|budget)[^.\n]{0,40}?(\d[\d,.]{2,})\s*(k|elfu|million|milioni)?/i.exec(text);
   if (budget) put('budget', `${budget[1]}${budget[2] ? ' ' + budget[2] : ''}`);
-  if (/\bmesh\b/i.test(text)) put('asked_mesh', 'yes');
+  if (/\bmesh(?:ing)?\b/i.test(text)) put('asked_mesh', 'yes');
   if (/\b(cctv|camera|kamera)\b/i.test(text)) put('also', 'cctv');
   if (/\b(printer|printa|risiti)\b/i.test(text)) put('also', 'printer');
   if (/\b(mfumo|system|billing|bili)\b/i.test(text)) put('also', 'billing');

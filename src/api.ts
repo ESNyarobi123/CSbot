@@ -9,7 +9,7 @@ import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import qrcode from 'qrcode';
 import { z } from 'zod';
-import { respond } from './assistant.js';
+import { customerTurn as respond } from './assistant.js';
 import { factList } from './brain.js';
 import { config } from './config.js';
 import { adminAuthorized, DashboardController, dashboardDir, type DashboardRequest } from './dashboard.js';
@@ -551,7 +551,7 @@ class AdminController {
         mimetype: z.enum(['image/jpeg', 'image/png', 'image/webp']),
       }).optional(),
     }), body);
-    const memory: Conversation['memory'] = {};
+    let memory: Conversation['memory'] = {};
     const turns: {
       customer: string; reply: string; trace: string[]; facts: ReturnType<typeof factList>;
       stage: string | null; ms: number; photo: boolean;
@@ -559,7 +559,7 @@ class AdminController {
     const base = {
       id: 'playground', account_id: 'playground', customer_jid: 'playground@s.whatsapp.net',
       customer_phone: null, customer_name: null, mode: 'bot' as const, human_since: null,
-      stage: 'inquiry' as const, unread_count: 0, last_body: null, last_at: null,
+      stage: 'inquiry' as Conversation['stage'], unread_count: 0, last_body: null, last_at: null,
     };
     const client = await db.connect();
     try {
@@ -576,7 +576,8 @@ class AdminController {
           facts: factList(outcome.memory.facts), stage: outcome.stage ?? null,
           ms: Date.now() - started, photo: Boolean(photo),
         });
-        Object.assign(memory, outcome.memory);
+        memory = outcome.memory;
+        if (outcome.stage) base.stage = outcome.stage;
       }
     } finally {
       client.release();
@@ -695,18 +696,7 @@ class AdminController {
     }
     const conversationId = await ingest({ accountId: id, providerId: input.messageId, jid: input.phone + '@s.whatsapp.net',
       name: input.name, body: input.text || (bytes ? '[WhatsApp image]' : ''), kind: bytes ? 'image' : 'text',
-      occurredAt: new Date() });
-    if (conversationId && bytes && mimetype) {
-      const stored = await row<{ id: string }>(db, `INSERT INTO media
-        (account_id,conversation_id,provider_id,kind,mimetype,bytes,size)
-        VALUES ($1,$2,$3,'image',$4,$5,$6) ON CONFLICT DO NOTHING RETURNING id`,
-      [id, conversationId, input.messageId, mimetype, bytes, bytes.length]);
-      if (stored) {
-        await db.query(`UPDATE messages SET media_id=$3
-          WHERE conversation_id=$1 AND provider_id=$2 AND direction='inbound'`,
-        [conversationId, input.messageId, stored.id]);
-      }
-    }
+      occurredAt: new Date(), image: bytes && mimetype ? { bytes, mimetype } : undefined });
     return { conversationId: conversationId ?? null };
   }
 }
@@ -733,3 +723,4 @@ app.useStaticAssets(dashboardDir + 'assets', { prefix: '/assets/', index: false 
 const shutdown = async () => { await app.close(); await db.end(); };
 for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => { void shutdown(); });
 await app.listen(config.PORT, '0.0.0.0');
+console.info('CSbot API listening at', await app.getUrl());

@@ -87,6 +87,17 @@ test('a distance nothing reaches is stated honestly, with the highest recorded f
   assert.match(outcome.body, /AP ya pili/);
 });
 
+test('a customer already on Omada is not led to a model their controller cannot manage', async () => {
+  const outcome = await respond(client, conversation({ facts: { fleet: 'omada', coverage_m: '150' } }),
+    'Nahitaji access point ya mita 150', []);
+  // The EAP family that joins their controller comes first, even though the
+  // Cudy reaches further and the catalog listed it earlier.
+  assert.equal(outcome.memory.productOptions[0].name.startsWith('TP LINK EAP'), true);
+  // And the mismatched model is named as needing its own cloud, not silently dropped.
+  assert.match(outcome.body, /Kwa kuwa unatumia Omada/);
+  assert.match(outcome.body, /Cudy AP 3000.*zinahitaji mfumo wao|zinahitaji mfumo wao.*Cudy AP 3000/);
+});
+
 test('a cable order keeps its metre price', async () => {
   const outcome = await respond(client, conversation({}), 'Nahitaji waya mita 300', []);
   assert.match(outcome.body, /1,500/);

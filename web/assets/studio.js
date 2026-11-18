@@ -78,7 +78,7 @@ export async function studio(container, signal) {
       <div class="bubble customer">${turn.photo ? `<span class="bubble-photo">${icon('image', 13)} Picha ya kifaa</span>` : ''}${esc(turn.customer)}
       </div>
       <div class="bubble bot">
-        ${esc(turn.reply).replace(/\n/g, '<br>')}
+        ${(turn.reply ? esc(turn.reply).replace(/\n/g, '<br>') : 'No automatic reply. Waiting for a business enquiry.')}
         <footer><span>${turn.ms} ms</span>${turn.stage ? stagePill(turn.stage) : ''}
           <button type="button" class="trace-link" data-trace="${index}">${icon('search', 13)}Why?</button></footer>
       </div>`).join('') : `<div class="chat-blank">
@@ -119,7 +119,7 @@ export async function studio(container, signal) {
             `<span class="fact-chip"><b>${esc(fact.label)}</b>${esc(fact.value)}</span>`).join('')}</div>`
             : '<p class="trace-muted">Nothing site-specific in this chat yet.</p>'}
         </section>
-        <section><h3>Reply</h3><p class="trace-reply">${esc(turn.reply).replace(/\n/g, '<br>')}</p>
+        <section><h3>Reply</h3><p class="trace-reply">${(turn.reply ? esc(turn.reply).replace(/\n/g, '<br>') : 'No automatic reply. Waiting for a business enquiry.')}</p>
           <p class="trace-muted">${turn.ms} ms · ${turn.stage ? 'stage: ' + esc(turn.stage) : 'no stage change'}</p></section>
       </div>`;
   }

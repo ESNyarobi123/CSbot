@@ -43,12 +43,12 @@ export async function openSale(client: PoolClient, conversation: Conversation, r
 }
 
 export function withoutQuote(memory: Conversation['memory']): Conversation['memory'] {
-  const { lastQuote, quoteFor, product, productOptions, plan, ...context } = memory;
+  const { lastQuote, quoteFor, product, productOptions, optionQuery, lastOptionIds, awaitingService, plan, ...context } = memory;
   return context;
 }
 
 export async function advanceSale(
-  client: PoolClient, conversation: Conversation, sale: Sale | undefined, stage: Stage, reason: string,
+  client: PoolClient, conversation: Conversation, sale: Sale | undefined, stage: Stage, reason: string, receiptId?: string,
 ) {
   if (sale?.closed_at) {
     if (stage !== 'quoted') return sale;
@@ -80,13 +80,8 @@ export async function advanceSale(
       const title = stage === 'ready_to_pay' ? 'Mteja yuko tayari kulipa' : 'Mteja ameripoti malipo. Thibitisha.';
       const alertMemory = { ...withoutQuote(memory), lastQuote: updated.quote?.text, product: updated.quote?.product,
         quoteFor: updated.quote?.kind, system: updated.quote?.system ?? memory.system };
-      // A payment claim usually arrives with a receipt photo, so forward the latest customer image to admin.
-      // Older photos are skipped to avoid attaching an unrelated product picture.
-      const receipt = stage === 'payment_reported' ? await row<{ id: string }>(client,
-        `SELECT id FROM media WHERE conversation_id=$1 AND created_at > now() - interval '30 minutes'
-        ORDER BY id DESC LIMIT 1`, [conversation.id]) : undefined;
       await alertAdmins(client, { ...conversation, memory: alertMemory }, `${title} · Oda #${sale.id}`,
-        receipt ? `csbot-media:${receipt.id}` : undefined);
+        receiptId ? `csbot-media:${receiptId}` : undefined);
     }
   }
   return updated;

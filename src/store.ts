@@ -18,6 +18,8 @@ export interface Conversation {
   last_body: string | null;
   last_at: Date | null;
   memory: {
+    replyStatus?: 'waiting' | 'answered';
+    onboarding?: boolean;
     system?: 'wotefy' | 'lubfy';
     product?: { id: string; name: string };
     lastQuote?: string;
@@ -36,7 +38,7 @@ export interface Conversation {
     /** Set while the bot waits for "yes" to its installation/cable offer. */
     awaitingService?: boolean;
     /** Support intake: the problem, the system, and the login email. */
-    support?: { problem?: string; system?: 'wotefy' | 'lubfy'; email?: string };
+    support?: { problem?: string; system?: 'wotefy' | 'lubfy'; email?: string; waitingFor?: 'problem' | 'email' | 'system' | 'device'; attempts?: number };
     /** Last completed support intake, kept for the admin alert and audits. */
     lastSupport?: { problem?: string; system?: 'wotefy' | 'lubfy'; email?: string };
     recentTopic?: string;
@@ -57,6 +59,7 @@ export interface Conversation {
 export interface Incoming {
   accountId: string;
   providerId: string;
+  image?: { mimetype: string; bytes: Buffer };
   jid: string;
   alternateJid?: string;
   name?: string;
@@ -108,6 +111,17 @@ export async function ingest(message: Incoming) {
     [conversation.id, message.providerId, fromMe ? 'outbound' : 'inbound', fromMe ? 'admin' : 'customer',
       message.body, historical ? `history:${message.kind}` : message.kind, message.occurredAt,
       historical || fromMe ? 'done' : 'pending', conversation.mode === 'bot']);
+    if (message.image && !fromMe && !historical) {
+      // Make the attachment visible to the worker in the same commit as the pending turn.
+      const { bytes, mimetype } = message.image;
+      const media = await row(client, `INSERT INTO media
+        (account_id,conversation_id,provider_id,kind,mimetype,bytes,size)
+        VALUES ($1,$2,$3,'image',$4,$5,$6) ON CONFLICT DO NOTHING RETURNING id`,
+      [accountId, conversation.id, message.providerId, mimetype, bytes, bytes.length]);
+      if (media) await client.query(`UPDATE messages SET media_id=$3
+        WHERE conversation_id=$1 AND provider_id=$2 AND direction='inbound'`,
+      [conversation.id, message.providerId, media.id]);
+    }
     if (!inserted) return conversation.id;
     if (!historical && inserted.kind.startsWith('history:')) {
       await client.query('UPDATE messages SET kind=$2, received_at=clock_timestamp() WHERE id=$1',

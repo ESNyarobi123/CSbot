@@ -5,7 +5,7 @@ const optional = z.preprocess(value => value === '' ? undefined : value, z.strin
 export const config = z.object({
   DATABASE_URL: z.string().min(1),
   REDIS_URL: z.string().default('redis://localhost:6379'),
-  PORT: z.coerce.number().int().min(1).max(65535).default(8080),
+  PORT: z.coerce.number().int().min(0).max(65535).default(8080),
   ADMIN_API_TOKEN: optional,
   SESSION_KEY: optional,
   ALLOW_MOCK: z.enum(['true', 'false']).default('false').transform(value => value === 'true'),
@@ -29,7 +29,7 @@ export const config = z.object({
   // A chat taken over by a human stays silent until an agent releases it. Real
   // agents miss that, so an idle handoff returns to the bot after this window.
   // 0 disables the resume. Notification-only sends use takeover:false instead.
-  HANDOFF_IDLE_MINUTES: z.coerce.number().int().min(0).max(10080).default(30),
+  HANDOFF_IDLE_MINUTES: z.coerce.number().int().min(0).max(10080).default(0),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error', 'silent']).default('info'),
 }).parse(process.env);
 

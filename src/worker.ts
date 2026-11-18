@@ -1,7 +1,8 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
-import { respond } from './assistant.js';
+import { customerTurn as respond } from './assistant.js';
+import { replyEligible } from './reply-policy.js';
 import { config } from './config.js';
 import { shop } from './csolution-pos.js';
 import { db, log, row, transaction } from './db.js';
@@ -41,7 +42,7 @@ async function newestPhoto(client: Parameters<typeof respond>[0], ids: string[])
        WHERE msg.id = ANY($1::bigint[]) AND m.mimetype IN ('image/jpeg','image/png','image/webp')
        ORDER BY msg.id DESC LIMIT 1`, [ids]);
     const image = found.rows[0];
-    if (!image || !image.bytes?.length || image.bytes.length > 4_000_000) return undefined;
+    if (!image || !image.bytes?.length || image.bytes.length > 8 * 1024 * 1024) return undefined;
     return { base64: image.bytes.toString('base64'), mimetype: image.mimetype };
   } catch {
     return undefined;
@@ -55,7 +56,7 @@ const queue = new Queue<{ conversationId: string; firstMessage: string }>(name, 
 queue.on('error', error => log.error({ code: error.name }, 'Queue connection error'));
 
 const worker = new Worker<{ conversationId: string; firstMessage: string }>(name, async job => {
-  const presence = await beginPresence(job.data.conversationId);
+  let presence: Promise<Presence | undefined> | undefined;
   try {
     await transaction(async client => {
       const { conversationId, firstMessage } = job.data;
@@ -78,13 +79,14 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       // A photo is part of the question: "hii ni nini?" with a picture of the
       // box. The bytes go to the model only for identification, never stored in
       // the prompt history.
-      const photo = await newestPhoto(client, ids);
+      const hasPhoto = pending.some(message => message.media_id !== null);
+      const eligible = replyEligible(newest, conversation.memory, history, hasPhoto);
       // A chat parked in human mode answers nothing, forever. If no agent has
       // written for the idle window, give it back to the bot instead of leaving
       // a paying customer on read. The pending messages were flagged
       // auto_reply=false by the takeover, so re-arm them here.
       let mode = conversation.mode;
-      if (mode === 'human' && config.HANDOFF_IDLE_MINUTES > 0) {
+      if (eligible && mode === 'human' && config.HANDOFF_IDLE_MINUTES > 0) {
         const since = conversation.human_since ? new Date(conversation.human_since).getTime() : 0;
         if (!since || Date.now() - since >= config.HANDOFF_IDLE_MINUTES * 60_000) {
           await setMode(client, conversationId, 'bot');
@@ -96,6 +98,19 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         }
       }
       const canReply = mode === 'bot' && pending.some(message => message.auto_reply);
+      // Show typing and decode images only when this batch is eligible for a reply.
+      if (eligible && canReply) presence = beginPresence(conversationId).catch(() => undefined);
+      const imageIds = pending.filter(message => message.auto_reply && message.media_id).map(message => message.id);
+      if (eligible && canReply && !imageIds.length && /\b(?:hii|hiki|hiyo|this|that)\b/i.test(newest)) {
+        // Forwarded product photos and their question can arrive in different batches.
+        const previous = await row<{ id: string; kind: string; direction: string; body: string }>(client,
+          `SELECT id,kind,direction,body FROM messages WHERE conversation_id=$1 AND id<$2
+           AND occurred_at BETWEEN $3::timestamptz - interval '3 minutes' AND $3 ORDER BY id DESC LIMIT 1`,
+        [conversationId, firstMessage, pending[0].occurred_at]);
+        if (previous?.kind === 'image' && previous.direction === 'inbound'
+            && !/risiti|receipt|malipo|paid|nimelipa/i.test(previous.body)) imageIds.push(previous.id);
+      }
+      const photo = eligible && canReply && imageIds.length === 1 ? await newestPhoto(client, imageIds) : undefined;
       const outcome = await respond(client, conversation, newest,
         history.map(line => ({ ...line, body: line.body.slice(0, 700) })), !canReply, photo);
       await client.query('UPDATE conversations SET memory=$2,updated_at=now() WHERE id=$1', [conversationId, outcome.memory]);
@@ -107,7 +122,11 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       const updated = { ...conversation, memory: outcome.memory };
       if (outcome.stage) {
         const sale = await currentSale(client, conversationId);
-        await advanceSale(client, updated, sale, outcome.stage, 'customer_message');
+        const receipt = outcome.stage === 'payment_reported'
+          ? [...pending].reverse().find(message => message.media_id && /\b(?:nimelipa|nimeshalipa|risiti|receipt|paid|payment sent)\b/i.test(message.body))?.media_id
+            ?? (pending.length === 2 && pending.some(message => message.body === '[WhatsApp image]')
+              ? pending.find(message => message.body === '[WhatsApp image]')?.media_id : undefined) : undefined;
+        await advanceSale(client, updated, sale, outcome.stage, 'customer_message', receipt ?? undefined);
       }
       else if (canReply && (outcome.handoff || outcome.notify)) {
         const closedOrder = conversation.stage === 'completed' || conversation.stage === 'paid';
@@ -118,7 +137,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       await client.query("UPDATE messages SET processing='done' WHERE id=ANY($1::bigint[])", [ids]);
     });
   } finally {
-    await endPresence(presence);
+    await endPresence(await presence);
   }
 }, { connection: consumer, concurrency: config.WORKER_CONCURRENCY });
 

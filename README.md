@@ -33,7 +33,7 @@ Tumia Docker Compose na Node.js 22 au mpya zaidi kwa scripts za hapa kwenye komp
 npm run stack -- doctor
 npm run stack -- up
 npm run stack -- status
-curl -fsS http://127.0.0.1:8080/health/ready
+curl -fsS "$(node scripts/csbot.mjs url)/health/ready"
 ```
 
 `npm run stack` ni kifupi cha `node scripts/csbot.mjs`. `doctor` hukagua `.env`, SESSION_KEY na Docker daemon kabla ya kuanza. `up` hujenga image, huendesha migrations na kusubiri huduma zote ziwe healthy.
@@ -53,7 +53,7 @@ Amri za `docker compose` bado zinafanya kazi moja kwa moja ikiwa unahitaji udhib
 
 ## Dashboard ya admin
 
-Fungua [CSbot Admin](http://127.0.0.1:8080/admin) na uingie kwa `ADMIN_API_TOKEN` iliyowekwa kwenye `.env`. Dashboard inatumia API na port ileile ya Docker. Ikiwa umebadilisha `CSBOT_HTTP_PORT`, tumia port hiyo.
+Fungua anwani ya dashboard inayoonyeshwa na `npm run stack -- status` na uingie kwa `ADMIN_API_TOKEN` ya kwenye `.env`. Kwa `CSBOT_HTTP_PORT=0`, Docker huchagua port iliyo wazi. `npm run stack -- url` huonyesha anwani ya API, na pairing hutumia port hiyo moja kwa moja. Kwa Caddy inayotumia port 8080, weka `CSBOT_HTTP_PORT=8080`.
 
 1. Fungua **WhatsApp numbers → Add number** na jaza jina la namba. Namba kamili yenye country code ni ya hiari: ukiacha wazi, CSbot itaijifunza kutoka kwenye simu itakayoskani QR.
 2. Tumia **QR code** au **Pairing code** kupitia **WhatsApp → Linked devices → Link a device**. QR hujibadilisha kila sekunde 30. Ukitumia pairing code, chagua **Link with phone number** na andika code iliyoonyeshwa. Pairing code inahitaji namba ya akaunti iwe imejazwa.
@@ -82,7 +82,7 @@ Kwa njia ya QR, fungua **WhatsApp → Linked devices → Link a device** na scan
 Ikihitaji hatua kwa hatua kwa API:
 
 ```sh
-API="http://127.0.0.1:${CSBOT_HTTP_PORT:-8080}"
+API="$(node scripts/csbot.mjs url)"
 curl -fsS -X POST "$API/v1/accounts" \
   -H "Authorization: Bearer $ADMIN_API_TOKEN" \
   -H "Content-Type: application/json" \
@@ -209,9 +209,11 @@ Tuma `Authorization: Bearer <ADMIN_API_TOKEN>` kwa routes za `/v1`.
 
 Mteja anapoomba maelekezo ya kulipa, chat husogea kwenye `ready_to_pay` na admin anaarifiwa. Mteja akiripoti kuwa amelipa, hatua huwa `payment_reported` hadi admin athibitishe. Arifa zinaonyesha mteja, mada na kiasi kilichotajwa kwenye mazungumzo. Admin akichukua chat, bot husubiri kuruhusiwa kuendelea. Baada ya oda kukamilika, ombi la bei likipata bidhaa au package kwenye katalogi linaweza kufungua oda mpya ikiwa bot imewashwa kwenye chat hiyo. Admin pia anaweza kufungua oda mpya mwenyewe. Rekodi ya bei na arifa za kila oda zinaendelea kupatikana kwenye historia. Tuma `saleId` ya oda unayothibitisha. Inahitajika mara chat inapokuwa na zaidi ya oda moja.
 
-Picha ya mteja huhifadhiwa kwenye table ya `media`. Mteja anaporipoti malipo, picha yake ya mwisho inatumwa kwa admin pamoja na arifa, hivyo mhudumu huona risiti bila kufungua WhatsApp ya mteja. Admin anaweza kuipata kwa `GET /v1/media/:id`. Worker hufuta picha zilizopita siku `MEDIA_RETENTION_DAYS` (default 90).
+Picha ya mteja huhifadhiwa kwenye table ya `media`. Arifa ya malipo huambatanisha risiti iliyowasili pamoja na taarifa ya malipo. Kwa swali la bidhaa, CSbot hujaribu kusoma lebo kwa Tesseract ndani ya container. Ikiwa lebo haisomeki na Gemini imewezeshwa, picha inaweza kutumwa kwa Gemini kutambua modeli. Bei na stock husomwa kwenye POS. Admin anaweza kuipata kwa `GET /v1/media/:id`. Worker hufuta picha zilizopita siku `MEDIA_RETENTION_DAYS` (default 90).
 
 `memory.profile` huhifadhi maelezo mteja aliyosema wazi kuhusu vifaa anavyotumia, bajeti na matumizi ya mtandao. Maelezo hayo yanaendelea kutumika kwenye oda inayofuata ya chat hiyo. CSbot inasasisha maelezo ya profile mteja anapotoa taarifa mpya inayotambulika.
+
+CSbot huacha salamu za pekee, ujumbe binafsi na eneo lililotumwa bila swali la biashara kwenye inbox. Ujumbe unaofuata unaweza kuanzisha mauzo, usajili au msaada. **Customer brief** huonyesha hali hiyo na taarifa za mazungumzo. Kwa chaguo-msingi, chat ya **Take over** husubiri mhudumu abonyeze **Enable bot**. Weka `HANDOFF_IDLE_MINUTES` zaidi ya sifuri kuruhusu kurudi baada ya muda huo kwa ombi la biashara.
 
 ## Majaribio
 

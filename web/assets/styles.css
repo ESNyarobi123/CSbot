@@ -4192,3 +4192,13 @@ dialog[open]::backdrop {
   color: var(--accent);
   font-weight: 700;
 }
+
+.inbox-filters .list-head { align-items: center; justify-content: space-between; }
+.list-head h2 { margin: 0; font-size: 16px; }
+.reply-filters button { border: 1px solid var(--border); border-radius: 16px; background: white; padding: 4px 11px; font: inherit; font-size: 12px; cursor: pointer; }
+.reply-filters [aria-pressed="true"] { color: var(--accent-dark); background: #efedff; border-color: #c9c0f5; }
+.details-person small { display: block; }
+.thread-actions .brief-trigger { display: none; }
+@media (max-width: 1160px) { .thread-actions .brief-trigger { display: inline-flex; } }
+
+.brief-waiting { margin: 0 12px 12px; padding: 9px 11px; border-radius: 8px; background: #f1f2f8; color: var(--ink); font-size: 12px; }

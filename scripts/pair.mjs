@@ -1,3 +1,4 @@
+import { apiUrl } from './api-url.mjs';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 /**
@@ -18,8 +19,7 @@ if (!id || !/^[a-z0-9][a-z0-9-]{0,47}$/.test(id)) {
 if (!process.env.ADMIN_API_TOKEN) process.loadEnvFile();
 const token = process.env.ADMIN_API_TOKEN;
 if (!token) throw new Error('Set ADMIN_API_TOKEN in .env');
-const port = process.env.CSBOT_HTTP_PORT ?? '8080';
-const base = process.env.CSBOT_API_URL ?? 'http://127.0.0.1:' + port;
+const base = apiUrl();
 const headers = { authorization: 'Bearer ' + token };
 
 if (useCode) {

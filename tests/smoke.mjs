@@ -151,3 +151,14 @@ otherHistory = await waitFor(otherPath + '/messages', value => outbound(value).l
 assert.match(outbound(otherHistory)[0].body, /Integration Test LubFy/);
 assert.equal((await api(otherPath)).stage, 'quoted');
 console.log('Passed: account isolation, debounce, deduplication, product photo, fresh pricing, plan clarification, sales alerts, payment confirmation, repeat sales, saved customer context, stale payment protection and idempotent admin actions.');
+
+const sharp = (await import('sharp')).default;
+const label = await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="640" height="180"><rect width="640" height="180" fill="white"/><text x="36" y="118" font-family="sans-serif" font-size="84" fill="black">WR3000</text></svg>')).png().toBuffer();
+const photoChat = await api(`/v1/accounts/${account}/simulate`, { method: 'POST', status: 202,
+  data: { phone: '+255700100011', messageId: 'box', text: 'Naweza kupata hii kwenu?', imageBase64: label.toString('base64') } });
+const photoPath = '/v1/conversations/' + photoChat.conversationId;
+const photoMessages = await waitFor(photoPath + '/messages', value => outbound(value).length === 1);
+assert.match(outbound(photoMessages)[0].body, /lebo.*WR3000/i);
+assert.match(outbound(photoMessages)[0].body, /99,000/);
+assert.equal((await api(photoPath)).memory.product.id, 'wr3000');
+console.log('Passed: printed model identified from a product photograph, priced from POS and remembered on its own conversation.');

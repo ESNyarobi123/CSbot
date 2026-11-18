@@ -1,8 +1,11 @@
+import { replyEligible } from './reply-policy.js';
+import { photoInquiry, photoReply, printedModel } from './product-photo.js';
 import { GoogleGenAI } from '@google/genai';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { adviseOnDevice } from './advisor.js';
-import { compose, identifyDevice, loadCustomerMemory, recall, saveCustomerMemory } from './brain.js';import { config } from './config.js';
+import { compose, identifyDevice, loadCustomerMemory, recall, saveCustomerMemory, siteDistance } from './brain.js';
+import { config } from './config.js';
 import { log, row } from './db.js';
 import { sheetFor, specsFor, specsForMany, specLines } from './specs.js';
 import { cableQuote, catalog, installationOptions, isModelReference, modelQuery, money, planKind, readPlans, readProduct, searchProducts, serviceCatalog, systemName, variantLetter } from './pos.js';
@@ -79,7 +82,7 @@ const paymentQuestion = /\b(je nimelipa|nikisema nimelipa|kama nimelipa|did i pa
  * A broken system is a support case, not a price request. Kept narrow enough
  * that a stock question ("haipatikani?") does not become one.
  */
-const supportWords = /\b(shida|tatizo|matatizo|haifanyi kazi|haifanyi vizuri|haifunguki|haionekani|haiongei|haifikii|imesimama|imekwama|imegoma|imefeli|imefail|imekataliwa na mtandao|siwezi kuingia|sijaweza kuingia|haikubali|inaleta error|naipata error|imebadilika ghafla|sina internet|hakuna internet|haipati internet|problem|issue|not working|doesn't work|does not work|can't log ?in|cannot log ?in|can't login|cannot login|failed|stuck|support|troubleshoot)\b/i;
+const supportWords = /\b(shida|tatizo|matatizo|haifanyi kazi|haifanyi vizuri|haifunguki|haionekani|haiongei|haifikii|umesimama|imesimama|imekwama|imegoma|imefeli|imefail|imekataliwa na mtandao|siwezi kuingia|sijaweza kuingia|haikubali|inaleta error|naipata error|imebadilika ghafla|sina internet|hakuna internet|haipati internet|problem|issue|not working|doesn't work|does not work|can't log ?in|cannot log ?in|can't login|cannot login|failed|stuck|support|troubleshoot)\b/i;
 
 /** A first-line technical report, e.g. "Portal haifunguki kwenye simu". */
 export function supportQuestion(text: string) {
@@ -252,7 +255,7 @@ function fallback(text: string, memory: Conversation['memory']): Decision {
 export function resolveDecision(text: string, memory: Conversation['memory'], generated?: Decision): Decision {
   const detected = fallback(text, memory);
   if (!generated) return detected;
-  if (generated.intent === 'payment_reported' && (paymentDenied.test(text) || paymentQuestion.test(text))) {
+  if (['payment_reported', 'ready_to_pay', 'human'].includes(generated.intent) && generated.intent !== detected.intent) {
     return { ...detected, language: generated.language };
   }
   if (['ready_to_pay', 'payment_reported', 'human'].includes(detected.intent)) {
@@ -846,23 +849,44 @@ export function supportIntake(
   const rest = text.replace(emailPattern, ' ')
     .replace(/\b(?:wotefy|lubfy)\b/gi, ' ')
     .replace(/[\s.,!?;:]+/g, ' ').trim();
-  const onlyIdentityAnswer = rest.length < 3
+  const generic = /^(?:kaka|mkuu|boss|tatizo|shida|problem|support|msaada|nina (?:shida|tatizo)|mfumo wako|nipo .+|niko .+)$/i;
+  if (next.problem && generic.test(next.problem.trim())) delete next.problem;
+  const onlyIdentityAnswer = generic.test(rest) || rest.length < 3
     || smallTalkOnly(rest)
     || /^(?:ndio|ndiyo|sawa|ok|okay|yes|no|hapana|ndo)$/i.test(rest);
-  if (!next.problem && rest.length > 3 && !onlyIdentityAnswer) {
+  if (!next.problem && rest.length > 3 && !onlyIdentityAnswer && (supportQuestion(rest) ||
+      (next.waitingFor === 'problem' && rest.split(/\s+/).length >= 3))) {
     next.problem = rest.slice(0, 500);
   }
+  if (/\b(?:vifaa|navifaa|devices)\s+(?:viwili|vitatu|vingi|mbili|\d+)|\b(?:two|three|several|multiple|\d+) devices/i.test(text) && !email) {
+    next.waitingFor = 'device';
+    return { support: next, ready: false, reply: say('Ni kipi kati ya hivyo kina shida? Niambie modeli yake au jinsi unavyokitambua, na kinachoonekana unapokiwasha.',
+      'Which device is affected? Tell me its model or how you recognise it, and what happens when you turn it on.') };
+  }
+  if (next.waitingFor === 'device' && !onlyIdentityAnswer) {
+    next.problem = [next.problem, rest].filter(Boolean).join(' · ').slice(0, 500);
+    if (next.system) return { support: next, ready: true };
+  }
   if (!next.problem) {
+    next.waitingFor = 'problem';
     return { support: next, ready: false, reply: say(
       'Pole sana. Nieleze kwa ufupi shida ipoje — nini kinatokea na ulikuwa unafanya nini wakati imetokea?',
       'Sorry about that. In one or two sentences, what exactly happens and what were you doing when it started?') };
   }
   if (!next.system) {
+    next.waitingFor = 'system';
     return { support: next, ready: false, reply: say(
       'Asante. Shida hii iko kwenye mfumo upi — WoteFy au LubFy?',
       'Thanks. Which system is this about — WoteFy or LubFy?') };
   }
   if (!next.email) {
+    if (next.waitingFor === 'email') {
+      next.attempts = (next.attempts || 0) + 1;
+      return { support: next, ready: false, reply: say(
+        'Sijapata anwani ya email kwenye ujumbe huo. Unaweza kuendelea bila email. Kifaa au ukurasa gani unaonyesha tatizo?',
+        'I couldn’t find an email address in that message. We can continue without it. Which device or screen shows the problem?') };
+    }
+    next.waitingFor = 'email';
     return { support: next, ready: false, reply: say(
       'Asante. Nipe email uliyosajili nayo kwenye akaunti (ile unayoingia nayo) ili timu ifungue akaunti yako moja kwa moja.',
       'Thanks. What is the email on your account (the one you sign in with)? I need it so the team opens the right account.') };
@@ -925,6 +949,17 @@ async function serviceQuote(
   return installationOnlyAside(text, say);
 }
 
+/** Both WhatsApp and Studio use this gate before running the conversational engine. */
+export async function customerTurn(...args: Parameters<typeof respond>): Promise<Outcome> {
+  const [, conversation, newest, history, , photo] = args;
+  if (!replyEligible(newest, conversation.memory, history, Boolean(photo))) {
+    return { body: '', memory: { ...conversation.memory, replyStatus: 'waiting' }, trace: ['Waiting for a business enquiry'] };
+  }
+  const outcome = await respond(...args);
+  if (outcome.body && !args[4]) outcome.memory.replyStatus = 'answered';
+  return outcome;
+}
+
 export async function respond(
   client: PoolClient, conversation: Conversation, newest: string, history: ChatLine[], onlyDetect = false,
   photo?: { base64: string; mimetype: string },
@@ -932,7 +967,7 @@ export async function respond(
   const outcome = await answer(client, conversation, newest, history, onlyDetect, photo);
   // Site facts are kept per WhatsApp number, so the next chat starts where this
   // one left off. Failure to store must never cost the customer a reply.
-  if (!onlyDetect && outcome.memory?.facts) {
+  if (!onlyDetect && conversation.id !== 'playground' && outcome.memory?.facts) {
     // The device under discussion is the thread a returning customer picks up,
     // so it is stored with the site facts rather than only on this conversation.
     const model = outcome.memory.product?.name;
@@ -946,7 +981,7 @@ async function answer(
   client: PoolClient, conversation: Conversation, newest: string, history: ChatLine[], onlyDetect = false,
   photo?: { base64: string; mimetype: string },
 ): Promise<Outcome> {
-  const stored = onlyDetect ? {} : await loadCustomerMemory(client, conversation.account_id, conversation.customer_jid);
+  const stored = onlyDetect || conversation.id === 'playground' ? {} : await loadCustomerMemory(client, conversation.account_id, conversation.customer_jid);
   const memory = {
     ...conversation.memory,
     // The site facts survive a closed chat and a bot restart, so a returning
@@ -973,13 +1008,45 @@ async function answer(
   // broken gets three facts collected first — problem, system, login email —
   // instead of the bot guessing or selling them a device. A clear purchase
   // question abandons an intake the customer walked away from.
-  const awaitingSupport = Boolean(memory.support?.problem || memory.support?.email);
-  const shoppingNow = purchaseWords.test(newest) && !supportQuestion(newest)
+  const awaitingSupport = Boolean(memory.support);
+  const monthly = /\b(?:mwezi|monthly|per month|a month)\b/i.test(newest) && /\b(?:mfumo|system|billing|nalipia|nalipa|ada|bei|subscription|fee)\b/i.test(newest);
+  const signup = /\b(?:kujiunga|kusajili|register|sign up|signup)\b/i.test(newest);
+  const hardwareSystem = /\b(?:micro(?:tick|tik)|mikrotik|routeros)\b/i.test(newest) ? 'lubfy' : /\b(?:omada|eap)\b/i.test(newest) ? 'wotefy' : undefined;
+  if (monthly) {
+    decision.intent = 'plan';
+    decision.kind = 'subscription';
+    memory.system = systemFrom(newest) || hardwareSystem || memory.system;
+  }
+  if (!onlyDetect && (signup || (memory.onboarding && (hardwareSystem || systemFrom(newest)))) && !monthly) {
+    delete memory.support;
+    const system = systemFrom(newest) || hardwareSystem || memory.system;
+    if (!system) {
+      memory.onboarding = true;
+      return result(say('Karibu! Unatumia router au access point ya modeli gani? Hilo litanisaidia kukuelekeza kwenye mfumo wa kujiunga.', 'Welcome! Which router or access point do you use? I’ll use that to find the right signup steps.'));
+    }
+    delete memory.onboarding;
+    memory.system = system;
+    const guide = await row<{ content: string; source_url: string | null }>(client, 'SELECT content,source_url FROM knowledge WHERE published AND id=$1', [system + '-onboarding']);
+    return result(guide ? [guide.content, guide.source_url].filter(Boolean).join('\n') : say('Timu inaweza kukusaidia kuanza usajili kwenye ' + system + '.', 'Our team can help you register for ' + system + '.'), guide ? {} : { handoff: true });
+  }
+  const shoppingNow = (purchaseWords.test(newest) || (deviceQuery(newest) && /\b(?:nahitaji|nataka|need|buy)\b/i.test(newest))) && !supportQuestion(newest)
     && !emailOf(newest) && !systemFrom(newest);
   if (shoppingNow && memory.support) delete memory.support;
-  const supportActive = !shoppingNow && (decision.intent === 'support' || awaitingSupport);
+  const supportActive = !monthly && !shoppingNow && !['human', 'payment_reported', 'ready_to_pay', 'plan'].includes(decision.intent)
+    && (supportQuestion(newest) || awaitingSupport);
+  if (monthly) delete memory.support;
   if (!onlyDetect && supportActive) {
-    const intake = supportIntake(newest, memory.support ?? {}, say);
+    const intakeState = { ...memory.support };
+    if (/\b(?:ile ile|ileile|same email|usual email)\b/i.test(newest)) {
+      const previous = [...history].reverse().find(line => line.direction === 'inbound' && emailOf(line.body) === line.body.trim().toLowerCase());
+      intakeState.email = memory.lastSupport?.email ?? (previous && emailOf(previous.body));
+    }
+    if (intakeState.attempts && intakeState.waitingFor === 'email' && !emailOf(newest) && !/vifaa|devices/i.test(newest)) {
+      memory.lastSupport = { ...intakeState, problem: [intakeState.problem, newest].filter(Boolean).join(' · ').slice(0, 500) };
+      delete memory.support;
+      return result(say('Nimeacha maelezo ya tatizo kwenye chat hii ili mhudumu aendelee kukusaidia.', 'I’ve left the issue details in this chat for a team member to follow up.'), { handoff: true });
+    }
+    const intake = supportIntake(newest, intakeState, say);
     memory.support = intake.support;
     if (!intake.ready) return result(intake.reply ?? '');
     memory.recentTopic = supportSummary(intake.support).slice(0, 280);
@@ -1007,6 +1074,9 @@ async function answer(
   // Someone saying "mambo" is a person, not a lead yet. Answer the greeting in
   // kind and let their next message show whether they are a customer at all.
   // Skipped while a question is on the table ("ndio", "sawa" to a quote).
+  if (!onlyDetect && /^(?:mfumo (?:wako|wenu)|your system)[.!? ]*$/i.test(newest.trim())) {
+    return result(say('Ungependa kujiunga na mfumo wa kuuza Wi-Fi, au unatumia mfumo tayari na unahitaji msaada?', 'Would you like to register for Wi-Fi billing, or do you already use it and need help?'));
+  }
   if (!onlyDetect && placeQuestion.test(newest) && !strongPurchaseWords.test(newest)
       && !modelName.test(newest) && !memory.support) {
     // Gemini invented "Nairobi" for an office that is in Sinza, Dar es Salaam.
@@ -1019,51 +1089,6 @@ async function answer(
   if (!onlyDetect && smallTalkOnly(newest) && !memory.awaitingService && !memory.support
       && !memory.lastQuote && !memory.product) {
     return result(smallTalkReply(newest, say, stored.last_model));
-  }
-  // A customer photographing the box or its label is telling us which device
-  // they have. Read it before the sales branches: the answer is that device's
-  // price and specs, not a request to retype the model.
-  if (!onlyDetect && photo) {
-    const seen = await identifyDevice(ai, photo).catch(() => undefined);
-    const model = [seen?.brand, seen?.model].filter(Boolean).join(' ').trim();
-    if (seen && model && seen.confidence >= 0.35) {
-      const found = await bestMatch(model).catch(() => undefined)
-        ?? await bestMatch(seen.model).catch(() => undefined);
-      const trace = [`Photo read as ${model} (confidence ${seen.confidence.toFixed(2)})`,
-        seen.visible ? `Visible in photo: ${seen.visible}` : ''].filter(Boolean);
-      if (found) {
-        memory.product = { id: found.id, name: found.name };
-        memory.quoteFor = 'product';
-        memory.facts = { ...memory.facts, photo: model, identified: found.name };
-        const advised = await adviseOnDevice({
-          ai, client, product: found, memory, say, language: decision.language,
-          question: `Mteja ametuma picha ya kifaa hiki. Thibitisha ni kifaa gani, kisha mpe specs muhimu na bei.`,
-          knowledge: knowledge.map(entry => entry.content).join('\n\n').slice(0, 2000) || undefined,
-        }).catch(() => undefined);
-        const sheet = advised?.answer ?? await productCapability(found.id, newest, say);
-        if (advised) memory.trace = [...trace, ...advised.trace];
-        // A photo is usually the start of a sale, not the end of one: name the
-        // next step instead of leaving the customer with a datasheet.
-        const next = memory.facts.place
-          ? say('\n\nUngependa jumla pamoja na waya na installation, au maelezo ya modeli nyingine ya kulinganisha?',
-            '\n\nWould you like the total with cable and installation, or details of another model to compare?')
-          : say('\n\nKifaa hiki kitawekwa ndani au nje? Nikakusaidia kuchagua eneo na nikakupatie jumla pamoja na waya na installation.',
-            '\n\nWill this device be installed indoors or outdoors? I can help with the placement and give you a total with cable and installation.');
-        return result(say(`Nimeona kwenye picha: ${found.name}.`, `From your photo: ${found.name}.`)
-          + '\n\n' + sheet + next, { stage: 'quoted', trace: memory.trace });
-      }
-      memory.facts = { ...memory.facts, photo: model };
-      return result(say(`Nimeona kwenye picha: ${model}. Kifaa hiki sijakipata kwenye POS kwa jina hilo — niambie model kamili iliyoandikwa kwenye label, au nitumie picha ya karibu zaidi ya label, nikakague bei na stock.`,
-        `I can read ${model} on the device, but the shop has no listing under that name. Send the full model from the label, or a closer photo of the label, and I will check price and stock.`),
-      { trace });
-    }
-    // A clear photo of a network box with no readable model still deserves a
-    // useful question rather than a generic "what do you need?".
-    if (seen && /access point|router|switch|antenna|ap\b/i.test(seen.kind) && seen.confidence >= 0.3) {
-      return result(say('Nimeona kifaa cha mtandao kwenye picha, lakini model haisomeki vizuri. Nipige picha ya karibu ya label (upande wa chini au nyuma) ili nikusomee model na nikakague bei?',
-        'I can see a network device in your photo, but the model is not legible. Send a close-up of the label (underneath or at the back) and I will read the model and check the price.'),
-      { trace: [`Photo read as ${seen.kind} (confidence ${seen.confidence.toFixed(2)})`, 'No model text visible on the label'] });
-    }
   }
   if (decision.intent === 'payment_reported') {
     if (['paid', 'completed'].includes(conversation.stage)) {
@@ -1107,10 +1132,71 @@ async function answer(
     return result(say('Sawa, nimekabidhi mazungumzo haya kwa timu yetu.', 'I’ve handed this conversation to our team.'),
       { handoff: true });
   }
+  const refersToSite = /\b(?:eneo|kwaeneo|kwa eneo|hapo|huko|eap gani|ap gani|which ap|which model)\b/i.test(newest);
+  const distance = siteDistance(newest) || ((refersToSite || memory.planning) ? Number(memory.facts.coverage_m) : 0);
+  const cableRequest = cableWords.test(newest);
+  const planning = !monthly && !cableRequest && !photo && !['plan', 'ready_to_pay'].includes(decision.intent);
+  if (planning && distance >= 1000 && (siteDistance(newest) || refersToSite || /majengo|point.to.point|hotspot/i.test(newest))) {
+    memory.planning = 'coverage';
+    memory.requirements = { ...memory.requirements, coverageMeters: distance };
+    const link = /majengo mawili|two buildings|point.to.point/i.test(newest);
+    const area = /hotspot|eneo lote|simu za wateja/i.test(newest);
+    const next = link ? say('Je, ukiwa juu ya jengo la kwanza unaweza kuona la pili bila kizuizi?', 'Is there clear line of sight between the two buildings?')
+      : area ? say('Watumiaji watakuwa kwenye maeneo mangapi, na kuna majengo au miti kati yake?', 'How many areas need coverage, and are there buildings or trees between them?')
+      : say('Unataka kuunganisha sehemu mbili tu, au wateja wapate Wi-Fi katika eneo lote?', 'Do you want a link between two locations or Wi-Fi for customers throughout the area?');
+    return result(say(`Kwa umbali wa mita ${distance}, AP moja ya kawaida haitoshi kuahidi Wi-Fi kwa simu eneo lote. Kuunganisha majengo mawili kunaweza kuhitaji vifaa vya kiungo cha point-to-point; kusambaza Wi-Fi kwa wateja kunahitaji AP karibu na maeneo wanayotumia.`,
+      `For ${distance} m, a single ordinary AP cannot guarantee phone coverage across the site. Two buildings may need a point-to-point link. Customer Wi-Fi needs APs near the people using it.`) + '\n\n' + next);
+  }
+  const meshFollowup = memory.planning === 'mesh' && /\b(?:ndani|nje|indoor|outdoor|mita|metres?|meters?|watumiaji|wateja|wazi|kuta|miti)\b/i.test(newest)
+    && !deviceQuery(newest) && !namesNewDevice(newest);
+  if (planning && (/\bmesh(?:ing)?\b/i.test(newest) || meshFollowup) && !namesNewDevice(newest) && !/ina mesh/i.test(newest)) {
+    memory.planning = 'mesh';
+    if (memory.facts.place && distance && meshFollowup) {
+      const devices = (await catalog('access point', 60).catch(() => ({ items: [] }))).items;
+      const sheets = await specsForMany(devices, client);
+      const options = devices.filter(item => {
+        const sheet = sheetFor(sheets, item);
+        return sheet?.verified && sheet.mesh && (sheet.deployment === memory.facts.place || sheet.deployment === 'both');
+      }).slice(0, 4).map(optionOf);
+      if (options.length) {
+        memory.productOptions = options;
+        memory.optionQuery = 'access point';
+        return result(say(`Kwa eneo lako na umbali wa mita ${distance}, modeli hizi kwenye katalogi zina mesh iliyothibitishwa:`, `For your site and ${distance} m spacing, these catalog models have documented mesh support:`)
+          + '\n' + options.map(optionLine).join('\n')
+          + say('\n\nNi modeli gani ya router au AP uliyonayo tayari? Nitakagua ulinganifu kabla ya kuunganisha vifaa.', '\n\nWhich router or AP do you already have? I’ll check compatibility before pairing units.'));
+      }
+      return result(say(`Nimeandika umbali wa mita ${distance}. Sijapata modeli yenye mesh iliyothibitishwa kwa mazingira hayo kwenye katalogi. Unayo AP ya modeli gani tayari?`,
+        `I’ve noted the ${distance} m spacing. I couldn’t verify a mesh model for this setting in the catalog. Which AP do you already have?`));
+    }
+    const next = memory.facts.place
+      ? say('Kuna umbali gani kati ya sehemu za kuweka AP?', 'How far apart are the planned AP locations?')
+      : say('AP zitawekwa ndani ya majengo au nje?', 'Will the APs be indoors or outdoors?');
+    if (meshFollowup) return result(next);
+    return result(say('Kwa mesh utahitaji chanzo cha intaneti na router, AP zinazokubali mesh ya mfumo mmoja, pamoja na umeme kwa kila AP. Unganisha AP ya kwanza kwenye router kwa waya. Kwa AP nyingine, waya au kiungo cha wireless kinategemea umbali na vizuizi.',
+      'For mesh, you need an internet connection and router, APs that support the same mesh system, and power for each AP. Wire the first AP to the router. Distance and obstacles determine whether the remaining APs should use wired or wireless links.') + '\n\n' + next);
+  }
+  const coverageFollowup = planning && !memory.awaitingService && !!siteDistance(newest) && (memory.optionQuery === 'access point' || memory.planning === 'mesh');
+  if (coverageFollowup) {
+    decision.intent = 'product';
+    decision.query = 'access point';
+    memory.requirements = { ...memory.requirements, coverageMeters: siteDistance(newest) };
+  }
+  if (!monthly && /\b(?:mnayo|mnao|na\s?weza (?:ku)?pata|can i get|do you stock)\b/i.test(newest) && /\b(?:hii|hiyo|hiki|this|that)\b/i.test(newest) && !modelQuery(newest)) {
+    decision.intent = 'product';
+    decision.query = '';
+  }
+  if (photo && photoInquiry(newest, conversation.stage)) {
+    let model = await printedModel(photo.base64);
+    if (!model) {
+      const seen = await identifyDevice(ai, photo).catch(() => undefined);
+      if (seen && seen.confidence >= 0.8 && /[a-z]/i.test(seen.model) && /[0-9]/.test(seen.model)) model = seen.model;
+    }
+    return photoReply({ model }, memory, say);
+  }
   // A question about what the quoted device can do ("ina uwezo wa kwenda umbali
   // gani") is answered from the catalog, never with a fitting fee. This runs
   // before the service turn so the open installation offer cannot swallow it.
-  if (!onlyDetect && coverageQuestion(newest)
+  if (!monthly && !onlyDetect && coverageQuestion(newest)
       && !cableWords.test(newest) && !installationWords.test(newest)) {
     // Resolve the device: a model named right here wins over the one quoted
     // earlier, so "EAP 650 ina uwezo gani?" is never answered with the last
@@ -1154,7 +1240,7 @@ async function answer(
   }
   // Fitting and cable are quoted from the service price list. Solving this before
   // the product branch keeps the bot from searching the catalog for the sentence.
-  const serviceTurn = !onlyDetect && !packageWords.test(newest) && !namesNewDevice(newest)
+  const serviceTurn = !monthly && !coverageFollowup && !onlyDetect && !packageWords.test(newest) && !namesNewDevice(newest)
     && (serviceQuestion(newest) || (memory.awaitingService === true && isAffirmation(newest)));
   if (serviceTurn) {
     const affirm = !serviceQuestion(newest) && isAffirmation(newest);
@@ -1178,7 +1264,7 @@ async function answer(
     }
     try {
       const { items } = await readPlans(memory.system, decision.kind, site);
-      const plans = items.slice(0, 4).flatMap(plan => {
+      const plans = items.filter(plan => !monthly || !plan.billing_period || /month|mwezi/i.test(plan.billing_period)).slice(0, 4).flatMap(plan => {
         const rate = plan.price ? money(plan.price) : plan.percentage !== undefined && plan.percentage_basis
           ? `${plan.percentage}% (${plan.percentage_basis})` : '';
         if (!rate) return [];
@@ -1274,7 +1360,7 @@ async function answer(
       // answered with the 1300 we do stock, so every digit the customer typed as
       // part of a model has to appear in the candidate's own name or SKU. A
       // distance ("mita 300") is not a model and never filters anything.
-      const digits = modelQuery(newest).match(/\d{2,4}/g) ?? [];
+      const digits = siteDistance(newest) ? [] : modelQuery(newest).match(/\d{2,4}/g) ?? [];
       const sharesModelNumber = (item: (typeof items)[number]) => {
         if (!digits.length) return true;
         const text = `${item.name} ${'sku' in item ? item.sku ?? '' : ''}`.toLowerCase();
@@ -1310,8 +1396,6 @@ async function answer(
             Number((stated.get(b.id) ?? 0) >= meters) - Number((stated.get(a.id) ?? 0) >= meters)
             || (stated.get(b.id) ?? 0) - (stated.get(a.id) ?? 0));
         }
-        // Show a price with every choice: a bare name makes the customer ask
-        // again, and the catalog already carries the figure.
         memory.productOptions = shortlist.slice(0, 6).map(item => {
           const option = optionOf(item);
           const value = stated.get(item.id);
@@ -1320,6 +1404,16 @@ async function answer(
         });
         memory.optionQuery = decision.query;
         const listed = memory.productOptions;
+        // What the customer already runs decides which family fits. Listing a
+        // Cudy first to someone with an Omada controller means a second app and
+        // no roaming, so the matching family is what the list leads with.
+        const fleet = memory.facts?.fleet;
+        const fitsFleet = (option: { name: string }) => fleet === 'omada'
+          ? /\b(eap|omada)\b/i.test(option.name) : true;
+        if (fleet === 'omada') {
+          listed.sort((a, b) => Number(fitsFleet(b)) - Number(fitsFleet(a)));
+        }
+        const offFleet = fleet === 'omada' ? listed.filter(item => !fitsFleet(item)) : [];
         // A stated distance splits the list by what the datasheet actually says.
         // Leading with a model that stops at 100 m reads like the bot ignored the
         // requirement, so the ones that meet it come first and the rest are
@@ -1345,6 +1439,13 @@ async function answer(
               'These have no range recorded in the product description:')
               + '\n' + unknown.slice(0, 3).map(optionLine).join('\n'));
           }
+          if (offFleet.length) {
+            parts.push(say(`Kwa kuwa unatumia Omada, EAP ndizo zinazoingia kwenye controller yako moja; ${offFleet.map(item => item.name).join(', ')} zinahitaji mfumo wao (Cudy Cloud / Reyee Cloud) na hazitasimamiwa na Omada.`,
+              `Since you run Omada, the EAP units join your existing controller; ${offFleet.map(item => item.name).join(', ')} need their own cloud (Cudy Cloud / Reyee Cloud) and will not be managed by Omada.`));
+          } else if (fleet === 'omada') {
+            parts.push(say('Zote hapa ni EAP — zitaingia kwenye Omada controller uliyonayo, na roaming inakuwa moja kwa moja.',
+              'All of these are EAP units — they join the Omada controller you already have, with seamless roaming.'));
+          }
           parts.push(say('Umbali huo ni wa eneo la wazi. Kuta, miti na mahali pa kuweka AP huathiri signal — niambie eneo ni la wazi au kuna vizuizi.',
             'Those figures assume open space. Walls, trees and AP placement affect the signal — tell me whether the site is open or obstructed.'));
           // Coverage metres are not cable metres: the run is router to AP. Asking
@@ -1356,8 +1457,15 @@ async function answer(
           return result(parts.join('\n\n'));
         }
         const choices = listed.map(optionLine).join('\n');
+        const fleetLine = offFleet.length
+          ? say(`\n\nKwa kuwa unatumia Omada, EAP ndizo zinazoingia kwenye controller yako; ${offFleet.map(item => item.name).join(', ')} zinahitaji mfumo wao.`,
+            `\n\nSince you run Omada, the EAP units join your controller; ${offFleet.map(item => item.name).join(', ')} need their own system.`)
+          : fleet === 'omada'
+            ? say('\n\nZote hapa ni EAP — zitaingia kwenye Omada controller uliyonayo.',
+              '\n\nAll of these are EAP units — they join the Omada controller you already have.')
+            : '';
         return result(say('Hizi ni modeli tulizonazo, kila moja na bei yake', 'These are the models we stock, each with its price')
-          + '\n' + choices
+          + '\n' + choices + fleetLine
           + say(`\n\nKabla uchague: eneo ni la ndani au nje, na unataka Wi-Fi ifike mita ngapi kutoka kwenye kifaa? Nikakuchagulia kinachofaa. Au niambie "model zingine" nikakuonyesha zaidi.`,
             '\n\nBefore you pick: is the site indoors or outdoors, and how many metres should the Wi-Fi reach from the device? I can then choose the right one. Or say "more models" and I will show you the rest.'));
       }

@@ -1,0 +1,63 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+process.env.DATABASE_URL ??= 'postgres://localhost/csbot';
+delete process.env.GEMINI_API_KEY;
+delete process.env.POS_BASE_URL;
+delete process.env.CSOLUTION_POS_DB_URL;
+delete process.env.LUBFY_PLANS_URL;
+const { customerTurn } = await import('../dist/assistant.js');
+const client = { query: async () => ({ rows: [] }) };
+const chat = (memory = {}) => ({ id: 'playground', account_id: 'a', customer_jid: 'a', stage: 'inquiry', memory });
+const say = (text, memory, history = []) => customerTurn(client, chat(memory), text, history);
+
+test('personal openers, a standalone location and off-topic replies stay in the inbox silently', async () => {
+  for (const text of ['Kaka', 'Nipo mtwara', 'Uko na gme', 'Nimelipa chakula']) {
+    const reply = await say(text, { support: { problem: 'Nipo Mtwara', system: 'lubfy' } });
+    assert.equal(reply.body, '');
+    assert.equal(reply.stage, undefined);
+    assert.equal(reply.handoff, undefined);
+  }
+});
+
+test('support asks about the affected device when the customer has several, and accepts a previously supplied email', async () => {
+  const one = await say('LubFy portal haifunguki');
+  assert.match(one.body, /email/i);
+  const two = await say('imeli yang ndo ile ile kaka', one.memory);
+  assert.doesNotMatch(two.body, /Nipe email/);
+  const three = await say('Lkn mi navifaa vitatu asa ushaelewa kifaa cheny shida', two.memory);
+  assert.match(three.body, /kipi kati ya hivyo/);
+  const saved = await say('imeli yangu ile ile', one.memory, [{direction:'inbound',body:'customer@example.test'}]);
+  assert.equal(saved.memory.lastSupport?.email, 'customer@example.test');
+  const noise = await say('Hr fgrgd', one.memory);
+  assert.equal(noise.body, '');
+});
+
+test('a kilometre planning request and its follow-up keep the distance and clarify the network layout', async () => {
+  const one = await say('Nawaza nipo na kilometer 1 huku iringa nataka kufunga vifaa vya internet unanishauri nini');
+  assert.match(one.body, /1000/);
+  assert.doesNotMatch(one.body, /TYPE A|TZS/);
+  const two = await say('Na kwaeneo ilo unafikilia nitumie eap gani au ap gani', one.memory);
+  assert.match(two.body, /1000/);
+  assert.doesNotMatch(two.body, /mita ngapi/);
+});
+
+test('the monthly system fee overrides the hardware quote and preserves the MikroTik platform on follow-up', async () => {
+  const one = await say('Sasa vp bei za mfumo kwa mwezi natumia microtick na ninatakiwa kutumia mfumo upi',
+    {product:{id:'eap', name:'EAP 650'}, awaitingService:true});
+  assert.equal(one.memory.plan.kind, 'subscription');
+  assert.equal(one.memory.system, 'lubfy');
+  assert.doesNotMatch(one.body, /SKU|installation|unaulizia bidhaa/i);
+  const two = await say('Naulizia kwa mwezi nalipia shingap mfumo', one.memory);
+  assert.equal(two.memory.system, 'lubfy');
+  assert.doesNotMatch(two.body, /SKU|unaulizia bidhaa/i);
+});
+
+test('onboarding asks which equipment is in use and never requests a support email', async () => {
+  const first = await say('Nataka kujiunga');
+  assert.equal(first.memory.onboarding, true);
+  assert.match(first.body, /router au access point/);
+  const second = await customerTurn({ query: async (sql) => ({rows:sql.includes('AND id=$1') ? [{content:'Hatua za usajili za LubFy',source_url:null}] : []}) },
+    chat(first.memory), 'Natumia MikroTik', []);
+  assert.match(second.body, /usajili za LubFy/);
+  assert.equal(second.memory.onboarding, undefined);
+});

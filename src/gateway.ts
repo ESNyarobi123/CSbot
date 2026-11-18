@@ -111,7 +111,10 @@ class Session {
     const key = Object.keys(content).find(value => value.endsWith('Message')) ?? 'text';
     const kind = content.conversation || content.extendedTextMessage ? 'text' : key.replace(/Message$/, '');
     const timestamp = Number(message.messageTimestamp ?? 0);
+    const image = !historical && !message.key.fromMe && content.imageMessage
+      ? await this.readImage(content.imageMessage) : undefined;
     const conversationId = await ingest({
+      image,
       accountId: this.account.id, providerId: id, jid,
       alternateJid: alt && (isPnUser(alt) || isLidUser(alt)) ? jidNormalizedUser(alt) : undefined,
       name: message.key.fromMe ? undefined : message.pushName?.slice(0, 100) ?? undefined,
@@ -122,17 +125,13 @@ class Session {
     if (!conversationId || historical || message.key.fromMe) return;
     // Blue ticks tell the customer that CSbot has received the message.
     await socket.readMessages([message.key]).catch(() => undefined);
-    // Receipt and product photos are kept so the payment alert can forward them to admin.
-    await this.captureMedia(socket, message, conversationId);
   }
 
-  private async captureMedia(socket: Socket, message: WAMessage, conversationId: string) {
-    const content = normalizeMessageContent(message.message);
-    const image = content?.imageMessage;
+  private async readImage(image: proto.Message.IImageMessage) {
     if (!image?.mimetype || !/^image\/(?:jpeg|png|webp)$/.test(image.mimetype)) return;
     if (Number(image.fileLength ?? 0) > maxImageBytes) return;
     try {
-      const stream = await downloadContentFromMessage(image, 'image');
+      const stream = await downloadContentFromMessage(image, 'image', { options: { signal: AbortSignal.timeout(6000) } });
       const chunks: Buffer[] = [];
       let size = 0;
       for await (const chunk of stream) {
@@ -141,15 +140,7 @@ class Session {
         chunks.push(Buffer.from(chunk));
       }
       if (!chunks.length) return;
-      const stored = await row<{ id: string }>(db, `INSERT INTO media
-        (account_id,conversation_id,provider_id,kind,mimetype,bytes,size)
-        VALUES ($1,$2,$3,'image',$4,$5,$6) ON CONFLICT DO NOTHING RETURNING id`,
-      [this.account.id, conversationId, message.key.id, image.mimetype, Buffer.concat(chunks), size]);
-      if (stored) {
-        await db.query(`UPDATE messages SET media_id=$3
-          WHERE conversation_id=$1 AND provider_id=$2 AND direction='inbound'`,
-        [conversationId, message.key.id, stored.id]);
-      }
+      return { bytes: Buffer.concat(chunks), mimetype: image.mimetype };
     } catch (error) {
       log.warn({ account: this.account.id, code: (error as Error).name }, 'Inbound media could not be stored');
     }

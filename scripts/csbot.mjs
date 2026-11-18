@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { apiUrl } from './api-url.mjs';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -73,7 +74,13 @@ const commands = {
       if (longRunning.includes(service) && (state !== 'running' || health === 'unhealthy')) failed = true;
       if (service === 'migrate' && item && state !== 'exited') failed = true;
     }
+    if (rows.some(item => item.Service === 'api' && item.State === 'running')) {
+      console.log('Dashboard ' + apiUrl() + '/admin');
+    }
     process.exitCode = failed ? 1 : 0;
+  },
+  url() {
+    console.log(apiUrl());
   },
   health() {
     commands.status();
@@ -135,7 +142,7 @@ const commands = {
     }
     const env = envFile();
     if (!env.ADMIN_API_TOKEN) throw new Error('ADMIN_API_TOKEN is missing from .env');
-    const base = env.CSBOT_API_URL ?? `http://127.0.0.1:${env.CSBOT_HTTP_PORT ?? '8080'}`;
+    const base = apiUrl();
     const headers = { authorization: `Bearer ${env.ADMIN_API_TOKEN}`, 'content-type': 'application/json' };
     const created = await fetch(`${base}/v1/accounts`, {
       method: 'POST', headers,
@@ -160,6 +167,7 @@ const commands = {
     console.log(`CSbot stack control
 
   npm run stack -- up                 build, start and wait for every service
+  npm run stack -- url                print the running API address
   npm run stack -- status             table of services, states and health checks
   npm run stack -- health             alias of status
   npm run stack -- logs [service...]  follow logs (all services when empty)
@@ -178,7 +186,7 @@ const commands = {
 
 try {
   if (!commands[command]) throw new Error(`Unknown command "${command}"`);
-  commands[command]();
+  await commands[command]();
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;

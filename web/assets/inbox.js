@@ -55,6 +55,7 @@ function customerBrief(thread) {
     language === 'sw' ? 'Kiswahili' : language === 'en' ? 'English' : ''].filter(Boolean).join(' · ');
   const models = product ? [product] : productOptions;
   return `<div class="details-person">${person(name)}<div><b>${esc(name)}</b>${contact ? `<small>${esc(contact)}</small>` : ''}</div></div>
+    ${thread.memory?.replyStatus === 'waiting' ? '<p class="brief-waiting">CSbot is waiting for a business enquiry. You can reply manually.</p>' : ''}
     <section class="details-section"><h3>${icon('book', 15)} Customer requirements</h3>
       ${facts.length ? `<dl class="brief-facts">${facts.map(([label, value]) => `<div><dt>${label}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>` : '<p>No requirements recorded yet.</p>'}
     </section>
@@ -320,51 +321,37 @@ export async function inbox(container, signal, segments, initialSearch = '') {
     const number = accounts.find((item) => item.id === thread.account_id);
     pane.querySelector('.thread-customer').innerHTML =
       `${person(name)}<div><strong>${esc(name)}</strong><small>${esc(number?.label || thread.account_id)} · ${modePill(thread.mode)}</small></div>`;
-    const actions = pane.querySelector('.thread-actions');
-    actions.innerHTML = btn(
-      thread.mode === 'bot' ? 'Take over' : 'Enable bot',
-      thread.mode === 'bot' ? 'user' : 'bot',
-      'data-handoff',
-      'small',
-    );
-    actions.querySelector('button').disabled = actionPending;
-    actions.querySelector('button').onclick = async (event) => {
-      const active = selected;
-      actionPending = true;
-      event.currentTarget.disabled = true;
-      try {
-        await api('/conversations/' + active + '/mode', {
-          method: 'PATCH',
-          data: { mode: thread.mode === 'bot' ? 'human' : 'bot' },
-        });
-        await loadThread();
-      } catch (error) {
-        notify(error.message, true);
-      } finally {
-        actionPending = false;
-        actions.querySelector('button').disabled = false;
-      }
-    };
-    const profile = thread.memory?.profile ?? {};
-    details.innerHTML = `<div class="details-head">Customer details</div><div class="details-person">${person(name)}<b>${esc(name)}</b><small>${phoneLabel(thread.customer_phone)}</small></div>
-      <div class="details-section"><h3>Latest order</h3>
-      ${
-        thread.sale
-          ? `<div class="details-row"><b>#${thread.sale.id}</b>${stagePill(thread.sale.stage)}</div>${thread.sale.quote?.text ? `<p class="details-quote">${esc(thread.sale.quote.text)}</p>` : ''}
-      <a class="quiet-link" href="#sales/${thread.id}/${thread.sale.id}">View order ${icon('chevron', 13)}</a>`
-          : '<p>No order yet</p>'
-      }</div>
-      <div class="details-section"><h3>Saved context</h3>
-      ${
-        [
-          ['Equipment', profile.equipment],
-          ['Budget', profile.budget],
-          ['Use case', profile.useCase],
-        ]
-          .filter(([, value]) => value)
-          .map(([label, value]) => `<p><b>${label}</b><br>${esc(value)}</p>`)
-          .join('') || '<p>No customer details saved yet.</p>'
-      }</div>`;
+    const handoff = pane.querySelector('[data-handoff]');
+    handoff.textContent = thread.mode === 'bot' ? 'Take over' : 'Enable bot';
+    handoff.disabled = switching.has(selected);
+    pane.querySelector('[data-brief]').disabled = false;
+    const brief = customerBrief(thread);
+    details.innerHTML = '<div class="details-head">Customer brief</div>' + brief;
+    if (briefDialog?.open) briefDialog.querySelector('.brief-content').innerHTML = brief;
+    updateComposer();
+  }
+
+  function updateComposer() {
+    const form = pane.querySelector('form');
+    if (!form) return;
+    form.querySelector('button').disabled = !thread || sending.has(selected) || !form.querySelector('textarea').value.trim();
+    form.querySelector('#compose-hint').textContent = thread?.mode === 'bot'
+      ? 'Sending a reply takes over this chat.' : 'You are replying as an agent.';
+  }
+
+  async function changeMode() {
+    if (!thread || switching.has(selected)) return;
+    const active = selected;
+    switching.add(active);
+    infoView();
+    try {
+      await api('/conversations/' + active + '/mode', { method: 'PATCH', data: { mode: thread.mode === 'bot' ? 'human' : 'bot' } });
+      if (selected === active && !signal.aborted) await loadThread();
+    } catch (error) { handleError(error); }
+    finally {
+      switching.delete(active);
+      if (selected === active && thread && !signal.aborted) infoView();
+    }
   }
 
   async function loadThread(initial = false) {
@@ -393,7 +380,6 @@ export async function inbox(container, signal, segments, initialSearch = '') {
     history = [];
     seen = new Set();
     thread = undefined;
-    retrySend = undefined;
     latestSnapshot = '';
     listView();
     resetThread();
@@ -428,25 +414,27 @@ export async function inbox(container, signal, segments, initialSearch = '') {
     const active = selected;
     const form = event.currentTarget;
     const input = form.querySelector('textarea');
-    const button = form.querySelector('button');
     const text = input.value.trim();
-    if (!text || submitting || !thread) return;
-    submitting = true;
-    button.disabled = true;
-    retrySend = retrySend?.text === text ? retrySend : { text, requestId: crypto.randomUUID() };
+    if (!text || sending.has(active) || !thread) return;
+    const previous = retryRequests.get(active);
+    const request = previous?.text === text ? previous : { text, requestId: crypto.randomUUID() };
+    retryRequests.set(active, request);
+    sending.add(active);
+    updateComposer();
     try {
-      await api('/conversations/' + active + '/messages', { method: 'POST', data: retrySend });
-      if (selected === active) {
-        if (input.value.trim() === text) input.value = '';
-        retrySend = undefined;
+      await api('/conversations/' + active + '/messages', { method: 'POST', data: request });
+      retryRequests.delete(active);
+      if (drafts.get(active)?.trim() === text) drafts.delete(active);
+      if (selected === active && !signal.aborted) {
+        const current = pane.querySelector('textarea');
+        if (current.value.trim() === text) current.value = '';
         await loadThread();
       }
-      notify('Reply queued.');
-    } catch (error) {
-      notify(error.message, true);
-    } finally {
-      submitting = false;
-      button.disabled = false;
+      if (!signal.aborted) notify('Reply queued.');
+    } catch (error) { handleError(error); }
+    finally {
+      sending.delete(active);
+      if (!signal.aborted) updateComposer();
     }
   }
   search.oninput = () => {
@@ -458,8 +446,9 @@ export async function inbox(container, signal, segments, initialSearch = '') {
     account = accountFilter.value;
     void loadList(false, true).catch(handleError);
   };
-  modeFilter.onchange = () => {
-    mode = modeFilter.value;
+  for (const button of modeFilters) button.onclick = () => {
+    mode = button.dataset.mode;
+    for (const other of modeFilters) other.setAttribute('aria-pressed', String(other === button));
     void loadList(false, true).catch(handleError);
   };
   const handleError = (error) => {
