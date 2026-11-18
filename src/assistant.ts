@@ -1421,6 +1421,13 @@ async function answer(
         const fitting = meters ? listed.filter(item => (item.coverage ?? 0) >= meters!) : [];
         const short = meters ? listed.filter(item => item.coverage !== undefined && item.coverage < meters!) : [];
         const unknown = meters ? listed.filter(item => item.coverage === undefined) : [];
+        // Only warn about a model the customer can actually see. A device with no
+        // recorded range is left out of the printed list, and naming it in the
+        // warning reads like the bot is discussing something it never showed.
+        const shown = (meters
+          ? [...fitting, ...short, ...(fitting.length ? [] : unknown.slice(0, 3))]
+          : listed).map(item => item.name);
+        const shownOffFleet = offFleet.filter(item => shown.includes(item.name));
         if (meters) {
           const parts: string[] = [];
           parts.push(fitting.length
@@ -1439,9 +1446,9 @@ async function answer(
               'These have no range recorded in the product description:')
               + '\n' + unknown.slice(0, 3).map(optionLine).join('\n'));
           }
-          if (offFleet.length) {
-            parts.push(say(`Kwa kuwa unatumia Omada, EAP ndizo zinazoingia kwenye controller yako moja; ${offFleet.map(item => item.name).join(', ')} zinahitaji mfumo wao (Cudy Cloud / Reyee Cloud) na hazitasimamiwa na Omada.`,
-              `Since you run Omada, the EAP units join your existing controller; ${offFleet.map(item => item.name).join(', ')} need their own cloud (Cudy Cloud / Reyee Cloud) and will not be managed by Omada.`));
+          if (shownOffFleet.length) {
+            parts.push(say(`Kwa kuwa unatumia Omada, EAP ndizo zinazoingia kwenye controller yako moja; ${shownOffFleet.map(item => item.name).join(', ')} zinahitaji mfumo wao (Cudy Cloud / Reyee Cloud) na hazitasimamiwa na Omada.`,
+              `Since you run Omada, the EAP units join your existing controller; ${shownOffFleet.map(item => item.name).join(', ')} need their own cloud (Cudy Cloud / Reyee Cloud) and will not be managed by Omada.`));
           } else if (fleet === 'omada') {
             parts.push(say('Zote hapa ni EAP — zitaingia kwenye Omada controller uliyonayo, na roaming inakuwa moja kwa moja.',
               'All of these are EAP units — they join the Omada controller you already have, with seamless roaming.'));
@@ -1457,9 +1464,9 @@ async function answer(
           return result(parts.join('\n\n'));
         }
         const choices = listed.map(optionLine).join('\n');
-        const fleetLine = offFleet.length
-          ? say(`\n\nKwa kuwa unatumia Omada, EAP ndizo zinazoingia kwenye controller yako; ${offFleet.map(item => item.name).join(', ')} zinahitaji mfumo wao.`,
-            `\n\nSince you run Omada, the EAP units join your controller; ${offFleet.map(item => item.name).join(', ')} need their own system.`)
+        const fleetLine = shownOffFleet.length
+          ? say(`\n\nKwa kuwa unatumia Omada, EAP ndizo zinazoingia kwenye controller yako; ${shownOffFleet.map(item => item.name).join(', ')} zinahitaji mfumo wao.`,
+            `\n\nSince you run Omada, the EAP units join your controller; ${shownOffFleet.map(item => item.name).join(', ')} need their own system.`)
           : fleet === 'omada'
             ? say('\n\nZote hapa ni EAP — zitaingia kwenye Omada controller uliyonayo.',
               '\n\nAll of these are EAP units — they join the Omada controller you already have.')

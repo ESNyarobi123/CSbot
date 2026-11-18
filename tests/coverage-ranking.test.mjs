@@ -98,6 +98,17 @@ test('a customer already on Omada is not led to a model their controller cannot 
   assert.match(outcome.body, /Cudy AP 3000.*zinahitaji mfumo wao|zinahitaji mfumo wao.*Cudy AP 3000/);
 });
 
+test('the controller warning names only models the customer can see', async () => {
+  // With a distance, a device whose range was never recorded is left out of the
+  // printed list, so naming it in the warning discusses something never shown.
+  const outcome = await respond(client, conversation({ facts: { fleet: 'omada' } }),
+    'Nahitaji access point ya mita 150', []);
+  const warning = outcome.body.split('\n\n').find(part => /Kwa kuwa unatumia Omada/.test(part)) ?? '';
+  assert.ok(warning, 'the reply must explain the controller fit');
+  assert.match(warning, /Cudy/);
+  assert.doesNotMatch(warning, /COMFAST/);
+});
+
 test('a cable order keeps its metre price', async () => {
   const outcome = await respond(client, conversation({}), 'Nahitaji waya mita 300', []);
   assert.match(outcome.body, /1,500/);
