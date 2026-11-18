@@ -857,7 +857,7 @@ export function supportIntake(
   const onlyIdentityAnswer = generic.test(rest) || rest.length < 3
     || smallTalkOnly(rest)
     || /^(?:ndio|ndiyo|sawa|ok|okay|yes|no|hapana|ndo)$/i.test(rest);
-  if (!next.problem && rest.length > 3 && !onlyIdentityAnswer && (supportQuestion(rest) ||
+  if (!next.problem && rest.length > 3 && !onlyIdentityAnswer && !repeatedEmail && (supportQuestion(rest) ||
       (next.waitingFor === 'problem' && rest.split(/\s+/).length >= 3))) {
     next.problem = rest.slice(0, 500);
   }
