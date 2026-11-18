@@ -858,14 +858,16 @@ export function supportIntake(
   const onlyIdentityAnswer = generic.test(rest) || rest.length < 3
     || smallTalkOnly(rest)
     || /^(?:ndio|ndiyo|sawa|ok|okay|yes|no|hapana|ndo)$/i.test(rest);
-  if (!next.problem && rest.length > 3 && !onlyIdentityAnswer && !repeatedEmail && (supportQuestion(rest) ||
-      (next.waitingFor === 'problem' && rest.split(/\s+/).length >= 3))) {
-    next.problem = rest.slice(0, 500);
-  }
+  // "I have three devices" is not a problem description, so it is checked before
+  // the sentence is stored as one.
   if (/\b(?:vifaa|navifaa|devices)\s+(?:viwili|vitatu|vingi|mbili|\d+)|\b(?:two|three|several|multiple|\d+) devices/i.test(text) && !email) {
     next.waitingFor = 'device';
     return { support: next, ready: false, reply: say('Ni kipi kati ya hivyo kina shida? Niambie modeli yake au jinsi unavyokitambua, na kinachoonekana unapokiwasha.',
       'Which device is affected? Tell me its model or how you recognise it, and what happens when you turn it on.') };
+  }
+  if (!next.problem && rest.length > 3 && !onlyIdentityAnswer && !repeatedEmail && (supportQuestion(rest) ||
+      (next.waitingFor === 'problem' && rest.split(/\s+/).length >= 3))) {
+    next.problem = rest.slice(0, 500);
   }
   if (next.waitingFor === 'device' && !onlyIdentityAnswer) {
     next.problem = [next.problem, rest].filter(Boolean).join(' · ').slice(0, 500);
@@ -1063,7 +1065,12 @@ async function answer(
     && (supportQuestion(newest) || awaitingSupport);
   if (monthly) delete memory.support;
   if (!onlyDetect && supportActive) {
-    const intakeState = { ...memory.support };
+    // A new turn can arrive after the intake was already handed off. The system
+    // and email are still known facts of this chat, so a follow-up about a device
+    // must not start the questions over.
+    const carried = memory.support ?? (memory.lastSupport && /vifaa|navifaa|devices/i.test(newest)
+      ? { system: memory.lastSupport.system, email: memory.lastSupport.email } : undefined);
+    const intakeState = { ...carried };
     if (/\b(?:ile ile|ileile|same email|usual email)\b/i.test(newest)) {
       const previous = [...history].reverse().find(line => line.direction === 'inbound' && emailOf(line.body) === line.body.trim().toLowerCase());
       intakeState.email = memory.lastSupport?.email ?? (previous && emailOf(previous.body));
@@ -1086,7 +1093,7 @@ async function answer(
       // bot; the team is only pulled in when nothing matches.
       delete memory.support;
       return result([
-        say(`Nimeona tatizo: ${facts}`, `Noted: ${facts}`),
+        say(`Nimeona: ${facts}`, `Noted: ${facts}`),
         guidance.content,
         guidance.source_url ?? '',
         say('Kama hatua hizo hazijasaidia, niambie "nataka mhudumu" nikuunganishe na timu.',

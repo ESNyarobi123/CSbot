@@ -26,6 +26,11 @@ test('support asks about the affected device when the customer has several, and 
   assert.doesNotMatch(two.body, /Nipe email/);
   const three = await say('Lkn mi navifaa vitatu asa ushaelewa kifaa cheny shida', two.memory);
   assert.match(three.body, /kipi kati ya hivyo/);
+  // "I have three devices" stays out of the problem field; only the answer does.
+  assert.equal(three.memory.support?.problem, undefined);
+  const four = await say('kifaa cha tatu hakifunguki', three.memory);
+  assert.match(four.memory.lastSupport?.problem ?? four.memory.support?.problem ?? '', /kifaa cha tatu/);
+  assert.doesNotMatch(four.memory.lastSupport?.problem ?? '', /navifaa vitatu/);
   const saved = await say('imeli yangu ile ile', one.memory, [{direction:'inbound',body:'customer@example.test'}]);
   assert.equal(saved.memory.lastSupport?.email, 'customer@example.test');
   const noise = await say('Hr fgrgd', one.memory);
