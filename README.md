@@ -175,6 +175,21 @@ Script inaonyesha kama API inajibu, idadi ya bidhaa, idadi yenye picha, inapakua
 
 **Studio.** Ukurasa wa **Studio** kwenye dashboard ni simulator ya mteja inayotumia engine halisi: `POST /v1/playground` (`{"messages":["…","…"]}`) hurudisha jibu la kila hatua pamoja na `trace`, `facts` na `stage`. Hakuna ujumbe unaotumwa WhatsApp na hakuna conversation ya mteja inayoguswa.
 
+## Mteja 360 na follow-up
+
+**Rekodi moja kwa kila namba.** `customers` huhifadhi utambulisho na shughuli (`phone`, `name`, `email`, `language`, `segment`, `first_seen`, `last_seen`) kando na `customer_memory.facts` (mambo aliyosema kuhusu eneo lake). Hakuna tena dupisho kati ya `conversations.memory` na `customer_memory`; profile ya zamani (`equipment`/`budget`/`useCase`) imejumuishwa ndani ya `facts` (`equipment`, `budget`, `use`).
+
+**Follow-up kwa wateja kimya.** CSbot sasa huwaftua wateja ambao waliacha mazungumzo, kwa ujumbe wa hiari uliopangwa:
+- `quoted` → nudge baada ya saa 24: *"Ulipata muda kuangalia <kifaa>?"*
+- `ready_to_pay` → reminder baada ya saa 1: *"Tumia risiti nikuthibitishe."*
+- `handoff` → ping baada ya saa 2: *"Timu bado inakushughulikia."*
+
+Muda wa kila moja unawekwa kwa `FOLLOWUP_QUOTE_HOURS`, `FOLLOWUP_PAYMENT_HOURS`, `FOLLOWUP_HANDOFF_HOURS` (0 huzima). Follow-up hutumwa **tu** kama mteja hakuandika tangu kupangwa na hajaomba kuachwa. Meza ya `follow_ups` ni inbox ya kudumu; worker huifagia kila sekunde chache.
+
+**Opt-out (ulinzi wa namba).** Mteja akiandika `acha`, `stop`, `sitaki ujumbe` n.k., CSbot hujibu mara moja *"Sitakutumia ujumbe tena"* kisha hukaa kimya kabisa (ujumbe wake bado huonekana kwenye inbox ya admin). Andika `anza` kurudisha bot. Hii huzuia namba ya duka kufungiwa kwa ujumbe wa hiari usiotakikana.
+
+**Archival.** `npm run archive` (au `node scripts/archive.mjs --apply`) husogeza conversations zilizo na zaidi ya miezi 6 (`ARCHIVE_OLDER_THAN_MONTHS`) na oda zilizofungwa, kwenda `conversations_archive`/`messages_archive`, ili inbox ibaki haraka. Bila `--apply` ni dry run.
+
 ## API ya inbox na mauzo
 
 Tuma `Authorization: Bearer <ADMIN_API_TOKEN>` kwa routes za `/v1`.

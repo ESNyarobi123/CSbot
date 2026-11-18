@@ -44,11 +44,12 @@ export interface Conversation {
     recentTopic?: string;
     /** Chat language, so a bare model name does not flip the reply to English. */
     language?: 'sw' | 'en';
-    profile?: { equipment?: string; budget?: string; useCase?: string };
     /**
      * Open-ended site facts the bot picked up ("coverage_m": "300", "site":
-     * "obstructed", "equipment": "EAP 610 · OMADA"). Stored as text so a new
-     * question the shop starts asking does not need a schema change.
+     * "obstructed", "equipment": "EAP 610 · OMADA", "use": "hotel", "budget":
+     * "200000"). Stored as text so a new question the shop starts asking does
+     * not need a schema change. This is the single home for what the customer
+     * told us; identity and consent live in the `customers` table.
      */
     facts?: Record<string, string>;
     /** Why the last answer said what it said, surfaced in the admin playground. */
@@ -102,6 +103,11 @@ export async function ingest(message: Incoming) {
     }
     await client.query(`INSERT INTO contact_aliases (account_id,jid,conversation_id)
       SELECT $1, unnest($2::text[]), $3 ON CONFLICT DO NOTHING`, [accountId, aliases, conversation.id]);
+    if (!fromMe && !historical) {
+      // Every real inbound message refreshes the customer 360 record.
+      await upsertCustomer(client, accountId, jid, message.occurredAt,
+        { phone, name: message.name });
+    }
     const inserted = await row(client, `INSERT INTO messages
       (conversation_id, provider_id, direction, actor, body, kind, occurred_at, processing, auto_reply)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
@@ -206,4 +212,100 @@ export async function alertAdmins(
     await enqueue(client, { accountId, conversationId: id, jid: admin.phone + '@s.whatsapp.net',
       body: `CSbot — ${title}\n${customer}\n${subject}${detail ? '\n' + detail : ''}`, origin: 'alert', imageUrl });
   }
+}
+
+/* ------------------------------------------------------------------------- *
+ * Customer 360 and follow-ups
+ * ------------------------------------------------------------------------- */
+
+/**
+ * One identity record per WhatsApp number. Called on every inbound message so
+ * first_seen/last_seen stay honest and a renamed contact updates the record.
+ */
+export async function upsertCustomer(
+  client: PoolClient, accountId: string, jid: string, seen: Date,
+  identity: { phone?: string | null; name?: string | null },
+) {
+  await client.query(`INSERT INTO customers (account_id,jid,phone,name,first_seen,last_seen)
+    VALUES ($1,$2,$3,$4,$5,$5)
+    ON CONFLICT (account_id,jid) DO UPDATE SET
+      phone = COALESCE(EXCLUDED.phone, customers.phone),
+      name  = COALESCE(EXCLUDED.name,  customers.name),
+      last_seen = GREATEST(customers.last_seen, EXCLUDED.last_seen)`,
+  [accountId, jid, identity.phone ?? null, identity.name ?? null, seen]).catch(error =>
+    log.debug({ code: (error as Error).name }, 'Customer record not upserted'));
+}
+
+/** Refresh activity and what the bot has since learned (language, segment). */
+export async function enrichCustomer(
+  client: PoolClient, accountId: string, jid: string,
+  patch: { language?: string; email?: string; segment?: string },
+) {
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  const add = (column: string, value: string | undefined) => {
+    if (value) { sets.push(`${column}=COALESCE($${values.length + 1},${column})`); values.push(value); }
+  };
+  add('language', patch.language); add('email', patch.email); add('segment', patch.segment);
+  if (!sets.length) return;
+  await client.query(`UPDATE customers SET ${sets.join(', ')} WHERE account_id=$${values.length + 1} AND jid=$${values.length + 2}`,
+    [...values, accountId, jid]).catch(error =>
+    log.debug({ code: (error as Error).name }, 'Customer record not enriched'));
+}
+
+/** Has this number asked the bot to leave it alone? */
+export async function customerOptedOut(client: PoolClient, accountId: string, jid: string) {
+  const found = await row<{ opted_out: boolean }>(client,
+    'SELECT opted_out FROM customers WHERE account_id=$1 AND jid=$2', [accountId, jid]);
+  return found?.opted_out ?? false;
+}
+
+export async function setCustomerOptedOut(client: PoolClient, accountId: string, jid: string, out = true) {
+  await client.query(`INSERT INTO customers (account_id,jid,opted_out,opted_out_at,last_seen)
+    VALUES ($1,$2,$3,CASE WHEN $3 THEN now() ELSE NULL END,now())
+    ON CONFLICT (account_id,jid) DO UPDATE SET opted_out=$3,
+      opted_out_at=CASE WHEN $3 THEN now() ELSE NULL END, last_seen=now()`,
+  [accountId, jid, out]).catch(error =>
+    log.debug({ code: (error as Error).name }, 'Customer opt-out not saved'));
+}
+
+export type FollowUpKind = 'quote_nudge' | 'payment_reminder' | 'handoff_ping' | 'post_support';
+
+/** Schedule one follow-up, replacing an open one of the same kind for this chat. */
+export async function scheduleFollowUp(
+  client: PoolClient, input: {
+    accountId: string; conversationId: string; jid: string;
+    kind: FollowUpKind; body: string; at: Date;
+  },
+) {
+  await client.query(`INSERT INTO follow_ups (account_id,conversation_id,jid,kind,body,scheduled_at)
+    VALUES ($1,$2,$3,$4,$5,$6)
+    ON CONFLICT (conversation_id,kind) WHERE sent_at IS NULL AND canceled_at IS NULL
+      DO UPDATE SET body=EXCLUDED.body, scheduled_at=EXCLUDED.scheduled_at`,
+  [input.accountId, input.conversationId, input.jid, input.kind, input.body, input.at]).catch(error =>
+    log.debug({ code: (error as Error).name }, 'Follow-up not scheduled'));
+}
+
+/** A reply that advances the chat makes the queued nudges for those kinds moot. */
+export async function cancelFollowUps(
+  client: PoolClient, conversationId: string, kinds: FollowUpKind[] = ['quote_nudge', 'payment_reminder', 'handoff_ping', 'post_support'],
+) {
+  await client.query(`UPDATE follow_ups SET canceled_at=now()
+    WHERE conversation_id=$1 AND kind=ANY($2::text[]) AND sent_at IS NULL AND canceled_at IS NULL`,
+  [conversationId, kinds]).catch(error =>
+    log.debug({ code: (error as Error).name }, 'Follow-ups not canceled'));
+}
+
+/** Follow-ups whose time has come, for the worker sweep to enqueue. */
+export async function dueFollowUps(client: PoolClient, limit: number) {
+  const found = await client.query<{ id: string; account_id: string; conversation_id: string; jid: string; kind: FollowUpKind; body: string; created_at: Date }>(
+    `SELECT id,account_id,conversation_id,jid,kind,body,created_at FROM follow_ups
+      WHERE sent_at IS NULL AND canceled_at IS NULL AND scheduled_at <= now()
+      ORDER BY scheduled_at LIMIT $1`, [limit]);
+  return found.rows;
+}
+
+export async function markFollowUpSent(client: PoolClient, id: string) {
+  await client.query('UPDATE follow_ups SET sent_at=now() WHERE id=$1', [id]).catch(error =>
+    log.debug({ code: (error as Error).name }, 'Follow-up not marked sent'));
 }

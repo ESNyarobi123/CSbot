@@ -15,6 +15,7 @@
     "test": "npm run build && node --test tests/*.test.mjs",
     "stack": "node scripts/csbot.mjs",
     "pair": "node scripts/pair.mjs",
+    "archive": "node scripts/archive.mjs",
     "catalog:check": "node --env-file-if-exists=.env scripts/catalog-check.mjs"
   },
   "dependencies": {

@@ -30,6 +30,10 @@ export const config = z.object({
   // agents miss that, so an idle handoff returns to the bot after this window.
   // 0 disables the resume. Notification-only sends use takeover:false instead.
   HANDOFF_IDLE_MINUTES: z.coerce.number().int().min(0).max(10080).default(180),
+  // Proactive follow-ups. Hours after the event; 0 disables that follow-up.
+  FOLLOWUP_QUOTE_HOURS: z.coerce.number().int().min(0).max(720).default(24),
+  FOLLOWUP_PAYMENT_HOURS: z.coerce.number().int().min(0).max(720).default(1),
+  FOLLOWUP_HANDOFF_HOURS: z.coerce.number().int().min(0).max(720).default(2),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error', 'silent']).default('info'),
 }).parse(process.env);
 

@@ -1,14 +1,18 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
-import { ai, customerTurn as respond } from './assistant.js';
+import { ai, customerTurn as respond, type Outcome } from './assistant.js';
 import { replyEligible } from './reply-policy.js';
 import { config } from './config.js';
 import { shop } from './csolution-pos.js';
 import { db, log, row, transaction } from './db.js';
 import { beat } from './heartbeat.js';
 import { advanceSale, currentSale, withoutQuote } from './sales.js';
-import { alertAdmins, enqueue, recipient, setMode, type Conversation } from './store.js';
+import { optOutRequest } from './customer-text.js';
+import {
+  alertAdmins, cancelFollowUps, customerOptedOut, dueFollowUps, enrichCustomer, enqueue,
+  markFollowUpSent, recipient, scheduleFollowUp, setCustomerOptedOut, setMode, type Conversation,
+} from './store.js';
 import { audioAllowed, pendingVoice, transcribe } from './voice.js';
 
 interface Presence { accountId: string; jid: string }
@@ -65,6 +69,50 @@ async function newestPhoto(client: Parameters<typeof respond>[0], ids: string[])
   }
 }
 
+/**
+ * Queue the follow-up that matches where this turn just landed. The sweep only
+ * sends it if the customer stays silent, so a chat that keeps moving never gets
+ * an outdated nudge.
+ */
+async function planFollowUps(
+  client: Parameters<typeof respond>[0], conversation: Conversation, outcome: Outcome,
+) {
+  const { account_id: accountId, id: conversationId, customer_jid: jid } = conversation;
+  const inHours = (n: number) => new Date(Date.now() + n * 3600_000);
+  const en = outcome.memory.language === 'en';
+  const product = outcome.memory.product?.name ?? conversation.memory.product?.name;
+  // A closed sale has nothing left to nudge.
+  if (outcome.stage === 'paid' || outcome.stage === 'completed') {
+    await cancelFollowUps(client, conversationId);
+    return;
+  }
+  if (outcome.stage === 'quoted' && config.FOLLOWUP_QUOTE_HOURS) {
+    await cancelFollowUps(client, conversationId, ['payment_reminder', 'handoff_ping']);
+    await scheduleFollowUp(client, {
+      accountId, conversationId, jid, kind: 'quote_nudge', at: inHours(config.FOLLOWUP_QUOTE_HOURS),
+      body: en
+        ? `Hi! Did you get a chance to look at ${product ?? 'the device'}? I'm here to finalise the order or answer anything.`
+        : `Habari! Ulipata muda kuangalia ${product ?? 'kifaa'}? Niko hapa nikikamilisha agizo au kujibu swali lolote.`,
+    });
+  } else if (outcome.stage === 'ready_to_pay' && config.FOLLOWUP_PAYMENT_HOURS) {
+    await cancelFollowUps(client, conversationId, ['quote_nudge', 'handoff_ping']);
+    await scheduleFollowUp(client, {
+      accountId, conversationId, jid, kind: 'payment_reminder', at: inHours(config.FOLLOWUP_PAYMENT_HOURS),
+      body: en
+        ? "Hi! Once you've paid, send the receipt and I'll connect you with the team to confirm."
+        : 'Habari! Ukishafanya malipo, nitumie risiti nikuunganishe na timu kuthibitisha.',
+    });
+  } else if (outcome.handoff && config.FOLLOWUP_HANDOFF_HOURS) {
+    await cancelFollowUps(client, conversationId, ['quote_nudge', 'payment_reminder']);
+    await scheduleFollowUp(client, {
+      accountId, conversationId, jid, kind: 'handoff_ping', at: inHours(config.FOLLOWUP_HANDOFF_HOURS),
+      body: en
+        ? "Hi, our team is still on it — sit tight, we'll be right back."
+        : 'Habari, bado timu yetu inakushughulikia — usijali, tutarudi hivi karibuni.',
+    });
+  }
+}
+
 const name = 'conversation-replies';
 const producer = new Redis(config.REDIS_URL, { maxRetriesPerRequest: 1, commandTimeout: 5000 });
 const consumer = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null });
@@ -114,6 +162,23 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       // the prompt history.
       const hasPhoto = pending.some(message => message.media_id !== null);
       const eligible = replyEligible(newest, conversation.memory, history, hasPhoto);
+      // A number that asked to be left alone stays silent unless it asks to come
+      // back. Opt-out beats every sales branch, or the number gets reported.
+      const optedOut = await customerOptedOut(client, conversation.account_id, conversation.customer_jid);
+      const resume = /\b(?:anza|endelea|start|resume|nirudishe|rudisha|rudi)\b/i.test(newest) && newest.trim().length <= 40;
+      if (optOutRequest(newest)) {
+        await setCustomerOptedOut(client, conversation.account_id, conversation.customer_jid, true);
+        await cancelFollowUps(client, conversationId);
+        await enqueue(client, { accountId: conversation.account_id, conversationId, jid: recipient(conversation),
+          origin: 'bot', body: 'Sawa, sitakutumia ujumbe tena. Ukitaka nianze tena, andika "anza".' });
+        await client.query("UPDATE messages SET processing='done' WHERE id=ANY($1::bigint[])", [ids]);
+        return;
+      }
+      if (optedOut && !resume) {
+        await client.query("UPDATE messages SET processing='done' WHERE id=ANY($1::bigint[])", [ids]);
+        return;
+      }
+      if (resume && optedOut) await setCustomerOptedOut(client, conversation.account_id, conversation.customer_jid, false);
       // A chat parked in human mode answers nothing, forever. If no agent has
       // written for the idle window, give it back to the bot instead of leaving
       // a paying customer on read. The pending messages were flagged
@@ -180,6 +245,16 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         await alertAdmins(client, { ...updated, memory },
           outcome.handoff ? 'Mazungumzo yanahitaji mhudumu' : 'Tatizo jipya la mfumo');
       }
+      if (canReply) {
+        // Keep the 360 record current with what this turn revealed, then queue
+        // the follow-up for wherever the chat just landed.
+        await enrichCustomer(client, conversation.account_id, conversation.customer_jid, {
+          language: outcome.memory.language,
+          email: outcome.memory.support?.email ?? outcome.memory.lastSupport?.email,
+          segment: outcome.memory.facts?.use,
+        });
+        await planFollowUps(client, conversation, outcome);
+      }
       await client.query("UPDATE messages SET processing='done' WHERE id=ANY($1::bigint[])", [ids]);
     });
   } finally {
@@ -229,6 +304,41 @@ try {
       }
     } catch (error) {
       log.warn({ code: (error as Error).name }, 'Could not schedule pending messages');
+    }
+    // Follow-ups fire only when their time has come, the customer has stayed
+    // silent since they were queued, and the number has not opted out.
+    try {
+      await transaction(async client => {
+        const due = await dueFollowUps(client, 20);
+        for (const fu of due) {
+          if (await customerOptedOut(client, fu.account_id, fu.jid)) {
+            await cancelFollowUps(client, fu.conversation_id);
+            continue;
+          }
+          const lastIn = await row<{ occurred_at: Date }>(client,
+            `SELECT occurred_at FROM messages WHERE conversation_id=$1 AND direction='inbound'
+             ORDER BY id DESC LIMIT 1`, [fu.conversation_id]);
+          // The customer wrote after this nudge was queued, so it is stale.
+          if (lastIn && lastIn.occurred_at.getTime() > fu.created_at.getTime()) {
+            await cancelFollowUps(client, fu.conversation_id, [fu.kind]);
+            continue;
+          }
+          const mode = await row<{ mode: string }>(client,
+            'SELECT mode FROM conversations WHERE id=$1', [fu.conversation_id]);
+          // A handoff ping is pointless once the chat is back with the bot.
+          if (fu.kind === 'handoff_ping' && mode?.mode !== 'human') {
+            await cancelFollowUps(client, fu.conversation_id, ['handoff_ping']);
+            continue;
+          }
+          const account = await row(client, 'SELECT enabled FROM accounts WHERE id=$1', [fu.account_id]);
+          if (!account?.enabled) { await cancelFollowUps(client, fu.conversation_id); continue; }
+          await enqueue(client, { accountId: fu.account_id, conversationId: fu.conversation_id,
+            jid: fu.jid, origin: 'bot', body: fu.body });
+          await markFollowUpSent(client, fu.id);
+        }
+      });
+    } catch (error) {
+      log.warn({ code: (error as Error).name }, 'Could not send due follow-ups');
     }
     if (!stopping) await sleep(500);
   }

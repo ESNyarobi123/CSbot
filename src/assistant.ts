@@ -7,7 +7,7 @@ import { adviseOnDevice } from './advisor.js';
 import { compose, identifyDevice, loadCustomerMemory, recall, saveCustomerMemory, siteDistance } from './brain.js';
 import { config } from './config.js';
 import {
-  customerProfile, emailOf, messageLanguage, modelName, namesNewDevice, smallTalkOnly, smallTalkReply,
+  emailOf, messageLanguage, modelName, namesNewDevice, smallTalkOnly, smallTalkReply,
   supportQuestion, systemFrom, systemLabel,
 } from './customer-text.js';
 import { supportIntake, supportSummary } from './support.js';
@@ -187,7 +187,7 @@ export async function retrieveKnowledge(client: PoolClient, text: string, system
 async function decide(text: string, memory: Conversation['memory'], history: ChatLine[], knowledge: Knowledge[]) {
   if (!ai) return resolveDecision(text, memory);
   const contents = JSON.stringify({ newest: text, memory: { system: memory.system, product: memory.product?.name,
-    profile: memory.profile, siteFacts: memory.facts, requirements: memory.requirements },
+    siteFacts: memory.facts, requirements: memory.requirements },
     history, approvedKnowledge: knowledge.map(entry => ({ ...entry, content: entry.content.slice(0, 3000) })) });
   const models = [...new Set([config.GEMINI_MODEL, config.GEMINI_FALLBACK_MODEL])];
   // A customer is waiting. Free Gemini tiers answer 503 during demand spikes, so
@@ -845,7 +845,6 @@ async function answer(
     // customer does not have to explain their compound again.
     facts: recall(newest, { ...stored, ...conversation.memory.facts }),
     recentTopic: newest.slice(0, 280),
-    profile: customerProfile(newest, conversation.memory.profile),
   };
   const knowledge = onlyDetect ? [] : await retrieveKnowledge(client, newest, systemFrom(newest) || memory.system);
   // The trace belongs to one answer; a stale one would describe the previous turn.
@@ -1519,7 +1518,7 @@ async function answer(
     }
     return result([fact.content, fact.source_url].filter(Boolean).join('\n'));
   }
-  if (memory.profile?.equipment) {
+  if (memory.facts?.equipment) {
     return result(say('Kwa vifaa ulivyotaja, unapanga hotspot ya ndani au ya nje?',
       'For the equipment you mentioned, are you planning an indoor or outdoor hotspot?'));
   }

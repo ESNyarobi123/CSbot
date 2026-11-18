@@ -1,5 +1,4 @@
 import { modelQuery, systemName } from './pos.js';
-import type { Conversation } from './store.js';
 
 /**
  * Reading the customer's message: who they are, what language they used, and
@@ -46,6 +45,19 @@ export const emailPattern = /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/u;
 /** Email the customer typed, used to find their account. */
 export function emailOf(text: string) {
   return emailPattern.exec(text)?.[0]?.toLowerCase();
+}
+
+/**
+ * A customer telling the bot to stop. Proactive follow-ups must honour this or
+ * the number gets reported and banned, so the message is short and unambiguous.
+ */
+const optOutPhrases = /\b(?:acha|niachie|nisamehe|sitaki\s+(?:ujumbe|kuendelea|kupokea)|acha\s+(?:kunijibu|kunitumia|kunitaarifu)|usinijibu|usinitumie|stop|unsubscribe|opt[ -]?out|mute)\b/i;
+export function optOutRequest(text: string) {
+  // "acha nikufahamishe" is the opposite; only a request about the bot's own
+  // messages counts, and only when it is the whole message.
+  if (text.trim().length > 60) return false;
+  if (/\b(?:hapana|endelea|endlea|continue|nikufahamishe|nitaacha|mtu|kifaa)\b/i.test(text)) return false;
+  return optOutPhrases.test(text);
 }
 
 // Not everyone on this number is buying. "Mambo", "vipi" or "poa" is a person
@@ -107,8 +119,9 @@ export function smallTalkReply(text: string, say: (sw: string, en: string) => st
 }
 
 /** What the customer said about their own site, kept between turns. */
-export function customerProfile(text: string, previous: Conversation['memory']['profile']) {
-  const profile = { ...previous };
+export type CustomerProfile = { equipment?: string; budget?: string; useCase?: string };
+export function customerProfile(text: string, previous: CustomerProfile | undefined) {
+  const profile: CustomerProfile = { ...previous };
   for (const line of text.split(/\n+|(?<=[.!?])\s+/)) {
     const statement = line.trim();
     if (!statement || statement.endsWith('?')) continue;

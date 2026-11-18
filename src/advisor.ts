@@ -151,8 +151,8 @@ export async function adviseOnDevice(input: AdviceInput): Promise<Advice | undef
     facts.push('--- WHAT THIS CUSTOMER HAS ALREADY TOLD US ---', site);
     trace.push(`Site facts: ${site.replace(/\n/g, ', ')}`);
   }
-  if (input.memory.profile?.equipment) {
-    facts.push(`Equipment the customer mentioned earlier: ${input.memory.profile.equipment}`);
+  if (input.memory.facts?.equipment) {
+    facts.push(`Equipment the customer mentioned earlier: ${input.memory.facts.equipment}`);
   }
   if (input.knowledge) facts.push('--- APPROVED SHOP KNOWLEDGE ---', input.knowledge.slice(0, 2500));
   facts.push('--- SYSTEM FIT ---',
