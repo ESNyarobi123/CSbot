@@ -74,6 +74,12 @@ export interface AdviceInput {
   language: 'sw' | 'en';
   /** Approved knowledge that mentions this device or its system, if any. */
   knowledge?: string;
+  /**
+   * Facts the caller appends to the reply itself (installation fees, cable).
+   * Without them the composer says "not recorded" and the deterministic lines
+   * then quote a price, so one reply contradicts itself.
+   */
+  extraFacts?: string[];
 }
 
 /**
@@ -151,6 +157,7 @@ export async function adviseOnDevice(input: AdviceInput): Promise<Advice | undef
   if (input.knowledge) facts.push('--- APPROVED SHOP KNOWLEDGE ---', input.knowledge.slice(0, 2500));
   facts.push('--- SYSTEM FIT ---',
     'WoteFy runs on TP-Link Omada EAP. LubFy manages MikroTik, Cudy, TP-Link Omada, Ruijie/Reyee, Cambium and Ubiquiti UniFi.');
+  if (input.extraFacts?.length) facts.push('--- QUOTED SEPARATELY IN THIS REPLY ---', ...input.extraFacts);
 
   const written = await compose({
     ai: input.ai, question: input.question, facts: facts.join('\n'), language: input.language,

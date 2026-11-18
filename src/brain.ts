@@ -24,7 +24,9 @@ const clean = (value: string) => value.replace(/\s+/g, ' ').trim();
  * ------------------------------------------------------------------------- */
 
 const metres = /\b(?:mita|metres?|meters?|mtr)\s*(\d{1,5})\b|\b(\d{1,5})\s*(?:mita|metres?|meters?|mtr)\b/i;
-const kilometres = /\b(?:kilomet(?:er|re|a)s?|km)\s*(\d+(?:[.,]\d+)?)\b|\b(\d+(?:[.,]\d+)?)\s*(?:kilomet(?:er|re|a)s?|km)\b/i;
+// "kilomita" is how most customers spell it in a WhatsApp message; only
+// "kilometa"/"km" were read, so a 2 km link request lost its distance.
+const kilometres = /\b(?:kilomit\w*|kilomet\w*|km)\s*(\d+(?:[.,]\d+)?)\b|\b(\d+(?:[.,]\d+)?)\s*(?:kilomit\w*|kilomet\w*|km)\b/i;
 export function siteDistance(text: string) {
   if (/\b(?:waya|cable|kebo|cat ?6)\b/i.test(text)) return undefined;
   const km = kilometres.exec(text);

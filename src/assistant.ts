@@ -6,6 +6,15 @@ import { z } from 'zod';
 import { adviseOnDevice } from './advisor.js';
 import { compose, identifyDevice, loadCustomerMemory, recall, saveCustomerMemory, siteDistance } from './brain.js';
 import { config } from './config.js';
+import {
+  customerProfile, emailOf, messageLanguage, modelName, namesNewDevice, smallTalkOnly, smallTalkReply,
+  supportQuestion, systemFrom, systemLabel,
+} from './customer-text.js';
+import { supportIntake, supportSummary } from './support.js';
+// Kept exported here because the tests and the dashboard import them from the
+// conversation module; the definitions now live in customer-text.ts and support.ts.
+export { customerProfile, emailOf, messageLanguage, smallTalkOnly, supportQuestion } from './customer-text.js';
+export { supportIntake, supportSummary } from './support.js';
 import { log, row } from './db.js';
 import { sheetFor, specsFor, specsForMany, specLines } from './specs.js';
 import { cableQuote, catalog, installationOptions, isModelReference, modelQuery, money, planKind, readPlans, readProduct, searchProducts, serviceCatalog, systemName, variantLetter } from './pos.js';
@@ -56,140 +65,17 @@ const purchaseWords = /\b(bei|price|cost|stock|picha|photo|image|availability|ip
 // Only an explicit price, stock or photo word makes a message a product enquiry.
 const strongPurchaseWords = /\b(bei|price|cost|stock|picha|photo|image|nunua|order|buy|available)\b/i;
 const imageWords = /\b(picha|photo|image)\b/i;
-const modelName = /\b(?:cudy|eap|omada|mikrotik|ruijie|reyee|cambium|unifi|router|switch|access point|gateway|sku)\b|\b(?:eap|er|wr|rb)[- ]?\d+/i;
 const followUp = /\b(ile|hiyo|yake|that one|it)\b/i;
-/**
- * True only when the message brings a model or a vendor, so a generic word
- * ("router", "access point") or a cable length is not mistaken for a new device
- * the customer wants priced.
- */
-function namesNewDevice(text: string) {
-  const stripped = text
-    .replace(/\b(?:mita|metres?|meters?|mtr)\s*\d{1,3}\b/gi, ' ')
-    .replace(/\b\d{1,3}\s*(?:mita|metres?|meters?|mtr)\b/gi, ' ');
-  return Boolean(modelQuery(stripped))
-    || /\b(?:cudy|omada|mikrotik|ruijie|reyee|cambium|unifi|ubiquiti|comfast)\b/i.test(stripped);
-}
-const systemFrom = (text: string) => {
-  const systems = systemName.options.filter(name => new RegExp(`\\b${name}\\b`, 'i').test(text));
-  return systems.length === 1 ? systems[0] : '';
-};
-
 const paymentDenied = /\b(sijalipa|hajalipa|sijakamilisha malipo|haven't paid|have not paid|not paid|didn’t pay|didn't pay)\b/i;
 const paymentQuestion = /\b(je nimelipa|nikisema nimelipa|kama nimelipa|did i pay|have i paid|if i paid)\b/i;
 
-/**
- * A broken system is a support case, not a price request. Kept narrow enough
- * that a stock question ("haipatikani?") does not become one.
- */
-const supportWords = /\b(shida|tatizo|matatizo|haifanyi kazi|haifanyi vizuri|haifunguki|haionekani|haiongei|haifikii|umesimama|imesimama|imekwama|imegoma|imefeli|imefail|imekataliwa na mtandao|siwezi kuingia|sijaweza kuingia|haikubali|inaleta error|naipata error|imebadilika ghafla|sina internet|hakuna internet|haipati internet|problem|issue|not working|doesn't work|does not work|can't log ?in|cannot log ?in|can't login|cannot login|failed|stuck|support|troubleshoot)\b/i;
-
-/** A first-line technical report, e.g. "Portal haifunguki kwenye simu". */
-export function supportQuestion(text: string) {
-  return supportWords.test(text);
-}
-
-const emailPattern = /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/u;
-
-/** Email the customer typed, used to find their account. */
-export function emailOf(text: string) {
-  return emailPattern.exec(text)?.[0]?.toLowerCase();
-}
-
-// Not everyone on this number is buying. "Mambo", "vipi" or "poa" is a person
-// saying hello, and answers itself — a pitch there reads like a call centre and
-// loses the friendly chats that later turn into customers.
-const smallTalkWords = new Set([
-  'mambo', 'mamboo', 'mamboz', 'vipi', 'vpp', 'vip', 'niaje', 'sasa', 'habari', 'hujambo', 'sijambo',
-  'shikamoo', 'marahaba', 'salama', 'poa', 'safi', 'fresh', 'nzuri', 'sana', 'asante', 'shukran',
-  'karibu', 'ok', 'okay', 'sawa', 'ndio', 'yes', 'hello', 'hi', 'hey', 'yo', 'sup', 'good',
-  'morning', 'afternoon', 'evening', 'asubuhi', 'mchana', 'jioni', 'chief', 'mzee', 'bro',
-  'brother', 'dada', 'kaka', 'yako', 'za', 'tu', 'je', 'basi', 'haya', 'aisee', 'dah', 'poa',
-]);
-const greetingWord = /^(mambo+|vipi|vpp|niaje|habari|hujambo|sijambo|shikamoo|salama|poa|safi|nzuri|hello+|hi+|hey+|yo|sup|sasa|morning|afternoon|evening|asubuhi|mchana|jioni|asante|shukran|thanks|thank|thx|kaka|dada|mkuu|boss|bro|brother|chief|mzee)$/;
-
-/** A message that is only a greeting, an acknowledgement or a thank-you. */
-export function smallTalkOnly(text: string) {
-  const words = text.toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, ' ').trim().split(/\s+/).filter(Boolean);
-  if (!words.length || words.length > 4) return false;
-  if (!words.every(word => smallTalkWords.has(word))) return false;
-  return words.some(word => greetingWord.test(word));
-}
-
 /** Where the business is and when it is reachable — only from approved knowledge. */
-const placeQuestion = /\b(unaishi|mnaishi|mko|mupo|mnapatikana|unapatikana|ofisi\w*|office|mahali|address|anwani|ramani|location|mnafanya kazi|saa za kazi|opening|hours|wikendi|weekend|jumamosi|jumapili|mko wapi|upo wapi)\b/i;
-
-/** Answer in the same register the person used, then leave the door open. */
-function smallTalkReply(text: string, say: (sw: string, en: string) => string, last?: string) {
-  const lower = text.toLowerCase();
-  const base = (() => {
-    if (/^(asante|shukran|thank you|thanks|thx)\b/.test(lower.trim())) {
-      return say('Karibu sana!', 'You’re welcome!');
-    }
-    if (/\bshikamoo\b/.test(lower)) {
-      return say('Marahaba! Karibu — niambie, nikusaidie nini leo?',
-        'Hello! Welcome — tell me, what can I help you with today?');
-    }
-    if (/\b(poa|safi|fresh|nzuri)\b/.test(lower) && !/\b(mambo|vipi|habari)\b/.test(lower)) {
-      return say('Vizuri! Karibu — niambie unahitaji nini.',
-        'Good to hear! Welcome — tell me what you need.');
-    }
-    if (/\b(mambo|vipi|vpp|niaje|sup|yo|hi|hey|hello)\b/.test(lower)) {
-      return say('Mambo! Poa sana, karibu. Niambie — nikusaidie nini leo?',
-        'Hey! All good here. Tell me — what can I help you with today?');
-    }
-    if (/\b(habari|hujambo|salama|asubuhi|mchana|jioni|morning|afternoon|evening)\b/.test(lower)) {
-      return say('Habari! Nzuri, asante. Karibu — nikusaidie nini leo?',
-        'Hello! Very well, thanks. Welcome — what can I help you with today?');
-    }
-    if (/^(sawa|ok|okay|haya|ndio|yes)\b/.test(lower.trim())) {
-      return say('Sawa! Nipo hapa — niambie unahitaji nini.',
-        'Alright! I’m here — tell me what you need.');
-    }
-    return say('Karibu! Niambie — nikusaidie nini leo?',
-      'Welcome! Tell me — what can I help you with today?');
-  })();
-  // A returning customer greets again weeks later; picking the thread up is what
-  // makes the memory feel like a person rather than a database.
-  const thanks = /^(asante|shukran|thank you|thanks|thx)\b/.test(lower.trim());
-  return !last || thanks ? base
-    : base + say(`\n\nTulikuwa tunaangalia ${last} — ungependa tuendelee na hiyo?`,
-      `\n\nWe were looking at ${last} — would you like to continue with it?`);
-}
-
-const systemLabel = (system: string) => system === 'wotefy' ? 'WoteFy' : system === 'lubfy' ? 'LubFy' : '';
-
-export function customerProfile(text: string, previous: Conversation['memory']['profile']) {
-  const profile = { ...previous };
-  for (const line of text.split(/\n+|(?<=[.!?])\s+/)) {
-    const statement = line.trim();
-    if (!statement || statement.endsWith('?')) continue;
-    if (/\b(?:bajeti (?:yangu|yetu|ni|ya)|my budget|our budget|budget is)\b/i.test(statement) &&
-        /\d/.test(statement)) profile.budget = statement.slice(0, 160);
-    if (/\b(?:sasa natumia|natumia|tunatumia|ninatumia|nina|tuna|tayari nina|i have|we have|i use|we use)\b/i.test(statement) &&
-        modelName.test(statement)) profile.equipment = statement.slice(0, 200);
-    if (/\b(?:nataka|ninataka|tunahitaji|lengo langu|i want|we want|i need|we need)\b.*\b(?:hotspot|wifi|wi-fi|wageni|hotel|shule|biashara|guest|guests|school)\b/i.test(statement)) {
-      profile.useCase = statement.slice(0, 200);
-    }
-  }
-  return Object.keys(profile).length ? profile : undefined;
-}
-
-// Kiswahili and English markers. A bare model name carries neither, so the chat
-// keeps the language it started in instead of flipping to English mid-order.
-const swMarkers = /\b(naomba|nahitaji|ninahitaji|nataka|bei|gani|ngapi|tafadhali|asante|sawa|ndio|habari|mambo|vipi|je|kwa|ya|za|nini|wapi|lini|kwanini|niletee|nipe|niambie|nijibu|tafuta|ipo|zipo|haipo|hauna|mna|una|nina|sina|kama|lakini|bado|hii|hiyo|hizo|zile|wanangu|mimi|wewe|zote|yote|kifaa|bidhaa|pamoja|maelezo|sifa|hadi)\b/i;
-// "details" and "specs" are typed by Kiswahili speakers too ("niambie details zote"),
-// so they say nothing about the language. Only unambiguously English words do.
-const enMarkers = /\b(the|please|how|what|which|where|when|price|cost|stock|available|need|want|does|can|could|would|thanks|thank|hello|hi|hey|are|your|more|other)\b/i;
-
-/** The language the customer just wrote, when the message makes it obvious. */
-export function messageLanguage(text: string): 'sw' | 'en' | undefined {
-  const sw = swMarkers.test(text);
-  const en = enMarkers.test(text);
-  if (sw && !en) return 'sw';
-  if (en && !sw) return 'en';
-  return undefined;
-}
+const placeQuestion = /\b(unaishi|mnaishi|mko|mupo|mnapatikana|unapatikana|mahali|address|anwani|ramani|location|mnafanya kazi|saa za kazi|opening|hours|wikendi|weekend|jumamosi|jumapili|mko wapi|upo wapi)\b|\bofisi\w*\s*(?:yenu|yako|zenu|zako|kwenu|kwako)\b|\b(?:ofisi|duka)\w*\b(?=[^.?!]*\b(?:wapi|lini|nyingine|zingine)\b)/i;
+/**
+ * "Kuunganisha ofisi mbili" is the customer's own network, not a request for
+ * our address. Without this the shop's location answered a 2 km link question.
+ */
+const ownSite = /\b(?:kuunganisha|connect|link|umbali|kilomet\w*|km|mita|wifi|wi-fi|mtandao|internet|intaneti|access point|router|switch|mesh|cable|waya|ofisi zangu|ofisi mbili|ofisi tatu|majengo|jengo)\b/i;
 
 function fallback(text: string, memory: Conversation['memory']): Decision {
   const language = messageLanguage(text) ?? memory.language ?? 'sw';
@@ -605,6 +491,42 @@ export async function productCapability(
 /** A customer asking for other models after a short list must get more models. */
 const moreModelsWords = /\b(zingine|nyingine|mengine|mwingine|wengine|zote|others?|more|other|all|full list|orodha|mifano|models? nyingine|gani zipo|zipi)\b/i;
 
+/**
+ * "Nina hotspot ya wageni, wateja 80 kwa wakati mmoja" is a site to size, not a
+ * product to look up. Reading it as a catalog query answered "not in the POS",
+ * which is the opposite of help.
+ */
+const clientCount = /\b(\d{1,4})\s*(?:\+)?\s*(?:wateja|watumiaji|clients?|users?|simu|devices?)\b|\b(?:wateja|watumiaji|clients?|users?)\s*(?:hadi\s*|karibu\s*)?(\d{1,4})\b/i;
+export function siteRequirement(text: string) {
+  const count = clientCount.exec(text);
+  const users = count ? Number(count[1] ?? count[2]) : undefined;
+  const hotspot = /\b(?:hotspot|wi-?fi ya wageni|guest wi-?fi|wageni)\b/i.test(text);
+  return {
+    users: users && users > 0 && users <= 5000 ? users : undefined,
+    hotspot,
+  };
+}
+
+/**
+ * How many units the customer wants. A model number is a name, not a count, so a
+ * bare digit only counts when it sits beside a unit word; otherwise the Swahili
+ * number word ("tatu", "nne") carries the quantity.
+ */
+const countWords: Record<string, number> = {
+  mbili: 2, viwili: 2, tatu: 3, vitatu: 3, nne: 4, vinne: 4, tano: 5, vitano: 5,
+  sita: 6, saba: 7, nane: 8, tisa: 9, kumi: 10,
+};
+export function quantityOf(text: string) {
+  const unit = /\b(\d{1,3})\s*(?:pcs?|pieces?|units?|sets?|vifaa|vitengo|vipande)\b|\b(?:pcs?|pieces?|units?|sets?|vifaa|vitengo)\s*(\d{1,3})\b/i.exec(text);
+  if (unit) {
+    const value = Number(unit[1] ?? unit[2]);
+    return value > 1 && value <= 500 ? value : undefined;
+  }
+  const words = text.toLowerCase().match(/[\p{L}]+/gu) ?? [];
+  const found = words.map(word => countWords[word]).find(value => value !== undefined);
+  return found && found > 1 ? found : undefined;
+}
+
 /** The category word the customer used ("access point"), used as the catalog query. */
 function deviceQuery(text: string) {
   const match = devicePhrase.exec(text)?.[1]?.toLowerCase();
@@ -838,97 +760,6 @@ export function relevantKnowledge(text: string, entries: Knowledge[], support = 
   return best?.entry;
 }
 
-/**
- * Support intake. A customer with a broken system is asked for the problem, the
- * system and the login email before any diagnosis, because "sijui nini
- * kinaendelea" is not enough to open an account or read a log. Each answer is
- * kept in memory, so the three questions are asked once and never repeated.
- */
-export function supportIntake(
-  text: string, support: NonNullable<Conversation['memory']['support']>,
-  say: (sw: string, en: string) => string,
-): { support: NonNullable<Conversation['memory']['support']>; reply?: string; ready: boolean } {
-  const next = { ...support };
-  const email = emailOf(text);
-  if (email) next.email = email;
-  const detectedSystem = systemFrom(text);
-  if (detectedSystem) next.system = detectedSystem;
-  // The email answer itself is not the problem description.
-  const rest = text.replace(emailPattern, ' ')
-    .replace(/\b(?:wotefy|lubfy)\b/gi, ' ')
-    .replace(/[\s.,!?;:]+/g, ' ').trim();
-  const generic = /^(?:kaka|mkuu|boss|tatizo|shida|problem|support|msaada|nina (?:shida|tatizo)|mfumo wako|nipo .+|niko .+)$/i;
-  // "My email is the same one" is an answer, not a refusal. Asking again is what
-  // made this conversation loop three times.
-  const repeatedEmail = /\b(?:ile ile|ileile|ndo ile|ndiyo ile|ni ile|ndio ile|same (?:email|one)|usual email|hio hio|hiyo hiyo)\b/i.test(text);
-  if (repeatedEmail) next.sameEmail = true;
-  if (next.problem && generic.test(next.problem.trim())) delete next.problem;
-  const onlyIdentityAnswer = generic.test(rest) || rest.length < 3
-    || smallTalkOnly(rest)
-    || /^(?:ndio|ndiyo|sawa|ok|okay|yes|no|hapana|ndo)$/i.test(rest);
-  // "I have three devices" is not a problem description, so it is checked before
-  // the sentence is stored as one.
-  if (/\b(?:vifaa|navifaa|devices)\s+(?:viwili|vitatu|vingi|mbili|\d+)|\b(?:two|three|several|multiple|\d+) devices/i.test(text) && !email) {
-    next.waitingFor = 'device';
-    return { support: next, ready: false, reply: say('Ni kipi kati ya hivyo kina shida? Niambie modeli yake au jinsi unavyokitambua, na kinachoonekana unapokiwasha.',
-      'Which device is affected? Tell me its model or how you recognise it, and what happens when you turn it on.') };
-  }
-  if (!next.problem && rest.length > 3 && !onlyIdentityAnswer && !repeatedEmail && (supportQuestion(rest) ||
-      (next.waitingFor === 'problem' && rest.split(/\s+/).length >= 3))) {
-    next.problem = rest.slice(0, 500);
-  }
-  if (next.waitingFor === 'device' && !onlyIdentityAnswer) {
-    next.problem = [next.problem, rest].filter(Boolean).join(' · ').slice(0, 500);
-    if (next.system) return { support: next, ready: true };
-  }
-  if (!next.problem) {
-    next.waitingFor = 'problem';
-    // Repeating the same opening question after the system was named makes the
-    // bot look deaf, so the second ask refers to what the customer just said.
-    return { support: next, ready: false, reply: next.sameEmail
-      ? say('Sawa, nitatumia ile email ya awali — timu itaikuta. Sasa niambie kinachotokea: ukurasa au kifaa gani, na unaona ujumbe gani?',
-        'Understood, the team will use the email already on file. Now tell me what happens: which page or device, and what message do you see?')
-      : next.system
-        ? say(`Sawa, shida iko kwenye ${systemLabel(next.system)}. Niambie kinachotokea — ukurasa au kifaa gani, na unaona ujumbe gani?`,
-          `Understood, this is about ${systemLabel(next.system)}. What happens — which page or device, and what message do you see?`)
-        : say(
-          'Pole sana. Nieleze kwa ufupi shida ipoje — nini kinatokea na ulikuwa unafanya nini wakati imetokea?',
-          'Sorry about that. In one or two sentences, what exactly happens and what were you doing when it started?') };
-  }
-  if (!next.system) {
-    next.waitingFor = 'system';
-    return { support: next, ready: false, reply: say(
-      'Asante. Shida hii iko kwenye mfumo upi — WoteFy au LubFy?',
-      'Thanks. Which system is this about — WoteFy or LubFy?') };
-  }
-  if (!next.email) {
-    if (repeatedEmail) {
-      // They told us it is the address already on file. The team can match it.
-      return { support: next, ready: true };
-    }
-    if (next.waitingFor === 'email') {
-      next.attempts = (next.attempts || 0) + 1;
-      return { support: next, ready: false, reply: say(
-        'Sijapata anwani ya email kwenye ujumbe huo. Unaweza kuendelea bila email. Kifaa au ukurasa gani unaonyesha tatizo?',
-        'I couldn’t find an email address in that message. We can continue without it. Which device or screen shows the problem?') };
-    }
-    next.waitingFor = 'email';
-    return { support: next, ready: false, reply: say(
-      'Asante. Nipe email uliyosajili nayo kwenye akaunti (ile unayoingia nayo) ili timu ikague akaunti yako.',
-      'Thanks. What is the email on your account (the one you sign in with)? The team needs it to check the right account.') };
-  }
-  return { support: next, ready: true };
-}
-
-/** One line for the admin alert, so the team starts with the facts. */
-export function supportSummary(support: NonNullable<Conversation['memory']['support']>) {
-  return [
-    support.problem && `Tatizo: ${support.problem}`,
-    support.system && `Mfumo: ${systemLabel(support.system)}`,
-    support.email && `Email: ${support.email}`,
-  ].filter(Boolean).join(' · ');
-}
-
 /** Read a product, giving the shared catalog server two more chances before failing. */async function readProductRetry(id: string) {
   let last: unknown;
   for (const wait of [0, 400, 900]) {
@@ -1120,7 +951,7 @@ async function answer(
   if (!onlyDetect && /^(?:mfumo (?:wako|wenu)|your system)[.!? ]*$/i.test(newest.trim())) {
     return result(say('Ungependa kujiunga na mfumo wa kuuza Wi-Fi, au unatumia mfumo tayari na unahitaji msaada?', 'Would you like to register for Wi-Fi billing, or do you already use it and need help?'));
   }
-  if (!onlyDetect && placeQuestion.test(newest) && !strongPurchaseWords.test(newest)
+  if (!onlyDetect && placeQuestion.test(newest) && !ownSite.test(newest) && !strongPurchaseWords.test(newest)
       && !modelName.test(newest) && !memory.support) {
     // Gemini invented "Nairobi" for an office that is in Sinza, Dar es Salaam.
     // Location and hours are facts, so they come from knowledge, not generation.
@@ -1362,6 +1193,30 @@ async function answer(
         'The plan prices are not loading right now. I have noted that you want the monthly system price — I will check again, and our team can confirm it if you need it quickly.'));
     }
   }
+  // A described site is not a catalog row. Sizing needs the area and the
+  // distance, so ask for those instead of replying "not in the POS". The count
+  // is stripped first: "wateja 80" looks like a model number to the matcher.
+  const requirementText = newest.replace(clientCount, ' ');
+  if (!monthly && !photo && !namesNewDevice(requirementText) && !modelQuery(requirementText)
+      && !deviceQuery(requirementText) && ['product', 'general'].includes(decision.intent)) {
+    const site = siteRequirement(newest);
+    if (site.users || site.hotspot) {
+      memory.requirements = { ...memory.requirements, ...(site.users ? { users: site.users } : {}) };
+      memory.planning ??= 'coverage';
+      const noted = [
+        site.users ? say(`wateja ${site.users} kwa wakati mmoja`, `${site.users} users at once`) : '',
+        memory.facts?.coverage_m ? say(`mita ${memory.facts.coverage_m}`, `${memory.facts.coverage_m} m`) : '',
+      ].filter(Boolean).join(' · ');
+      const size = site.users
+        ? say(`\nIdadi hiyo mara nyingi haitoshelezwi na AP moja; tutaangalia ngapi zinahitajika.`,
+          `\nThat many clients usually need more than one AP; we will size the count.`)
+        : '';
+      return result(
+        (noted ? say(`Nimeandika: ${noted}.`, `Noted: ${noted}.`) : say('Sawa.', 'Okay.')) + size
+        + '\n\n' + say('Ili nikuchagulie sahihi: eneo ni la ndani ya jengo au la nje? Na unataka Wi-Fi ifike mita ngapi kutoka mahali pa kuweka AP?',
+          'So I can choose correctly: is the area indoors or outdoors? And how many metres should the Wi-Fi reach from where the AP goes?'));
+    }
+  }
   if (decision.intent === 'product') {
     // A category word ("access point") is a list request, not a model. Gemini
     // sometimes answers with one model it guessed, so the category it named wins.
@@ -1559,10 +1414,21 @@ async function answer(
       // load. Two retries with a short gap stop a transient spike from losing the price.
       const { product, stock } = await readProductRetry(picked);
       const price = money(product.price);
+      // "EAP 650 tatu" is three units. Without this the total was the unit price,
+      // which underprices every multi-unit order.
+      const quantity = quantityOf(newest);
+      const quantityLine = quantity ? [
+        say(`Vitengo ${quantity} × ${price} = ${money({ amount: product.price.amount * quantity, currency: product.price.currency })}`,
+          `${quantity} × ${price} = ${money({ amount: product.price.amount * quantity, currency: product.price.currency })}`),
+        stock.available_to_sell < quantity
+          ? say(`Dukani tuna ${stock.available_to_sell} kwa sasa — nyingine zitakuja.`,
+            `Only ${stock.available_to_sell} in stock right now — the rest would be ordered.`)
+          : '',
+      ].filter(Boolean).join('\n') : '';
       memory.product = { id: product.id, name: product.name };
       delete memory.productOptions;
       memory.quoteFor = 'product';
-      memory.lastQuote = `${product.name} — ${price}`;
+      memory.lastQuote = `${product.name} — ${price}` + (quantity ? ` × ${quantity}` : '');
       const details = [product.brand && `Brand: ${product.brand}`,
         product.category && `Category: ${product.category}`,
         product.unit && product.unit.toLowerCase() !== 'pcs' && product.unit !== 'Job'
@@ -1588,10 +1454,18 @@ async function answer(
         const advised = await adviseOnDevice({
           ai, client, product: { id: product.id, name: product.name }, question: newest,
           memory, say, language: decision.language, knowledge: topic?.content.slice(0, 2000),
+          // The installation and plan lines are appended after this answer, so the
+          // composer must not claim those prices are unknown.
+          extraFacts: [
+            fitting ? 'Installation and cable are quoted in the shop price list appended to this reply. Do not say their price is unrecorded.' : '',
+            quantityLine ? `Quantity: the customer asked for ${quantity} units; the total for that quantity is appended to this reply.` : '',
+          ].filter(Boolean),
         }).catch(() => undefined);
         if (advised) {
           memory.trace = advised.trace;
-          return result(advised.answer + fitting + planPrices, {
+          // The composer may only use the facts it was given, so the count is
+          // stated here rather than left to a generated total.
+          return result(advised.answer + (quantityLine ? '\n' + quantityLine : '') + fitting + planPrices, {
             stage: 'quoted', imageUrl, trace: advised.trace,
           });
         }
@@ -1607,6 +1481,7 @@ async function answer(
       if (nextStep) memory.awaitingService = true; else delete memory.awaitingService;
       return result(`${product.name} — ${price}` + (details ? '\n' + details : '')
         + (specs ? '\n' + specs : '') + '\n' + availability
+        + (quantityLine ? '\n' + quantityLine : '')
         + (decision.sendImage && !imageUrl
           ? '\n' + say('Picha yake haipatikani kwa sasa.', 'The product photo is currently unavailable.') : '')
         + systemAdvice(product, say)

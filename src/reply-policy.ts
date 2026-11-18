@@ -1,6 +1,11 @@
 import type { Conversation } from './store.js';
 
-const business = /\b(?:wotefy|lubfy|mfumo|billing|router|wifi|wi-fi|access point|hotspot|internet|mikrotik|microtick|microtik|omada|mesh(?:ing)?|installation|ufungaji|katalogi|intaneti|mtandao|kifaa|kusajiliwa|stock|bei|price|catalog|subscription|vifurushi|kifurushi|packages?|kujiunga|kusajili|signup|sign up|register|portal|ssid|voucher|vifaa|sku|ofisi(?:ni)?|opening hours|malipo|nimelipa|kulipia|paid|payment|order|mhudumu|cudy|ruijie|reyee|comfast)\b|\b(?:eap|rap|wr|rb|ax|ap)[ -]?\d{2,5}\b/i;
+const business = /\b(?:wotefy|lubfy|mfumo|billing|router|wifi|wi-fi|access point|hotspot|internet|intaneti|wireless|kuunganisha|umbali|kilomit\w*|mikrotik|microtick|microtik|omada|mesh(?:ing)?|installation|ufungaji|katalogi|mtandao|kifaa|kusajiliwa|stock|bei|price|catalog|subscription|vifurushi|kifurushi|packages?|kujiunga|kusajili|signup|sign up|register|portal|ssid|voucher|vifaa|sku|ofisi(?:ni)?|opening hours|malipo|nimelipa|kulipia|paid|payment|order|mhudumu|cudy|ruijie|reyee|comfast)\b|\b(?:eap|rap|wr|rb|ax|ap)[ -]?\d{2,5}\b/i;
+/**
+ * "Mko wapi?" is a customer asking where the shop is, and it used to be judged
+ * as idle chatter because it names no product.
+ */
+const placeAsk = /\b(?:mko|mupo|upo|uko|mnapatikana|unapatikana|mnaishi|unaishi|ofisi|duka|address|anwani|location|mahali)\b[^.?!]*\b(?:wapi|lini)\b|\b(?:ofisi\w*|duka)\s*(?:yenu|yako|zenu|zako|kwenu|kwako)\b/i;
 const unrelated = /\b(?:game|gme|mpira|football|birthday|familia|family|chakula|dinner|lunch)\b/i;
 const detail = /\b(?:ap|eap|eneo|mita|meters?|metres?|km|kilomet\w*|wazi|nje|ndani|ukuta|kuta|miti|indoor|outdoor|users?|watumiaji|wateja|bajeti|budget|modeli?|models?|zingine|nyingine|nyengine|hii|hiyo|hiki|ile|kwenu|mnayo|ileile|same|picha|email|imeli|kifaa|navifaa|tatizo|shida|haifunguki|nje|ukumbini|jengo|majengo|shuleni|subscription|month|mwezi)\b/i;
 const bareLocation = /^(?:nipo|niko|tupo|i(?:’m|'m| am) in)\s+[\p{L} -]{2,48}[.! ]*$/iu;
@@ -23,6 +28,7 @@ export function replyEligible(text: string, memory: Conversation['memory'], hist
   }
   // An address is never idle chatter; it is someone asking to be helped.
   if (emailOnly.test(value)) return true;
+  if (placeAsk.test(value)) return true;
   if (business.test(value) || trouble.test(value)
     || /\b(nataka mtu|need a human|talk to an agent|ready to pay|namba ya kulipia)\b/i.test(value)) return true;
   if (photo && /\b(?:kwenu|mnayo|mnauza|inapatikana|stock|sell|available|cost|price)\b/i.test(value)) return true;
@@ -34,6 +40,12 @@ export function replyEligible(text: string, memory: Conversation['memory'], hist
       (memory.support.waitingFor === 'problem' && /\b(?:ina|hai|ime|ume|error|failed|screen|ukurasa|login|offline)/i.test(value));
   }
   const active = !!(memory.product || memory.productOptions?.length || memory.plan || memory.planning || memory.onboarding || memory.requirements || business.test(lastReply));
-  if (active && (detail.test(value) || /^(?:ndio|ndiyo|yes|hapo|ya (?:kwanza|pili)|\d{1,4})[.! ]*$/i.test(value) || (photo && /image|photo|picha/i.test(value)))) return true;
+  // After a quote, "na 610 je?" is a follow-up on a model, not idle chatter. A
+  // bare number is only read this way in a short message, so a long sentence
+  // that happens to contain a figure is still judged on its words.
+  const shortModelFollowUp = value.split(/\s+/).length <= 6 && /\b\d{2,4}\b/.test(value);
+  if (active && (detail.test(value) || shortModelFollowUp
+      || /^(?:ndio|ndiyo|yes|hapo|ya (?:kwanza|pili)|\d{1,4})[.! ]*$/i.test(value)
+      || (photo && /image|photo|picha/i.test(value)))) return true;
   return /\b(?:how much|naomba msaada|nahitaji msaada|need help with my|namba ya mauzo|niko tayari kulipa|i.ll take it|naichukua)\b/i.test(value);
 }

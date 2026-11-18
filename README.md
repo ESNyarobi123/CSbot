@@ -215,7 +215,7 @@ Picha ya mteja huhifadhiwa kwenye table ya `media`. Arifa ya malipo huambatanish
 
 `memory.profile` huhifadhi maelezo mteja aliyosema wazi kuhusu vifaa anavyotumia, bajeti na matumizi ya mtandao. Maelezo hayo yanaendelea kutumika kwenye oda inayofuata ya chat hiyo. CSbot inasasisha maelezo ya profile mteja anapotoa taarifa mpya inayotambulika.
 
-CSbot husoma ujumbe kwanza kabla ya kujibu. Mteja mpya anayesalimu hupata karibu moja inayomuuliza anahitaji nini, kisha CSbot huendelea kulingana na jibu lake — kifaa, usajili au msaada. Salamu zinazorudiwa, eneo lililotumwa peke yake na mada zisizohusiana na biashara huachwa kwenye inbox bila jibu, ili mhudumu azione. **Customer brief** huonyesha hali hiyo na taarifa za mazungumzo. Kwa chaguo-msingi, chat ya **Take over** husubiri mhudumu abonyeze **Enable bot**. Weka `HANDOFF_IDLE_MINUTES` zaidi ya sifuri kuruhusu kurudi baada ya muda huo kwa ombi la biashara.
+CSbot husoma ujumbe kwanza kabla ya kujibu. Mteja mpya anayesalimu hupata karibu moja inayomuuliza anahitaji nini, kisha CSbot huendelea kulingana na jibu lake — kifaa, usajili au msaada. Salamu zinazorudiwa, eneo lililotumwa peke yake na mada zisizohusiana na biashara huachwa kwenye inbox bila jibu, ili mhudumu azione. **Customer brief** huonyesha hali hiyo na taarifa za mazungumzo. Chat ya **Take over** inabaki kwa mhudumu, lakini baada ya dakika `HANDOFF_IDLE_MINUTES` (default 180, yaani saa tatu) bila mhudumu kuandika, CSbot inarudi na kuendelea kumjibu mteja. Weka `0` kuzima kurudi huku kabisa.
 
 ## Majaribio
 
@@ -241,6 +241,8 @@ cd /opt/csbot
 `deploy.sh` hufanya `git pull`, kujenga image ya `csbot-backend:local`, kuendesha migrations kisha kuwasha upya `api`, `worker` na `whatsapp-gateway`. Volume ya PostgreSQL haiguzwi, kwa hiyo chats na namba iliyounganishwa zinaendelea kuwepo.
 
 - `.env` ya production iko `/opt/csbot/.env` (haipo kwenye git). Token za dashboard: `grep '^ADMIN_API_TOKEN=' /opt/csbot/.env`.
+- **Backup:** `./scripts/backup.sh` hutoa `pg_dump` kamili kwenye `/opt/csbot-backups` na kuiacha siku 14. Cron ya kila siku: `17 1 * * * /opt/csbot/scripts/backup.sh >> /var/log/csbot-backup.log 2>&1`. Nakili folda hiyo kwenye mashine nyingine — backup iliyo kwenye disk ile ile haisaidii kama server ikipotea. `SESSION_KEY` inahitajika pamoja na dump ili namba iliyounganishwa ifunguke baada ya kurestore.
+- **Usafi wa disk:** `./scripts/maintenance.sh` hufuta build cache na images zisizotumika zaidi ya siku 7. Cron ya kila wiki: `47 3 * * 0 /opt/csbot/scripts/maintenance.sh >> /var/log/csbot-cleanup.log 2>&1`.
 - `compose.prod.yaml` huweka memory limits kwa sababu VPS ina RAM ndogo na inatumiwa pia na CSolution.
 - Catalog: `POS_BASE_URL=https://csolution.yunigo.online/api/csbot/` na `POS_API_TOKEN` ni `CSBOT_CATALOG_TOKEN` ile ile ya `/opt/csolution/.env`.
 - Picha za bidhaa zinapitia `/v1/catalog/:id/image`; CSbot huzihifadhi kwa cache ya 16 MB na kuzirudisha kama `cspos-asset:` kwa WhatsApp.
