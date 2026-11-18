@@ -52,6 +52,35 @@ test('the monthly system fee overrides the hardware quote and preserves the Mikr
   assert.doesNotMatch(two.body, /SKU|unaulizia bidhaa/i);
 });
 
+test('a bare problem word is the reason the customer came, so it is answered', async () => {
+  for (const text of ['Tatizo', 'Shida', 'Problem', 'Portal haifunguki']) {
+    const reply = await say(text);
+    assert.notEqual(reply.body, '', text);
+    // A support opener is met with a support question, never a price list.
+    assert.match(reply.body, /shida|tatizo|mfumo|WoteFy|LubFy/i, text);
+    assert.doesNotMatch(reply.body, /SKU|TZS|bidhaa gani/i, text);
+  }
+  // A bare address is a request for help, never idle chatter.
+  assert.notEqual((await say('suachiti@gmail.com')).body, '');
+});
+
+test('a bare system name asks whether they want to join or need help', async () => {
+  const reply = await say('Wotefy');
+  assert.match(reply.body, /kujiunga/);
+  assert.match(reply.body, /tatizo/);
+  // The same word while a problem is being collected is the answer to "which system?", so
+  // it must not restart the conversation.
+  const intake = await say('Wotefy', { support: { waitingFor: 'system' } });
+  assert.doesNotMatch(intake.body, /Unataka kujiunga/);
+});
+
+test('a monthly fee typed as "mwez" is a plan question, not a product search', async () => {
+  const reply = await say('Sasa vp bei za mfumo kwa mwez natumia microtick na nina takiwa kutumia mfumo upi');
+  assert.equal(reply.memory.plan?.kind, 'subscription');
+  assert.equal(reply.memory.system, 'lubfy');
+  assert.doesNotMatch(reply.body, /SKU|unaulizia bidhaa/i);
+});
+
 test('onboarding asks which equipment is in use and never requests a support email', async () => {
   const first = await say('Nataka kujiunga');
   assert.equal(first.memory.onboarding, true);

@@ -1009,7 +1009,9 @@ async function answer(
   // instead of the bot guessing or selling them a device. A clear purchase
   // question abandons an intake the customer walked away from.
   const awaitingSupport = Boolean(memory.support);
-  const monthly = /\b(?:mwezi|monthly|per month|a month)\b/i.test(newest) && /\b(?:mfumo|system|billing|nalipia|nalipa|ada|bei|subscription|fee)\b/i.test(newest);
+  // "mwez" is how the word is typed on a phone; without it a monthly price
+  // question fell through to a product search and asked for a SKU.
+  const monthly = /\b(?:mwez\w*|monthly|per month|a month|kwa mwezi)\b/i.test(newest) && /\b(?:mfumo|system|billing|nalipia|nalipa|ada|bei|subscription|fee|malipo)\b/i.test(newest);
   const signup = /\b(?:kujiunga|kusajili|register|sign up|signup)\b/i.test(newest);
   const hardwareSystem = /\b(?:micro(?:tick|tik)|mikrotik|routeros)\b/i.test(newest) ? 'lubfy' : /\b(?:omada|eap)\b/i.test(newest) ? 'wotefy' : undefined;
   if (monthly) {
@@ -1031,6 +1033,15 @@ async function answer(
   }
   const shoppingNow = (purchaseWords.test(newest) || (deviceQuery(newest) && /\b(?:nahitaji|nataka|need|buy)\b/i.test(newest))) && !supportQuestion(newest)
     && !emailOf(newest) && !systemFrom(newest);
+  // A bare system name is a question about why the person came. "Wotefy" alone
+  // used to be read as an equipment enquiry, so a customer with a broken portal
+  // was sold an access point instead of being listened to.
+  const bareSystem = /^(?:wote\s?fy|wotefy|lub\s?fy|lubfy)[.!? ]*$/i.test(newest.trim());
+  if (!onlyDetect && bareSystem && !Boolean(memory.support) && !monthly && !memory.product) {
+    const label = systemLabel(systemFrom(newest) ?? memory.system ?? '');
+    return result(say(`Karibu kwa ${label}. Unataka kujiunga na ${label}, au unaitumia tayari na kuna tatizo unahitaji msaada nalo?`,
+      `Welcome to ${label}. Do you want to sign up for ${label}, or are you already using it and need help with a problem?`));
+  }
   if (shoppingNow && memory.support) delete memory.support;
   const supportActive = !monthly && !shoppingNow && !['human', 'payment_reported', 'ready_to_pay', 'plan'].includes(decision.intent)
     && (supportQuestion(newest) || awaitingSupport);
@@ -1137,8 +1148,42 @@ async function answer(
   const cableRequest = cableWords.test(newest);
   const planning = !monthly && !cableRequest && !photo && !['plan', 'ready_to_pay'].includes(decision.intent);
   if (planning && distance >= 1000 && (siteDistance(newest) || refersToSite || /majengo|point.to.point|hotspot/i.test(newest))) {
+    // The same layout question twice is what made this chat feel broken. Once the
+    // person asks which model, the answer is models — with the count the distance
+    // implies and the questions still open about the site.
+    const askedForModel = /\b(?:eap|ap|modeli?|model)\s+gani\b|\bwhich (?:ap|model)\b|\bnitumie\b/i.test(newest);
+    const revisit = memory.planning === 'coverage' && memory.requirements?.coverageMeters === distance;
     memory.planning = 'coverage';
     memory.requirements = { ...memory.requirements, coverageMeters: distance };
+    if (askedForModel || revisit) {
+      const devices = (await catalog('access point', 60).catch(() => ({ items: [] }))).items
+        .filter(item => soldAsDevice(item as { type?: string; unit?: string; category?: string | null }));
+      const sheets = await specsForMany(devices, client).catch(() => new Map());
+      const outdoor = devices.map(item => ({ item, sheet: sheetFor(sheets, item) }))
+        .filter(({ item, sheet }) => sheet?.deployment === 'outdoor' || sheet?.deployment === 'both'
+          || /outdoor|nje/i.test(`${item.name} ${item.category ?? ''} ${sheet?.deployment ?? ''}`))
+        .sort((a, b) => (b.sheet?.coverage_m ?? 0) - (a.sheet?.coverage_m ?? 0)).slice(0, 4);
+      if (outdoor.length) {
+        const options = outdoor.map(({ item, sheet }) => {
+          const option = optionOf(item);
+          if (sheet?.coverage_m) option.coverage = sheet.coverage_m;
+          return option;
+        });
+        memory.productOptions = options;
+        memory.optionQuery = 'access point';
+        const best = outdoor[0].sheet?.coverage_m;
+        const units = best ? Math.ceil(distance / best) : undefined;
+        const estimate = units && units > 1 && best
+          ? say(`\n\nKila AP inatajwa kufikia mita ${best}. Kwa mita ${distance} utahitaji zaidi ya moja — takriban ${units} kwa mfululizo. Idadi halisi inategemea eneo na vizuizi.`,
+            `\n\nEach AP records up to ${best} m. Covering ${distance} m needs more than one — roughly ${units} in a chain. The exact count depends on the site and what is in the way.`)
+          : '';
+        return result(say(`Kwa mita ${distance}, hizi ni AP za nje zilizorekodiwa kwenye katalogi:`,
+          `For ${distance} m, these are the outdoor APs recorded in the catalog:`)
+          + '\n' + options.map(optionLine).join('\n') + estimate
+          + say('\n\nJe, ni majengo mawili yanayohitaji kiungo, au wateja watazunguka eneo lote? Na kuna umeme mahali pa kuweka AP?',
+            '\n\nIs this a link between two buildings, or customers moving around the whole area? And is there power where the APs would go?'));
+      }
+    }
     const link = /majengo mawili|two buildings|point.to.point/i.test(newest);
     const area = /hotspot|eneo lote|simu za wateja/i.test(newest);
     const next = link ? say('Je, ukiwa juu ya jengo la kwanza unaweza kuona la pili bila kizuizi?', 'Is there clear line of sight between the two buildings?')
@@ -1279,9 +1324,10 @@ async function answer(
         { stage: 'quoted' });
     } catch {
       log.warn('Current plan prices unavailable');
-      // Same as the product path: a slow upstream must not silence the bot for this chat.
-      return result(say('Kuna shida ya muda kufikia bei za packages. Nitajaribu tena — tafadhali tuma ujumbe mmoja.',
-        'The plan prices are slow to load right now. Please send one more message and I will try again.'));
+      // Asking the customer to resend loses them. Say what happened, commit to a
+      // follow-up, and keep the chat with the bot.
+      return result(say('Bei za packages hazipatikani kwa sasa kwenye mfumo. Nimeona unataka bei ya mfumo kwa mwezi — nitakagua tena, na timu yetu inaweza kukuthibitishia ikiwa unahitaji haraka.',
+        'The plan prices are not loading right now. I have noted that you want the monthly system price — I will check again, and our team can confirm it if you need it quickly.'));
     }
   }
   if (decision.intent === 'product') {

@@ -79,6 +79,8 @@ services:
       POS_API_TOKEN: ${POS_API_TOKEN:-}
       POS_BRANCH_ID: ${POS_BRANCH_ID:-}
       CSOLUTION_POS_DB_URL: ${CSOLUTION_POS_DB_URL:-}
+      WOTEFY_PLANS_URL: ${WOTEFY_PLANS_URL-https://ssdomada.site/api/v1/plans}
+      LUBFY_PLANS_URL: ${LUBFY_PLANS_URL-https://lubfy.online/v1/public/plans}
       PRODUCT_IMAGE_HOSTS: ${PRODUCT_IMAGE_HOSTS:-}
     healthcheck:
       test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
