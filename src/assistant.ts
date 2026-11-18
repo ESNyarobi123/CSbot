@@ -42,7 +42,7 @@ export interface Outcome {
   memory: Conversation['memory'];
 }
 
-const ai = config.GEMINI_API_KEY ? new GoogleGenAI({
+export const ai = config.GEMINI_API_KEY ? new GoogleGenAI({
   apiKey: config.GEMINI_API_KEY,
   // The Gemini API rejects a manual deadline under 10s (400 INVALID_ARGUMENT),
   // so a shorter client timeout silently disabled the whole AI path and every
@@ -432,15 +432,23 @@ async function bestMatch(query: string) {
 /** "EAP 605" is not stocked: say so and list what is close, never a stranger. */
 async function missingProduct(
   query: string, newest: string, memory: Conversation['memory'],
-  say: (sw: string, en: string) => string,
+  say: (sw: string, en: string) => string, voice = false,
 ) {
   const nearby = await nearbyModels(query);
-  return say('Sijaipata bidhaa hiyo kwenye POS.', 'I couldn’t find that item in the POS.')
+  // A spoken model name is often misheard, so the wording must not read like a
+  // dead end: the customer is asked to confirm or type it, not told "no".
+  const opening = voice
+    ? say('Sikuelewa jina la kifaa vizuri kwenye sauti.', 'I may have misheard the device name in your voice note.')
+    : say('Sijaipata bidhaa hiyo kwenye POS.', 'I couldn’t find that item in the POS.');
+  return opening
     + (nearby.length
       ? '\n' + say('Zilizopo karibu na hiyo:', 'Closest items we stock:') + '\n'
         + nearby.map(name => `• ${name}`).join('\n')
-      : '\n' + say('Unaweza kutuma model au SKU iliyo kwenye kifaa?',
-        'Could you send the exact model or SKU from the device?'))
+        + (voice
+          ? '\n' + say('Andika model unayotaka ili nihakikishe bei.', 'Type the model you want so I confirm the price.')
+          : '')
+      : '\n' + say('Unaweza kuandika model au SKU iliyo kwenye kifaa?',
+        'Could you type the exact model or SKU from the device?'))
     + await planAside(newest, memory, say);
 }
 
@@ -980,9 +988,9 @@ export async function customerTurn(...args: Parameters<typeof respond>): Promise
 
 export async function respond(
   client: PoolClient, conversation: Conversation, newest: string, history: ChatLine[], onlyDetect = false,
-  photo?: { base64: string; mimetype: string },
+  photo?: { base64: string; mimetype: string }, voice = false,
 ): Promise<Outcome> {
-  const outcome = await answer(client, conversation, newest, history, onlyDetect, photo);
+  const outcome = await answer(client, conversation, newest, history, onlyDetect, photo, voice);
   // Site facts are kept per WhatsApp number, so the next chat starts where this
   // one left off. Failure to store must never cost the customer a reply.
   if (!onlyDetect && conversation.id !== 'playground' && outcome.memory?.facts) {
@@ -997,7 +1005,7 @@ export async function respond(
 
 async function answer(
   client: PoolClient, conversation: Conversation, newest: string, history: ChatLine[], onlyDetect = false,
-  photo?: { base64: string; mimetype: string },
+  photo?: { base64: string; mimetype: string }, voice = false,
 ): Promise<Outcome> {
   const stored = onlyDetect || conversation.id === 'playground' ? {} : await loadCustomerMemory(client, conversation.account_id, conversation.customer_jid);
   const memory = {
@@ -1055,7 +1063,8 @@ async function answer(
   // used to be read as an equipment enquiry, so a customer with a broken portal
   // was sold an access point instead of being listened to.
   const bareSystem = /^(?:wote\s?fy|wotefy|lub\s?fy|lubfy)[.!? ]*$/i.test(newest.trim());
-  if (!onlyDetect && bareSystem && !Boolean(memory.support) && !monthly && !memory.product) {
+  if (!onlyDetect && bareSystem && !Boolean(memory.support) && !monthly && !memory.product
+      && !memory.plan && !memory.lastQuote && !memory.awaitingService) {
     const label = systemLabel(systemFrom(newest) ?? memory.system ?? '');
     return result(say(`Karibu kwa ${label}. Unataka kujiunga na ${label}, au unaitumia tayari na kuna tatizo unahitaji msaada nalo?`,
       `Welcome to ${label}. Do you want to sign up for ${label}, or are you already using it and need help with a problem?`));
@@ -1418,7 +1427,7 @@ async function answer(
         }
         // "EAP 605" is not stocked. Suggesting the nearest models is more useful
         // than asking the customer to retype a model that does not exist.
-        return result(await missingProduct(decision.query ?? '', newest, memory, say));
+        return result(await missingProduct(decision.query ?? '', newest, memory, say, voice));
       }
       const exact = items.filter(item => [item.name, 'sku' in item ? item.sku : undefined].some(value =>
         typeof value === 'string' && value.toLowerCase() === decision.query.toLowerCase()));
@@ -1443,7 +1452,7 @@ async function answer(
       })).sort((a, b) => b.score - a.score);
       // Every candidate contradicted the model number, so nothing here is the
       // item the customer means.
-      if (!scored.length) return result(await missingProduct(decision.query ?? '', newest, memory, say));
+      if (!scored.length) return result(await missingProduct(decision.query ?? '', newest, memory, say, voice));
       const best = scored[0]?.score > 0 && scored[0].score > (scored[1]?.score ?? 0) ? scored[0].item : undefined;
       if (items.length > 1 && exact.length !== 1 && !best) {
         const meters = coverageMeters(newest);

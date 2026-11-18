@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
-import { customerTurn as respond } from './assistant.js';
+import { ai, customerTurn as respond } from './assistant.js';
 import { replyEligible } from './reply-policy.js';
 import { config } from './config.js';
 import { shop } from './csolution-pos.js';
@@ -9,6 +9,7 @@ import { db, log, row, transaction } from './db.js';
 import { beat } from './heartbeat.js';
 import { advanceSale, currentSale, withoutQuote } from './sales.js';
 import { alertAdmins, enqueue, recipient, setMode, type Conversation } from './store.js';
+import { audioAllowed, pendingVoice, transcribe } from './voice.js';
 
 interface Presence { accountId: string; jid: string }
 
@@ -27,6 +28,21 @@ async function endPresence(presence: Presence | undefined) {
   if (!presence) return;
   await db.query("INSERT INTO gateway_signals (account_id,jid,kind) VALUES ($1,$2,'paused')",
     [presence.accountId, presence.jid]).catch(() => undefined);
+}
+
+/**
+ * Read the words out of a stored voice note. Returns undefined when the file is
+ * not audio, when it is too large, or when every transcription attempt failed.
+ */
+async function heardAudio(client: Parameters<typeof respond>[0], mediaId: string) {
+  try {
+    const stored = await row<{ bytes: Buffer; mimetype: string }>(client,
+      'SELECT bytes,mimetype FROM media WHERE id=$1', [mediaId]);
+    if (!stored?.bytes?.length || !audioAllowed(stored.mimetype, stored.bytes.length)) return undefined;
+    return await transcribe(ai, stored);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -66,11 +82,28 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       const account = await row(client, 'SELECT enabled FROM accounts WHERE id=$1', [conversation.account_id]);
       if (!account?.enabled) return;
       const pending = (await client.query<{ id: string; body: string; occurred_at: Date; auto_reply: boolean;
-        media_id: string | null }>(
-        `SELECT id,body,occurred_at,auto_reply,media_id
+        media_id: string | null; kind: string }>(
+        `SELECT id,body,occurred_at,auto_reply,media_id,kind
         FROM messages WHERE conversation_id=$1 AND processing='pending' ORDER BY id LIMIT 20`, [conversationId])).rows;
       if (pending[0]?.id !== firstMessage) return;
       const ids = pending.map(message => message.id);
+      // A voice note is the customer's own words, so the words are recovered
+      // before anything is classified. A customer who cannot type should not be
+      // asked to type their question again.
+      const hasVoice = pending.some(message => pendingVoice(message.body) && message.media_id);
+      // Show typing while the note is being read: listening takes a few seconds,
+      // and silence reads as "the bot is broken".
+      if (hasVoice && conversation.mode === 'bot') presence = beginPresence(conversationId).catch(() => undefined);
+      let voiceUnread = false;
+      for (const message of pending) {
+        if (!pendingVoice(message.body) || !message.media_id) continue;
+        const heard = await heardAudio(client, message.media_id);
+        if (heard?.text) {
+          message.body = heard.text;
+          await client.query('UPDATE messages SET body=$2 WHERE id=$1', [message.id, heard.text]);
+        } else voiceUnread = true;
+      }
+      const spoken = pending.some(message => !pendingVoice(message.body) && message.kind === 'audio');
       const history = (await client.query<{ direction: 'inbound' | 'outbound'; body: string }>(`SELECT direction,body
         FROM messages WHERE conversation_id=$1 AND processing='done'
         AND occurred_at <= $2 ORDER BY occurred_at DESC,id DESC LIMIT 16`,
@@ -98,8 +131,21 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         }
       }
       const canReply = mode === 'bot' && pending.some(message => message.auto_reply);
+      if (voiceUnread && canReply) {
+        // Nothing read the words. Dropping the message would be the worst
+        // outcome for a customer who spoke instead of typing, so a person gets
+        // the chat and the team gets the alert.
+        const memory = { ...conversation.memory, recentTopic: 'Mteja ametuma voice note ambayo haikusomeka' };
+        await client.query("UPDATE messages SET processing='done' WHERE id=ANY($1::bigint[])", [ids]);
+        await client.query('UPDATE conversations SET memory=$2,updated_at=now() WHERE id=$1',
+          [conversationId, memory]);
+        await setMode(client, conversationId, 'human');
+        await alertAdmins(client, { ...conversation, memory }, 'Voice note haijasikika');
+        log.warn({ conversation: conversationId }, 'Voice note could not be transcribed; handed to a person');
+        return;
+      }
       // Show typing and decode images only when this batch is eligible for a reply.
-      if (eligible && canReply) presence = beginPresence(conversationId).catch(() => undefined);
+      if (eligible && canReply && !presence) presence = beginPresence(conversationId).catch(() => undefined);
       const imageIds = pending.filter(message => message.auto_reply && message.media_id).map(message => message.id);
       if (eligible && canReply && !imageIds.length && /\b(?:hii|hiki|hiyo|this|that)\b/i.test(newest)) {
         // Forwarded product photos and their question can arrive in different batches.
@@ -112,7 +158,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       }
       const photo = eligible && canReply && imageIds.length === 1 ? await newestPhoto(client, imageIds) : undefined;
       const outcome = await respond(client, conversation, newest,
-        history.map(line => ({ ...line, body: line.body.slice(0, 700) })), !canReply, photo);
+        history.map(line => ({ ...line, body: line.body.slice(0, 700) })), !canReply, photo, spoken);
       await client.query('UPDATE conversations SET memory=$2,updated_at=now() WHERE id=$1', [conversationId, outcome.memory]);
       if (canReply && outcome.handoff) await setMode(client, conversationId, 'human');
       if (canReply && outcome.body) await enqueue(client, {

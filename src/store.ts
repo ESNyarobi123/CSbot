@@ -60,6 +60,8 @@ export interface Incoming {
   accountId: string;
   providerId: string;
   image?: { mimetype: string; bytes: Buffer };
+  /** A WhatsApp voice note, stored so the worker can read the words out of it. */
+  audio?: { mimetype: string; bytes: Buffer };
   jid: string;
   alternateJid?: string;
   name?: string;
@@ -111,13 +113,15 @@ export async function ingest(message: Incoming) {
     [conversation.id, message.providerId, fromMe ? 'outbound' : 'inbound', fromMe ? 'admin' : 'customer',
       message.body, historical ? `history:${message.kind}` : message.kind, message.occurredAt,
       historical || fromMe ? 'done' : 'pending', conversation.mode === 'bot']);
-    if (message.image && !fromMe && !historical) {
+    if ((message.image || message.audio) && !fromMe && !historical) {
       // Make the attachment visible to the worker in the same commit as the pending turn.
-      const { bytes, mimetype } = message.image;
+      const attachment = message.image ?? message.audio!;
+      const kind = message.image ? 'image' : 'audio';
+      const { bytes, mimetype } = attachment;
       const media = await row(client, `INSERT INTO media
         (account_id,conversation_id,provider_id,kind,mimetype,bytes,size)
-        VALUES ($1,$2,$3,'image',$4,$5,$6) ON CONFLICT DO NOTHING RETURNING id`,
-      [accountId, conversation.id, message.providerId, mimetype, bytes, bytes.length]);
+        VALUES ($1,$2,$3,$7,$4,$5,$6) ON CONFLICT DO NOTHING RETURNING id`,
+      [accountId, conversation.id, message.providerId, mimetype, bytes, bytes.length, kind]);
       if (media) await client.query(`UPDATE messages SET media_id=$3
         WHERE conversation_id=$1 AND provider_id=$2 AND direction='inbound'`,
       [conversation.id, message.providerId, media.id]);

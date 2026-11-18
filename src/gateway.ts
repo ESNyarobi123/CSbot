@@ -7,6 +7,7 @@ import { db, log, row, transaction } from './db.js';
 import { beat } from './heartbeat.js';
 import { isIgnoredJid, pairingNumber } from './jid.js';
 import { downloadImage, maxImageBytes } from './media.js';
+import { audioType, maxAudioBytes } from './voice.js';
 import { blockedLinkStates, codeRequestMs, qrLifetimeMs } from './pairing.js';
 import { seal } from './secrets.js';
 import { ingest, phoneOf } from './store.js';
@@ -113,8 +114,12 @@ class Session {
     const timestamp = Number(message.messageTimestamp ?? 0);
     const image = !historical && !message.key.fromMe && content.imageMessage
       ? await this.readImage(content.imageMessage) : undefined;
+    // A voice note carries the question itself, so its bytes are kept for the worker.
+    const voice = !historical && !message.key.fromMe && content.audioMessage
+      ? await this.readMedia(content.audioMessage, 'audio') : undefined;
     const conversationId = await ingest({
       image,
+      audio: voice,
       accountId: this.account.id, providerId: id, jid,
       alternateJid: alt && (isPnUser(alt) || isLidUser(alt)) ? jidNormalizedUser(alt) : undefined,
       name: message.key.fromMe ? undefined : message.pushName?.slice(0, 100) ?? undefined,
@@ -129,20 +134,40 @@ class Session {
 
   private async readImage(image: proto.Message.IImageMessage) {
     if (!image?.mimetype || !/^image\/(?:jpeg|png|webp)$/.test(image.mimetype)) return;
-    if (Number(image.fileLength ?? 0) > maxImageBytes) return;
+    return this.readMedia(image, 'image');
+  }
+
+  /**
+   * Download an attachment under a size cap. A voice note is what a customer
+   * actually said, so it is fetched the same way a photo is.
+   */
+  private async readMedia(
+    attachment: proto.Message.IImageMessage | proto.Message.IAudioMessage, kind: 'image' | 'audio',
+  ) {
+    const { mimetype } = attachment;
+    const stated = Number(attachment.fileLength ?? 0);
+    if (!mimetype) return;
+    if (kind === 'image' && stated > maxImageBytes) return;
+    if (kind === 'audio' && stated > maxAudioBytes) return;
     try {
-      const stream = await downloadContentFromMessage(image, 'image', { options: { signal: AbortSignal.timeout(6000) } });
+      const stream = await downloadContentFromMessage(attachment, kind,
+        { options: { signal: AbortSignal.timeout(8000) } });
       const chunks: Buffer[] = [];
+      const limit = kind === 'image' ? maxImageBytes : maxAudioBytes;
       let size = 0;
       for await (const chunk of stream) {
         size += Buffer.byteLength(chunk);
-        if (size > maxImageBytes) return;
+        if (size > limit) {
+          await stream.destroy?.();
+          return;
+        }
         chunks.push(Buffer.from(chunk));
       }
       if (!chunks.length) return;
-      return { bytes: Buffer.concat(chunks), mimetype: image.mimetype };
+      const bytes = Buffer.concat(chunks);
+      return { bytes, mimetype: kind === 'image' ? mimetype : audioType(mimetype) };
     } catch (error) {
-      log.warn({ account: this.account.id, code: (error as Error).name }, 'Inbound media could not be stored');
+      log.warn({ account: this.account.id, kind, code: (error as Error).name }, 'Inbound media could not be stored');
     }
   }
 

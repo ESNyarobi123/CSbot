@@ -152,6 +152,23 @@ assert.match(outbound(otherHistory)[0].body, /Integration Test LubFy/);
 assert.equal((await api(otherPath)).stage, 'quoted');
 console.log('Passed: account isolation, debounce, deduplication, product photo, fresh pricing, plan clarification, sales alerts, payment confirmation, repeat sales, saved customer context, stale payment protection and idempotent admin actions.');
 
+// A voice note the stack cannot read (this compose file runs without a Gemini
+// key) must reach a person, not vanish. This is the failure the feature exists
+// to prevent: a customer who speaks instead of typing is still a customer.
+const voiceChat = await api(`/v1/accounts/${account}/simulate`, { method: 'POST', status: 202,
+  data: { phone: '+255700100012', messageId: 'voice-1',
+    audioBase64: Buffer.from('OggS unreadable voice note').toString('base64') } });
+const voicePath = '/v1/conversations/' + voiceChat.conversationId;
+const voiceState = await waitFor(voicePath, value => value.mode === 'human');
+assert.match(voiceState.memory.recentTopic ?? '', /voice note/i);
+const voiceMessages = await api(voicePath + '/messages');
+const voiceInbound = voiceMessages.filter(message => message.direction === 'inbound');
+assert.equal(voiceInbound.length, 1);
+assert.equal(voiceInbound[0].body, '[WhatsApp audio]');
+await api(`/v1/accounts/${account}/simulate`, { method: 'POST', status: 400,
+  data: { phone: '+255700100012', messageId: 'voice-bad', audioBase64: 'AAAA', audioMime: 'image/png' } });
+console.log('Passed: an unreadable voice note hands the chat to a person instead of being dropped.');
+
 const sharp = (await import('sharp')).default;
 const label = await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="640" height="180"><rect width="640" height="180" fill="white"/><text x="36" y="118" font-family="sans-serif" font-size="84" fill="black">WR3000</text></svg>')).png().toBuffer();
 const photoChat = await api(`/v1/accounts/${account}/simulate`, { method: 'POST', status: 202,

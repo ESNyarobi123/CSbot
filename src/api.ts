@@ -21,6 +21,7 @@ import { advanceSale, currentSale, openSale, saleByRequest, salesHistory, withou
 import { seal, unseal } from './secrets.js';
 import { listSpecs, saveSpec } from './specs.js';
 import { enqueue, ingest, recipient, setMode, type Conversation } from './store.js';
+import { audioAllowed, audioType } from './voice.js';
 
 function read<T extends z.ZodType>(schema: T, input: unknown): z.infer<T> {
   const result = schema.safeParse(input);
@@ -688,15 +689,28 @@ class AdminController {
     const input = read(z.object({ phone, name: z.string().max(100).optional(),
       messageId: z.string().min(1).max(100), text: z.string().trim().max(3500).default(''),
       imageBase64: z.string().max(12_000_000).regex(/^[A-Za-z0-9+/]+={0,2}$/).optional(),
-    }).refine(value => Boolean(value.text) || Boolean(value.imageBase64), 'Provide text or an image'), body);
+      audioBase64: z.string().max(24_000_000).regex(/^[A-Za-z0-9+/]+={0,2}$/).optional(),
+      audioMime: z.string().max(80).optional(),
+    }).refine(value => Boolean(value.text) || Boolean(value.imageBase64) || Boolean(value.audioBase64),
+      'Provide text, an image or a voice note'), body);
     const bytes = input.imageBase64 ? Buffer.from(input.imageBase64, 'base64') : undefined;
     const mimetype = bytes ? imageMimetype(bytes) : undefined;
     if (bytes && (!mimetype || bytes.length > maxImageBytes)) {
       throw new BadRequestException('Simulated images must be PNG, JPEG or WebP and at most 8 MB');
     }
+    // The studio sends a voice note through the same path WhatsApp uses, so the
+    // transcription and the fallback can be tested without a phone.
+    const voice = input.audioBase64 ? Buffer.from(input.audioBase64, 'base64') : undefined;
+    const voiceMime = audioType(input.audioMime ?? 'audio/ogg');
+    if (voice && !audioAllowed(voiceMime, voice.length)) {
+      throw new BadRequestException('Simulated voice notes must be OGG/Opus, MP3, MP4 or WAV and at most 16 MB');
+    }
     const conversationId = await ingest({ accountId: id, providerId: input.messageId, jid: input.phone + '@s.whatsapp.net',
-      name: input.name, body: input.text || (bytes ? '[WhatsApp image]' : ''), kind: bytes ? 'image' : 'text',
-      occurredAt: new Date(), image: bytes && mimetype ? { bytes, mimetype } : undefined });
+      name: input.name,
+      body: input.text || (voice ? '[WhatsApp audio]' : bytes ? '[WhatsApp image]' : ''),
+      kind: voice ? 'audio' : bytes ? 'image' : 'text',
+      occurredAt: new Date(), image: bytes && mimetype ? { bytes, mimetype } : undefined,
+      audio: voice ? { bytes: voice, mimetype: voiceMime } : undefined });
     return { conversationId: conversationId ?? null };
   }
 }
