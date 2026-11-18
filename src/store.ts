@@ -38,7 +38,7 @@ export interface Conversation {
     /** Set while the bot waits for "yes" to its installation/cable offer. */
     awaitingService?: boolean;
     /** Support intake: the problem, the system, and the login email. */
-    support?: { problem?: string; system?: 'wotefy' | 'lubfy'; email?: string; waitingFor?: 'problem' | 'email' | 'system' | 'device'; attempts?: number };
+    support?: { problem?: string; system?: 'wotefy' | 'lubfy'; email?: string; waitingFor?: 'problem' | 'email' | 'system' | 'device'; attempts?: number; sameEmail?: boolean };
     /** Last completed support intake, kept for the admin alert and audits. */
     lastSupport?: { problem?: string; system?: 'wotefy' | 'lubfy'; email?: string };
     recentTopic?: string;

@@ -89,6 +89,8 @@ test('naming the system does not repeat the same question, and "same email" is n
   assert.equal(two.memory.support?.system, 'wotefy');
   const three = await say('imeli yang ndo ile ile kaka', two.memory);
   assert.doesNotMatch(three.body, /Nipe email/);
+  assert.notEqual(three.body, two.body);
+  assert.match(three.body, /email ya awali/);
 });
 
 test('onboarding asks which equipment is in use and never requests a support email', async () => {

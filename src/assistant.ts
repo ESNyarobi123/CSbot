@@ -853,6 +853,7 @@ export function supportIntake(
   // "My email is the same one" is an answer, not a refusal. Asking again is what
   // made this conversation loop three times.
   const repeatedEmail = /\b(?:ile ile|ileile|ndo ile|ndiyo ile|ni ile|ndio ile|same (?:email|one)|usual email|hio hio|hiyo hiyo)\b/i.test(text);
+  if (repeatedEmail) next.sameEmail = true;
   if (next.problem && generic.test(next.problem.trim())) delete next.problem;
   const onlyIdentityAnswer = generic.test(rest) || rest.length < 3
     || smallTalkOnly(rest)
@@ -874,12 +875,15 @@ export function supportIntake(
     next.waitingFor = 'problem';
     // Repeating the same opening question after the system was named makes the
     // bot look deaf, so the second ask refers to what the customer just said.
-    return { support: next, ready: false, reply: next.system
-      ? say(`Sawa, shida iko kwenye ${systemLabel(next.system)}. Niambie kinachotokea — ukurasa au kifaa gani, na unaona ujumbe gani?`,
-        `Understood, this is about ${systemLabel(next.system)}. What happens — which page or device, and what message do you see?`)
-      : say(
-        'Pole sana. Nieleze kwa ufupi shida ipoje — nini kinatokea na ulikuwa unafanya nini wakati imetokea?',
-        'Sorry about that. In one or two sentences, what exactly happens and what were you doing when it started?') };
+    return { support: next, ready: false, reply: next.sameEmail
+      ? say('Sawa, nitatumia ile email ya awali — timu itaikuta. Sasa niambie kinachotokea: ukurasa au kifaa gani, na unaona ujumbe gani?',
+        'Understood, the team will use the email already on file. Now tell me what happens: which page or device, and what message do you see?')
+      : next.system
+        ? say(`Sawa, shida iko kwenye ${systemLabel(next.system)}. Niambie kinachotokea — ukurasa au kifaa gani, na unaona ujumbe gani?`,
+          `Understood, this is about ${systemLabel(next.system)}. What happens — which page or device, and what message do you see?`)
+        : say(
+          'Pole sana. Nieleze kwa ufupi shida ipoje — nini kinatokea na ulikuwa unafanya nini wakati imetokea?',
+          'Sorry about that. In one or two sentences, what exactly happens and what were you doing when it started?') };
   }
   if (!next.system) {
     next.waitingFor = 'system';
