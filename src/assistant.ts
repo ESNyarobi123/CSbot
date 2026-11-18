@@ -850,6 +850,9 @@ export function supportIntake(
     .replace(/\b(?:wotefy|lubfy)\b/gi, ' ')
     .replace(/[\s.,!?;:]+/g, ' ').trim();
   const generic = /^(?:kaka|mkuu|boss|tatizo|shida|problem|support|msaada|nina (?:shida|tatizo)|mfumo wako|nipo .+|niko .+)$/i;
+  // "My email is the same one" is an answer, not a refusal. Asking again is what
+  // made this conversation loop three times.
+  const repeatedEmail = /\b(?:ile ile|ileile|ndo ile|ndiyo ile|ni ile|ndio ile|same (?:email|one)|usual email|hio hio|hiyo hiyo)\b/i.test(text);
   if (next.problem && generic.test(next.problem.trim())) delete next.problem;
   const onlyIdentityAnswer = generic.test(rest) || rest.length < 3
     || smallTalkOnly(rest)
@@ -869,9 +872,14 @@ export function supportIntake(
   }
   if (!next.problem) {
     next.waitingFor = 'problem';
-    return { support: next, ready: false, reply: say(
-      'Pole sana. Nieleze kwa ufupi shida ipoje — nini kinatokea na ulikuwa unafanya nini wakati imetokea?',
-      'Sorry about that. In one or two sentences, what exactly happens and what were you doing when it started?') };
+    // Repeating the same opening question after the system was named makes the
+    // bot look deaf, so the second ask refers to what the customer just said.
+    return { support: next, ready: false, reply: next.system
+      ? say(`Sawa, shida iko kwenye ${systemLabel(next.system)}. Niambie kinachotokea — ukurasa au kifaa gani, na unaona ujumbe gani?`,
+        `Understood, this is about ${systemLabel(next.system)}. What happens — which page or device, and what message do you see?`)
+      : say(
+        'Pole sana. Nieleze kwa ufupi shida ipoje — nini kinatokea na ulikuwa unafanya nini wakati imetokea?',
+        'Sorry about that. In one or two sentences, what exactly happens and what were you doing when it started?') };
   }
   if (!next.system) {
     next.waitingFor = 'system';
@@ -880,6 +888,10 @@ export function supportIntake(
       'Thanks. Which system is this about — WoteFy or LubFy?') };
   }
   if (!next.email) {
+    if (repeatedEmail) {
+      // They told us it is the address already on file. The team can match it.
+      return { support: next, ready: true };
+    }
     if (next.waitingFor === 'email') {
       next.attempts = (next.attempts || 0) + 1;
       return { support: next, ready: false, reply: say(
@@ -888,8 +900,8 @@ export function supportIntake(
     }
     next.waitingFor = 'email';
     return { support: next, ready: false, reply: say(
-      'Asante. Nipe email uliyosajili nayo kwenye akaunti (ile unayoingia nayo) ili timu ifungue akaunti yako moja kwa moja.',
-      'Thanks. What is the email on your account (the one you sign in with)? I need it so the team opens the right account.') };
+      'Asante. Nipe email uliyosajili nayo kwenye akaunti (ile unayoingia nayo) ili timu ikague akaunti yako.',
+      'Thanks. What is the email on your account (the one you sign in with)? The team needs it to check the right account.') };
   }
   return { support: next, ready: true };
 }

@@ -81,6 +81,16 @@ test('a monthly fee typed as "mwez" is a plan question, not a product search', a
   assert.doesNotMatch(reply.body, /SKU|unaulizia bidhaa/i);
 });
 
+test('naming the system does not repeat the same question, and "same email" is not asked again', async () => {
+  const one = await say('Tatizo');
+  const two = await say('Wotefy', one.memory);
+  assert.notEqual(two.body, one.body);
+  assert.match(two.body, /WoteFy/);
+  assert.equal(two.memory.support?.system, 'wotefy');
+  const three = await say('imeli yang ndo ile ile kaka', two.memory);
+  assert.doesNotMatch(three.body, /Nipe email/);
+});
+
 test('onboarding asks which equipment is in use and never requests a support email', async () => {
   const first = await say('Nataka kujiunga');
   assert.equal(first.memory.onboarding, true);

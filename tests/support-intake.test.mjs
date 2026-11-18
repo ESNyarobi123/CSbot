@@ -22,7 +22,9 @@ test('a broken portal is a support question, a device price is not', () => {
 test('asks for the problem when the report has no details yet', () => {
   const first = supportIntake('WoteFy', {}, say);
   assert.equal(first.ready, false);
-  assert.match(first.reply, /shida ipoje/i);
+  // The system was already named, so the question refers to it instead of repeating the opener.
+  assert.match(first.reply, /WoteFy/);
+  assert.match(first.reply, /kinachotokea|shida/i);
   assert.equal(first.support.system, 'wotefy');
   assert.equal(first.support.problem, undefined);
 });
