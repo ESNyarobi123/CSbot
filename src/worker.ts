@@ -273,6 +273,7 @@ try {
   log.info('Reply worker started');
   let lastBeat = 0;
   let lastSweep = 0;
+  let lastFollowUp = 0;
   while (!stopping) {
     if (Date.now() - lastBeat > 10000) {
       lastBeat = Date.now();
@@ -306,39 +307,43 @@ try {
       log.warn({ code: (error as Error).name }, 'Could not schedule pending messages');
     }
     // Follow-ups fire only when their time has come, the customer has stayed
-    // silent since they were queued, and the number has not opted out.
-    try {
-      await transaction(async client => {
-        const due = await dueFollowUps(client, 20);
-        for (const fu of due) {
-          if (await customerOptedOut(client, fu.account_id, fu.jid)) {
-            await cancelFollowUps(client, fu.conversation_id);
-            continue;
+    // silent since they were queued, and the number has not opted out. Swept
+    // every 30s: more often would just churn the connection pool.
+    if (Date.now() - lastFollowUp > 30000) {
+      lastFollowUp = Date.now();
+      try {
+        await transaction(async client => {
+          const due = await dueFollowUps(client, 20);
+          for (const fu of due) {
+            if (await customerOptedOut(client, fu.account_id, fu.jid)) {
+              await cancelFollowUps(client, fu.conversation_id);
+              continue;
+            }
+            const lastIn = await row<{ occurred_at: Date }>(client,
+              `SELECT occurred_at FROM messages WHERE conversation_id=$1 AND direction='inbound'
+               ORDER BY id DESC LIMIT 1`, [fu.conversation_id]);
+            // The customer wrote after this nudge was queued, so it is stale.
+            if (lastIn && lastIn.occurred_at.getTime() > fu.created_at.getTime()) {
+              await cancelFollowUps(client, fu.conversation_id, [fu.kind]);
+              continue;
+            }
+            const mode = await row<{ mode: string }>(client,
+              'SELECT mode FROM conversations WHERE id=$1', [fu.conversation_id]);
+            // A handoff ping is pointless once the chat is back with the bot.
+            if (fu.kind === 'handoff_ping' && mode?.mode !== 'human') {
+              await cancelFollowUps(client, fu.conversation_id, ['handoff_ping']);
+              continue;
+            }
+            const account = await row(client, 'SELECT enabled FROM accounts WHERE id=$1', [fu.account_id]);
+            if (!account?.enabled) { await cancelFollowUps(client, fu.conversation_id); continue; }
+            await enqueue(client, { accountId: fu.account_id, conversationId: fu.conversation_id,
+              jid: fu.jid, origin: 'bot', body: fu.body });
+            await markFollowUpSent(client, fu.id);
           }
-          const lastIn = await row<{ occurred_at: Date }>(client,
-            `SELECT occurred_at FROM messages WHERE conversation_id=$1 AND direction='inbound'
-             ORDER BY id DESC LIMIT 1`, [fu.conversation_id]);
-          // The customer wrote after this nudge was queued, so it is stale.
-          if (lastIn && lastIn.occurred_at.getTime() > fu.created_at.getTime()) {
-            await cancelFollowUps(client, fu.conversation_id, [fu.kind]);
-            continue;
-          }
-          const mode = await row<{ mode: string }>(client,
-            'SELECT mode FROM conversations WHERE id=$1', [fu.conversation_id]);
-          // A handoff ping is pointless once the chat is back with the bot.
-          if (fu.kind === 'handoff_ping' && mode?.mode !== 'human') {
-            await cancelFollowUps(client, fu.conversation_id, ['handoff_ping']);
-            continue;
-          }
-          const account = await row(client, 'SELECT enabled FROM accounts WHERE id=$1', [fu.account_id]);
-          if (!account?.enabled) { await cancelFollowUps(client, fu.conversation_id); continue; }
-          await enqueue(client, { accountId: fu.account_id, conversationId: fu.conversation_id,
-            jid: fu.jid, origin: 'bot', body: fu.body });
-          await markFollowUpSent(client, fu.id);
-        }
-      });
-    } catch (error) {
-      log.warn({ code: (error as Error).name }, 'Could not send due follow-ups');
+        });
+      } catch (error) {
+        log.warn({ code: (error as Error).name }, 'Could not send due follow-ups');
+      }
     }
     if (!stopping) await sleep(500);
   }
