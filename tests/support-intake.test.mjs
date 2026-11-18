@@ -86,6 +86,22 @@ test('the support answer is the troubleshooting entry, not the overview', () => 
   assert.equal(device.id, 'wotefy-device-offline');
 });
 
+test('a vague LubFy complaint never answers with Cambium setup', () => {
+  const entries = [
+    { id: 'lubfy-cambium', system: 'lubfy', title: 'LubFy — Cambium setup',
+      content: 'Cambium ina mitindo mitatu ya usimamizi. Shida: login POST inashindwa.', source_url: null },
+    { id: 'lubfy-cudy', system: 'lubfy', title: 'LubFy — Cudy setup',
+      content: 'Cudy inatumia WiFiDog. Shida: portal haifunguki.', source_url: null },
+  ];
+  // The word "shida" in the report used to match "Shida:" inside the article,
+  // so any complaint answered with the Cambium setup page.
+  assert.equal(relevantKnowledge('mteja anapata shida hiyo mkuu', entries, true, 'lubfy'), undefined);
+  assert.equal(relevantKnowledge('Mm nikiangalia naona haina shida', entries, true, 'lubfy'), undefined);
+  // Naming the vendor is what makes the vendor-specific fix relevant.
+  const named = relevantKnowledge('cambium login inashindwa kwa mteja', entries, true, 'lubfy');
+  assert.equal(named.id, 'lubfy-cambium');
+});
+
 test('respond asks for the system before diagnosing, then uses the knowledge', async () => {
   const { respond } = await import('../dist/assistant.js');
   const entries = [

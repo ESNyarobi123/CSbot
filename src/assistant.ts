@@ -741,20 +741,49 @@ async function planAside(text: string, memory: Conversation['memory'], say: (sw:
  * Without this check any unmatched message returned the whole WoteFy or LubFy
  * description, which reads as nonsense to a customer asking about a device.
  */
-export function relevantKnowledge(text: string, entries: Knowledge[], support = false) {
-  const named = systemFrom(text);
-  const words = new Set((text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(word => word.length > 3));
+
+// Generic words that appear in nearly every support message but say nothing
+// about which fix applies. Without these, the word "shida" in a complaint
+// matched the word "Shida:" inside the Cambium article and the bot answered
+// every LubFy support report with Cambium setup.
+const noiseWords = new Set([
+  'shida', 'tatizo', 'matatizo', 'problem', 'issue', 'issues', 'error', 'errors',
+  'mteja', 'wateja', 'client', 'customer', 'kaka', 'mkuu', 'boss', 'duuh',
+  'naona', 'ninaona', 'anapata', 'inapata', 'wanapata', 'haina', 'haipo', 'haifanyi',
+  'hii', 'hiyo', 'hivi', 'hivyo', 'nini', 'gani', 'kitu', 'vitu', 'sasa', 'bado',
+  'lakini', 'pia', 'kama', 'sana', 'mbona', 'aisee', 'sijui', 'hajui', 'mimi',
+  'wewe', 'yeye', 'huyu', 'yule', 'hao', 'hiome', 'inasema', 'haikubali', 'haionekani',
+]);
+const fixTitle = /troubleshoot|setup|install|apply|payment|malipo|portal|device|kifaa|speed|data|offline/;
+const vendorWord = /\b(?:cambium|cudy|unifi|ubiquiti|ruijie|reyee|mikrotik|microtik|omada)\b/;
+const configVerb = /setup|troubleshoot|kufunga|kuunganisha|install/i;
+
+export function relevantKnowledge(text: string, entries: Knowledge[], support = false, system = '') {
+  const named = systemFrom(text) || system;
+  const raw = (text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(word => word.length > 3);
+  const words = new Set(support ? raw.filter(word => !noiseWords.has(word)) : raw);
   let best: { entry: Knowledge; score: number } | undefined;
   for (const entry of entries) {
     if (entry.id === 'csolution') continue;
     const title = (entry.title ?? '').toLowerCase();
     const body = `${title} ${entry.content}`.toLowerCase();
-    let score = [...words].filter(word => body.includes(word)).length;
+    const overlap = [...words].filter(word => body.includes(word)).length;
+    if (support) {
+      // A support report needs an answer that fixes something, and that answer
+      // must genuinely overlap what the customer wrote — a keyword coincidence
+      // must not hand them a whole setup article for the wrong vendor.
+      if (!fixTitle.test(title) || overlap === 0) continue;
+      // "Cambium setup", "kufunga MikroTik", "MikroTik troubleshooting" are only
+      // relevant when the customer actually named that vendor. Overviews that
+      // happen to mention Omada in passing stay unrestricted.
+      const vendor = title.match(vendorWord)?.[0];
+      if (vendor && configVerb.test(title) && !new RegExp(`\\b${vendor}\\b`, 'i').test(text)) continue;
+    }
+    let score = overlap;
     // A matching system says who the answer is for, not which answer it is: every
     // WoteFy entry carries that tag, so it must not win on its own.
     if (named && entry.system === named) score += 2;
-    // A support report needs an answer that fixes something, not an overview.
-    if (support && /troubleshoot|setup|install|apply|payment|malipo|portal|device|kifaa|speed|data|offline/.test(title)) score += 2;
+    if (support) score += 2;
     if (score >= 3 && (!best || score > best.score)) best = { entry, score };
   }
   return best?.entry;
@@ -925,7 +954,7 @@ async function answer(
     memory.recentTopic = supportSummary(intake.support).slice(0, 280);
     if (intake.support.system) memory.system = intake.support.system;
     memory.lastSupport = intake.support;
-    const guidance = relevantKnowledge(`${intake.support.problem} ${newest}`, knowledge, true);
+    const guidance = relevantKnowledge(`${intake.support.problem} ${newest}`, knowledge, true, intake.support.system);
     const facts = supportSummary(intake.support);
     if (guidance) {
       // Answer from the approved troubleshooting entry and keep the chat on the
