@@ -60,6 +60,15 @@ export function optOutRequest(text: string) {
   return optOutPhrases.test(text);
 }
 
+/** Evaluate each original message before the debounce batch is joined or truncated. */
+export function latestConsent(messages: { body: string }[]) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const text = messages[i].body.trim();
+    if (optOutRequest(text)) return 'stop';
+    if (/^(?:anza|endelea|start|resume|nirudishe|anza kunijibu|resume replies)[.! ]*$/i.test(text)) return 'resume';
+  }
+}
+
 // Not everyone on this number is buying. "Mambo", "vipi" or "poa" is a person
 // saying hello, and answers itself — a pitch there reads like a call centre and
 // loses the friendly chats that later turn into customers.

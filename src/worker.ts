@@ -8,7 +8,7 @@ import { shop } from './csolution-pos.js';
 import { db, log, row, transaction } from './db.js';
 import { beat } from './heartbeat.js';
 import { advanceSale, currentSale, withoutQuote } from './sales.js';
-import { optOutRequest } from './customer-text.js';
+import { latestConsent } from './customer-text.js';
 import {
   alertAdmins, cancelFollowUps, customerOptedOut, dueFollowUps, enrichCustomer, enqueue,
   markFollowUpSent, recipient, scheduleFollowUp, setCustomerOptedOut, setMode, type Conversation,
@@ -144,7 +144,8 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       if (hasVoice && conversation.mode === 'bot') presence = beginPresence(conversationId).catch(() => undefined);
       let voiceUnread = false;
       for (const message of pending) {
-        if (!pendingVoice(message.body) || !message.media_id) continue;
+        if (message.kind !== 'audio' || !pendingVoice(message.body)) continue;
+        if (!message.media_id) { voiceUnread = true; continue; }
         const heard = await heardAudio(client, message.media_id);
         if (heard?.text) {
           message.body = heard.text;
@@ -160,16 +161,19 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       // A photo is part of the question: "hii ni nini?" with a picture of the
       // box. The bytes go to the model only for identification, never stored in
       // the prompt history.
-      const hasPhoto = pending.some(message => message.media_id !== null);
+      const hasPhoto = pending.some(message => message.kind === 'image');
       const eligible = replyEligible(newest, conversation.memory, history, hasPhoto);
       // A number that asked to be left alone stays silent unless it asks to come
       // back. Opt-out beats every sales branch, or the number gets reported.
       const optedOut = await customerOptedOut(client, conversation.account_id, conversation.customer_jid);
-      const resume = /\b(?:anza|endelea|start|resume|nirudishe|rudisha|rudi)\b/i.test(newest) && newest.trim().length <= 40;
-      if (optOutRequest(newest)) {
+      const consent = latestConsent(pending);
+      const resume = consent === 'resume';
+      if (consent === 'stop') {
         await setCustomerOptedOut(client, conversation.account_id, conversation.customer_jid, true);
         await cancelFollowUps(client, conversationId);
-        await enqueue(client, { accountId: conversation.account_id, conversationId, jid: recipient(conversation),
+        await client.query(`UPDATE outbound SET state='canceled',reason='customer_opt_out'
+          WHERE conversation_id=$1 AND origin IN ('bot','handoff') AND state IN ('queued','sending')`, [conversationId]);
+        if (!optedOut && conversation.mode === 'bot' && pending.some(message => message.auto_reply)) await enqueue(client, { accountId: conversation.account_id, conversationId, jid: recipient(conversation),
           origin: 'bot', body: 'Sawa, sitakutumia ujumbe tena. Ukitaka nianze tena, andika "anza".' });
         await client.query("UPDATE messages SET processing='done' WHERE id=ANY($1::bigint[])", [ids]);
         return;
@@ -211,7 +215,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       }
       // Show typing and decode images only when this batch is eligible for a reply.
       if (eligible && canReply && !presence) presence = beginPresence(conversationId).catch(() => undefined);
-      const imageIds = pending.filter(message => message.auto_reply && message.media_id).map(message => message.id);
+      const imageIds = pending.filter(message => message.kind === 'image' && message.auto_reply).map(message => message.id);
       if (eligible && canReply && !imageIds.length && /\b(?:hii|hiki|hiyo|this|that)\b/i.test(newest)) {
         // Forwarded product photos and their question can arrive in different batches.
         const previous = await row<{ id: string; kind: string; direction: string; body: string }>(client,
@@ -221,7 +225,11 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         if (previous?.kind === 'image' && previous.direction === 'inbound'
             && !/risiti|receipt|malipo|paid|nimelipa/i.test(previous.body)) imageIds.push(previous.id);
       }
-      const photo = eligible && canReply && imageIds.length === 1 ? await newestPhoto(client, imageIds) : undefined;
+      let photo: Parameters<typeof respond>[5];
+      if (eligible && canReply && imageIds.length) {
+        photo = imageIds.length === 1 ? await newestPhoto(client, imageIds) : undefined;
+        photo ??= { count: imageIds.length };
+      }
       const outcome = await respond(client, conversation, newest,
         history.map(line => ({ ...line, body: line.body.slice(0, 700) })), !canReply, photo, spoken);
       await client.query('UPDATE conversations SET memory=$2,updated_at=now() WHERE id=$1', [conversationId, outcome.memory]);
@@ -234,7 +242,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       if (outcome.stage) {
         const sale = await currentSale(client, conversationId);
         const receipt = outcome.stage === 'payment_reported'
-          ? [...pending].reverse().find(message => message.media_id && /\b(?:nimelipa|nimeshalipa|risiti|receipt|paid|payment sent)\b/i.test(message.body))?.media_id
+          ? [...pending].reverse().find(message => message.kind === 'image' && message.media_id && /\b(?:nimelipa|nimeshalipa|risiti|receipt|paid|payment sent)\b/i.test(message.body))?.media_id
             ?? (pending.length === 2 && pending.some(message => message.body === '[WhatsApp image]')
               ? pending.find(message => message.body === '[WhatsApp image]')?.media_id : undefined) : undefined;
         await advanceSale(client, updated, sale, outcome.stage, 'customer_message', receipt ?? undefined);

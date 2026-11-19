@@ -85,3 +85,10 @@ test('an access-point list holds devices, not the cable that mentions the words'
   const cable = await respond(client, conversation({}), 'CAT 6 OUTDOOR bei', []);
   assert.match(cable.body, /CAT 6 OUTDOOR — TZS 1,500/);
 });
+
+test('asking about a missing model never quotes the previously selected device', async () => {
+  const reply = await respond(client, conversation({ product: { id: 'eap650', name: 'TP LINK EAP 650' } }),
+    'EAP 9999 ina band gani?', []);
+  assert.doesNotMatch(reply.body, /EAP 650 —|450,000/);
+  assert.notEqual(reply.stage, 'quoted');
+});

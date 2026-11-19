@@ -21,6 +21,8 @@ import { cableQuote, catalog, installationOptions, isModelReference, modelQuery,
 import type { InstallationOption } from './pos.js';
 import type { Conversation, Stage } from './store.js';
 
+type IncomingPhoto = { base64: string; mimetype: string } | { count: number };
+
 export interface ChatLine {
   direction: 'inbound' | 'outbound';
   body: string;
@@ -187,7 +189,9 @@ export async function retrieveKnowledge(client: PoolClient, text: string, system
 async function decide(text: string, memory: Conversation['memory'], history: ChatLine[], knowledge: Knowledge[]) {
   if (!ai) return resolveDecision(text, memory);
   const contents = JSON.stringify({ newest: text, memory: { system: memory.system, product: memory.product?.name,
-    siteFacts: memory.facts, requirements: memory.requirements },
+    plan: memory.plan, planning: memory.planning, lastQuote: memory.lastQuote,
+    options: memory.productOptions?.slice(-12).map(item => item.name), awaitingService: memory.awaitingService,
+    supportStep: memory.support?.waitingFor, siteFacts: memory.facts, requirements: memory.requirements },
     history, approvedKnowledge: knowledge.map(entry => ({ ...entry, content: entry.content.slice(0, 3000) })) });
   const models = [...new Set([config.GEMINI_MODEL, config.GEMINI_FALLBACK_MODEL])];
   // A customer is waiting. Free Gemini tiers answer 503 during demand spikes, so
@@ -848,7 +852,7 @@ export async function customerTurn(...args: Parameters<typeof respond>): Promise
 
 export async function respond(
   client: PoolClient, conversation: Conversation, newest: string, history: ChatLine[], onlyDetect = false,
-  photo?: { base64: string; mimetype: string }, voice = false,
+  photo?: IncomingPhoto, voice = false,
 ): Promise<Outcome> {
   const outcome = await answer(client, conversation, newest, history, onlyDetect, photo, voice);
   // Site facts are kept per WhatsApp number, so the next chat starts where this
@@ -865,7 +869,7 @@ export async function respond(
 
 async function answer(
   client: PoolClient, conversation: Conversation, newest: string, history: ChatLine[], onlyDetect = false,
-  photo?: { base64: string; mimetype: string }, voice = false,
+  photo?: IncomingPhoto, voice = false,
 ): Promise<Outcome> {
   const stored = onlyDetect || conversation.id === 'playground' ? {} : await loadCustomerMemory(client, conversation.account_id, conversation.customer_jid);
   const memory = {
@@ -899,6 +903,33 @@ async function answer(
   const monthly = /\b(?:mwez\w*|monthly|per month|a month|kwa mwezi)\b/i.test(newest) && /\b(?:mfumo|system|billing|nalipia|nalipa|ada|bei|subscription|fee|malipo)\b/i.test(newest);
   const signup = /\b(?:kujiunga|kusajili|register|sign up|signup)\b/i.test(newest);
   const hardwareSystem = /\b(?:micro(?:tick|tik)|mikrotik|routeros)\b/i.test(newest) ? 'lubfy' : /\b(?:omada|eap)\b/i.test(newest) ? 'wotefy' : undefined;
+  const siteAdvice = /\b(?:surv(?:ey|aey|ei)|uwekezaji|kuwekeza|invest(?:ment)?)\b/i.test(newest)
+    && /\b(?:wi-?fi|hotspot|billing|intaneti|internet)\b/i.test(newest);
+  if (!onlyDetect && siteAdvice && !monthly && !supportQuestion(newest)
+      && !['human', 'ready_to_pay', 'payment_reported'].includes(decision.intent)) {
+    delete memory.support;
+    const town = /\b(?:ukija|kuja|huku|nipo|niko)\s+([\p{L}]{2,30})\s+mjini\b/iu.exec(newest)?.[1];
+    memory.survey = { waitingFor: 'site', town };
+    const where = town ? ' ' + town[0].toUpperCase() + town.slice(1).toLowerCase() + ' mjini' : '';
+    return result(say(`Kwa kuanza biashara ya Wi-Fi${where}, ningeshauri uanze na eneo moja lenye wateja. Kwenye survey tungeangalia wateja wanakaa wapi, intaneti inayopatikana hapo na sehemu nzuri za kuweka access point. Hapo tunaweza kukadiria gharama za vifaa na kuchagua mfumo wa kukusanya malipo. Eneo unalolenga ni la aina gani, kwa mfano hostel, soko au makazi?`,
+      'I’d start with one site. A survey would check where customers spend time, which internet connection is available and where the access points could go. That gives us a basis for an equipment budget and a billing system. What kind of site are you considering, for example a hostel, market or residential area?'));
+  }
+  if (!onlyDetect && memory.survey && !monthly && !signup) {
+    const place = /^(?:ni |kwenye |eneo la |ni eneo la )?(hostel|hosteli|soko|sokoni|makazi|nyumba|shule|hoteli|hostels?|market|school|hotel)[.! ]*$/i.exec(newest.trim());
+    if (place && memory.survey.waitingFor === 'site') {
+      memory.survey = { ...memory.survey, site: place[1], waitingFor: 'users' };
+      return result(say(`Kwa ${place[1]}, tuanze na sehemu ambazo watu watatumia Wi-Fi zaidi. Unatarajia watu wangapi watakuwa mtandaoni kwa wakati mmoja?`,
+        `For the ${place[1]}, let’s start with the busiest areas. How many people do you expect online at the same time?`));
+    }
+    const count = /^(?:(?:kama|takribani|karibu|watu|watumiaji|about)\s+)*(\d{1,5})(?:\s+(?:users|people|watu|watumiaji))?[.! ]*$/i.exec(newest.trim());
+    if (count && Number(count[1]) > 0 && memory.survey.waitingFor === 'users') {
+      memory.requirements = { ...memory.requirements, users: Number(count[1]) };
+      const site = memory.survey.site;
+      delete memory.survey;
+      return result(say(`Kwa watu ${count[1]} kwenye ${site}, tutahitaji kuangalia kasi ya intaneti na jinsi watakavyosambaa kabla ya kukadiria idadi ya AP. Tayari una router au huduma ya intaneti hapo?`,
+        `For ${count[1]} people at the ${site}, connection speed and layout will help size the network. Do you already have a router or internet service there?`));
+    }
+  }
   if (monthly) {
     decision.intent = 'plan';
     decision.kind = 'subscription';
@@ -1122,6 +1153,13 @@ async function answer(
     decision.query = '';
   }
   if (photo && photoInquiry(newest, conversation.stage)) {
+    if ('count' in photo) {
+      const outcome = await photoReply({}, memory, say);
+      if (photo.count > 1) outcome.body = say(
+        'Umetuma picha kadhaa. Ungependa nikague kifaa kipi kwanza? Unaweza kutaja modeli au kunitumia picha yake moja.',
+        'You sent several photos. Which device should I check first? You can name the model or send one photo of it.');
+      return outcome;
+    }
     let model = await printedModel(photo.base64);
     if (!model) {
       const seen = await identifyDevice(ai, photo).catch(() => undefined);
@@ -1137,8 +1175,8 @@ async function answer(
     // Resolve the device: a model named right here wins over the one quoted
     // earlier, so "EAP 650 ina uwezo gani?" is never answered with the last
     // device the customer discussed.
-    let target = memory.product?.id;
     const model = modelQuery(newest);
+    let target = model ? undefined : memory.product?.id;
     // limit 1 returned whichever row the catalog listed first, so "Cudy AP 3000"
     // was answered with the COMFAST it shares the AX3000 name with.
     const found = model ? await bestMatch(model) : undefined;
@@ -1325,7 +1363,8 @@ async function answer(
       const sharesModelNumber = (item: (typeof items)[number]) => {
         if (!digits.length) return true;
         const text = `${item.name} ${'sku' in item ? item.sku ?? '' : ''}`.toLowerCase();
-        return digits.every(value => text.includes(value));
+        const numbers: string[] = text.match(/\d+/g) ?? [];
+        return digits.every(value => numbers.includes(value));
       };
       const scored = items.filter(sharesModelNumber).map(item => ({
         item,
@@ -1525,7 +1564,6 @@ async function answer(
         'The price lookup is slow right now. Please send one more message and I will try again.'));
     }
   }
-  if (decision.reply && !/\b(?:TZS|TSh|USD|KSh)\b|\b[\d,.]+\s*%|[$€£]/i.test(decision.reply)) return result(decision.reply);
   const fact = relevantKnowledge(newest, knowledge);
   if (fact) {
     // An explanation ("nieleze mesh", "kwanini AP inahitaji router") is written
@@ -1546,6 +1584,11 @@ async function answer(
       return result(written.answer);
     }
     return result([fact.content, fact.source_url].filter(Boolean).join('\n'));
+  }
+  // With no matching published entry, Gemini may ask for clarification. Factual
+  // answers above come from a catalog lookup or the approved knowledge entry.
+  if (decision.intent === 'general' && decision.reply && /^[^.!?\d]{4,180}\?$/.test(decision.reply.trim())) {
+    return result(decision.reply.trim());
   }
   if (memory.facts?.equipment) {
     return result(say('Kwa vifaa ulivyotaja, unapanga hotspot ya ndani au ya nje?',

@@ -33,6 +33,7 @@ export interface Conversation {
     requirements?: { coverageMeters?: number; users?: number;
       obstacles?: 'open' | 'obstructed'; environment?: 'indoor' | 'outdoor' | 'mixed' };
     /** Which planning flow produced the current shortlist. */
+    survey?: { waitingFor: 'site' | 'users'; town?: string; site?: string };
     planning?: 'mesh' | 'coverage';
     quoteFor?: 'product' | 'plan';
     /** Set while the bot waits for "yes" to its installation/cable offer. */
@@ -265,8 +266,7 @@ export async function setCustomerOptedOut(client: PoolClient, accountId: string,
     VALUES ($1,$2,$3,CASE WHEN $3 THEN now() ELSE NULL END,now())
     ON CONFLICT (account_id,jid) DO UPDATE SET opted_out=$3,
       opted_out_at=CASE WHEN $3 THEN now() ELSE NULL END, last_seen=now()`,
-  [accountId, jid, out]).catch(error =>
-    log.debug({ code: (error as Error).name }, 'Customer opt-out not saved'));
+  [accountId, jid, out]);
 }
 
 export type FollowUpKind = 'quote_nudge' | 'payment_reminder' | 'handoff_ping' | 'post_support';

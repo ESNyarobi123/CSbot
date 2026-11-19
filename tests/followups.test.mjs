@@ -6,6 +6,7 @@ import { test } from 'node:test';
  * proactive follow-ups legal: a number that says "stop" must be left alone or
  * the shop's number gets reported and banned.
  */
+process.env.DATABASE_URL ??= 'postgres://localhost/csbot';
 const { optOutRequest } = await import('../dist/customer-text.js');
 const { customerOptedOut, setCustomerOptedOut, scheduleFollowUp, dueFollowUps, cancelFollowUps } = await import('../dist/store.js');
 
@@ -37,4 +38,13 @@ test('follow-up helpers tolerate an unavailable database', async () => {
   });
   await cancelFollowUps(client, '1');
   assert.equal((await dueFollowUps(client, 10)).length, 0);
+});
+
+test('consent follows the latest explicit command in the original message batch', async () => {
+  const { latestConsent } = await import('../dist/customer-text.js');
+  const batch = (...lines) => lines.map(body => ({body}));
+  assert.equal(latestConsent(batch('Bei gani?', 'STOP', 'asante')), 'stop');
+  assert.equal(latestConsent(batch('acha', 'anza')), 'resume');
+  assert.equal(latestConsent(batch('usianze', 'please do not resume')), undefined);
+  await assert.rejects(setCustomerOptedOut({query: async () => {throw Error('offline');}}, 'a', 'jid'), /offline/);
 });

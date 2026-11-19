@@ -113,3 +113,29 @@ test('onboarding asks which equipment is in use and never requests a support ema
   assert.match(second.body, /usajili za LubFy/);
   assert.equal(second.memory.onboarding, undefined);
 });
+
+test('an Iringa site survey and investment enquiry gets planning advice', async () => {
+  const reply = await say('Hivi ukija iringa mjini ukafanya survaey unashauli ni invest aje kwmeye wifi billing system na vifaa');
+  assert.match(reply.body, /Iringa mjini/);
+  assert.match(reply.body, /survey.*gharama/s);
+  assert.doesNotMatch(reply.body, /SKU|stock/i);
+});
+
+test('short answers to the survey continue planning in the same chat', async () => {
+  const first = await say('Nahitaji survey ya WiFi');
+  const site = await say('Hostel', first.memory);
+  assert.match(site.body, /wangapi/);
+  const count = await say('kama 80', site.memory);
+  assert.equal(count.memory.requirements.users, 80);
+  assert.match(count.body, /80.*Hostel/i);
+});
+
+test('ambiguous and unavailable product photos cannot quote a previously discussed device', async () => {
+  for (const count of [1, 2]) {
+    const before = chat({ product: { id: 'old', name: 'Old router' }, lastQuote: 'TZS 123,000' });
+    const reply = await customerTurn(client, before, 'Naweza kupata hii kwenu?', [], false, {count});
+    assert.match(reply.body, count === 1 ? /lebo/i : /kipi kwanza/i);
+    assert.equal(reply.memory.product, undefined);
+    assert.doesNotMatch(reply.body, /123,000|Old router/);
+  }
+});

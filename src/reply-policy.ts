@@ -27,6 +27,8 @@ export function replyEligible(text: string, memory: Conversation['memory'], hist
     return firstContact && !memory.support && !memory.product && !memory.plan && !memory.planning;
   }
   // An address is never idle chatter; it is someone asking to be helped.
+  if (memory.survey && /^(?:ni |kwenye |eneo la |ni eneo la )?(?:hosteli?|soko(?:ni)?|makazi|nyumba|shule|hoteli|hostels?|market|school|hotel)[.! ]*$/i.test(value)) return true;
+  if (memory.survey?.waitingFor === 'users' && /\b\d{1,5}\b/.test(value) && value.split(/\s+/).length <= 5) return true;
   if (emailOnly.test(value)) return true;
   if (placeAsk.test(value)) return true;
   if (business.test(value) || trouble.test(value)
