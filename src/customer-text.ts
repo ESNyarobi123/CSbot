@@ -65,6 +65,19 @@ export function accountQuestion(text: string) {
     && /\b(?:wapi|where|jinsi|namna|how|tunafung\w*|tunamtengenez\w*|kufungua|kuunda|create|fungua|inafunguliwa)\b/i.test(text);
 }
 
+/**
+ * "Does WoteFy work across all of East Africa?" is about where the system
+ * operates — a region, country or currency — not about the customer's own site
+ * size. The stored "coverage_m" (their 1 km) must not be dragged into this
+ * answer, otherwise the bot "remembers but answers the wrong question".
+ */
+export function regionQuestion(text: string) {
+  if (/\b(?:mita|metres?|meters?|mtr|km|kilomit\w*|kilomet\w*)\b/i.test(text)) return false;
+  const region = /\b(?:africa|afrika|mashariki|east africa|nchi|country|countries|region|mkoa|currency|currencies|sarafu)\b/i.test(text);
+  if (!region) return false;
+  return /\b(?:wotefy|lubfy|mfumo|system|billing|malipo|payment|mobile money|mpesa|airtel|orange money|mtn|nafanya kazi|inafanya kazi|unafanya kazi|works?|operate|runs?|supported)\b/i.test(text);
+}
+
 export const emailPattern = /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/u;
 
 /** Email the customer typed, used to find their account. */

@@ -364,7 +364,7 @@ export async function understandImage(
   const systemInstruction = `You look at whatever the customer sent and describe it for Connect Solution, a Tanzanian network-equipment shop.
 Return JSON only. Decide "kind":
 - "device": networking hardware — access point, router, switch, antenna, its box or label.
-- "pricing": a price list or a Wi-Fi package/pricing page (shows prices and data bundles).
+- "pricing": a price list, a Wi-Fi package/pricing page (prices and data bundles), or a table of mobile-money providers, currencies or payment methods.
 - "portal": a Wi-Fi login or landing page a customer sees to connect.
 - "receipt": a payment receipt or transaction confirmation.
 - "error": an error message or a broken screen.

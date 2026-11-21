@@ -8,6 +8,7 @@ delete process.env.GEMINI_API_KEY;
 
 const { factBrief, factList, grounded, numbersIn, recall } = await import('../dist/brain.js');
 const { specBrief, specLines } = await import('../dist/specs.js');
+const { regionQuestion } = await import('../dist/customer-text.js');
 
 const say = (sw) => sw;
 
@@ -36,6 +37,15 @@ test('a business-planning sentence remembers the town and the goal', () => {
   assert.equal(facts.town, 'iringa');
   assert.equal(facts.goal, 'start a wifi billing site');
   assert.equal(recall('Nahitaji access point').goal, undefined);
+});
+
+test('a system + region question is geographic, never a site-size question', () => {
+  assert.equal(regionQuestion('Nauliza kama mfumo wenu wa wotefy unafanya kazi east africa nzima au'), true);
+  assert.equal(regionQuestion('Does your WoteFy system work across all of East Africa?'), true);
+  assert.equal(regionQuestion('WoteFy inasaidia nchi zipi?'), true);
+  // A distance or coverage figure is still site planning, not a region question.
+  assert.equal(regionQuestion('Nahitaji AP ya mita 300 kwa wateja 120 kwenye uwanja wa wazi'), false);
+  assert.equal(regionQuestion('Na kwa eneo lile unafikilia nitumie eap gani au ap gani'), false);
 });
 
 test('a use case and a budget are read only when stated', () => {

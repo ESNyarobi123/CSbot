@@ -8,7 +8,7 @@ import { adviseOnDevice } from './advisor.js';
 import { chatContext, compose, identifyDevice, loadCustomerMemory, recall, saveCustomerMemory, siteDistance, understandImage } from './brain.js';
 import { config } from './config.js';
 import {
-  accountQuestion, emailOf, messageLanguage, modelName, namesNewDevice, platformNotice, smallTalkOnly, smallTalkReply,
+  accountQuestion, emailOf, messageLanguage, modelName, namesNewDevice, platformNotice, regionQuestion, smallTalkOnly, smallTalkReply,
   supportQuestion, systemFrom, systemLabel,
 } from './customer-text.js';
 import { supportIntake, supportSummary } from './support.js';
@@ -1620,14 +1620,17 @@ async function answer(
     // An explanation ("nieleze mesh", "kwanini AP inahitaji router") is written
     // from the approved entry plus what this customer already told us, so it
     // answers their situation instead of pasting the whole article.
+    const regionQ = regionQuestion(newest);
     const written = await compose({
       ai, question: newest, language: decision.language,
       facts: [
         `APPROVED KNOWLEDGE — ${fact.title}\n${fact.content}`,
         'SHOP: Connect Solution, Sinza Makaburini, Dar es Salaam. Sells network equipment and runs WoteFy and LubFy Wi-Fi billing.',
-        memory.facts && Object.keys(memory.facts).length
-          ? `CUSTOMER SITE FACTS\n${Object.entries(memory.facts).map(([key, value]) => `${key}: ${value}`).join('\n')}`
-          : '',
+        regionQ
+          ? 'REGION QUESTION: the customer is asking where the system operates — a region, country or currency. Do NOT mention their site size, distance, or access-point count. Answer where the system works and which countries/currencies are supported if the knowledge states them; if the country list is not recorded, say so plainly and ask which country they want to run it in.'
+          : memory.facts && Object.keys(memory.facts).length
+            ? `CUSTOMER SITE FACTS\n${Object.entries(memory.facts).map(([key, value]) => `${key}: ${value}`).join('\n')}`
+            : '',
       ].filter(Boolean).join('\n\n'),
       context: chatContext(history),
     }).catch(() => undefined);
