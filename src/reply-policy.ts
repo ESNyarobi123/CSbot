@@ -1,6 +1,6 @@
 import type { Conversation } from './store.js';
 
-const business = /\b(?:wotefy|lubfy|mfumo|billing|router|wifi|wi-fi|access point|hotspot|internet|intaneti|wireless|kuunganisha|umbali|kilomit\w*|mikrotik|microtick|microtik|omada|mesh(?:ing)?|installation|ufungaji|katalogi|mtandao|kifaa|kusajiliwa|stock|bei|price|catalog|subscription|vifurushi|kifurushi|packages?|kujiunga|kusajili|signup|sign up|register|portal|ssid|voucher|vifaa|sku|ofisi(?:ni)?|opening hours|malipo|nimelipa|kulipia|paid|payment|order|mhudumu|cudy|ruijie|reyee|comfast)\b|\b(?:eap|rap|wr|rb|ax|ap)[ -]?\d{2,5}\b/i;
+const business = /\b(?:wotefy|lubfy|mfumo|billing|router|wifi|wi-fi|access point|hotspot|internet|intaneti|wireless|kuunganisha|umbali|kilomit\w*|mikrotik|microtick|microtik|omada|mesh(?:ing)?|installation|ufungaji|katalogi|mtandao|kifaa|kusajiliwa|stock|bei|price|catalog|subscription|vifurushi|kifurushi|packages?|kujiunga|kusajili|signup|sign up|register|portal|ssid|voucher|vifaa|sku|ofisi(?:ni)?|opening hours|malipo|nimelipa|kulipia|paid|payment|order|mhudumu|cudy|ruijie|reyee|comfast|faida|mapato|profit|income|revenue|biashara|business)\b|\b(?:eap|rap|wr|rb|ax|ap)[ -]?\d{2,5}\b/i;
 /**
  * "Mko wapi?" is a customer asking where the shop is, and it used to be judged
  * as idle chatter because it names no product.

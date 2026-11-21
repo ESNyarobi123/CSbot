@@ -136,6 +136,13 @@ test('an Iringa site survey and investment enquiry gets planning advice', async 
   assert.doesNotMatch(reply.body, /SKU|stock/i);
 });
 
+test('a profitability question gets business advice, never a product prompt', async () => {
+  const reply = await say('nipo kigoma mjini hilo eneo mkiangalia naweza pata faida kwa biashara hii');
+  assert.match(reply.body, /faida|biashara|Kigoma/i);
+  assert.doesNotMatch(reply.body, /bidhaa gani|SKU|model au SKU/i);
+  assert.equal(reply.memory.survey?.town, 'kigoma');
+});
+
 test('short answers to the survey continue planning in the same chat', async () => {
   const first = await say('Nahitaji survey ya WiFi');
   const site = await say('Hostel', first.memory);

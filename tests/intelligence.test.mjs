@@ -9,6 +9,7 @@ delete process.env.GEMINI_API_KEY;
 const { factBrief, factList, grounded, numbersIn, recall } = await import('../dist/brain.js');
 const { specBrief, specLines } = await import('../dist/specs.js');
 const { regionQuestion } = await import('../dist/customer-text.js');
+const { profitQuestion } = await import('../dist/customer-text.js');
 
 const say = (sw) => sw;
 
@@ -46,6 +47,15 @@ test('a system + region question is geographic, never a site-size question', () 
   // A distance or coverage figure is still site planning, not a region question.
   assert.equal(regionQuestion('Nahitaji AP ya mita 300 kwa wateja 120 kwenye uwanja wa wazi'), false);
   assert.equal(regionQuestion('Na kwa eneo lile unafikilia nitumie eap gani au ap gani'), false);
+});
+
+test('a profitability question is about the business, never a product lookup', () => {
+  assert.equal(profitQuestion('nipo kigoma mjini hilo eneo mkiangalia naweza pata faida kwa biashara hii'), true);
+  assert.equal(profitQuestion('Je, biashara ya Wi-Fi ina faida?'), true);
+  assert.equal(profitQuestion('Naweza pata faida kwa mfumo wa WoteFy?'), true);
+  // "naweza pata" alone, or a price/stock word, is not a profit question.
+  assert.equal(profitQuestion('Naweza pata hii kwenu?'), false);
+  assert.equal(profitQuestion('Bei ya EAP 650 ni ngapi?'), false);
 });
 
 test('a use case and a budget are read only when stated', () => {

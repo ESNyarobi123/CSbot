@@ -78,6 +78,17 @@ export function regionQuestion(text: string) {
   return /\b(?:wotefy|lubfy|mfumo|system|billing|malipo|payment|mobile money|mpesa|airtel|orange money|mtn|nafanya kazi|inafanya kazi|unafanya kazi|works?|operate|runs?|supported)\b/i.test(text);
 }
 
+/**
+ * "Can I make a profit from this business?" is about the viability of the Wi-Fi
+ * billing business, not about buying a device. The phrase "naweza pata" must
+ * not turn it into a product-availability question ("which product?").
+ */
+export function profitQuestion(text: string) {
+  if (!/\b(?:faida|mapato|profit|income|revenue|biashara|business)\b/i.test(text)) return false;
+  return /\b(?:faida|mapato|profit|income|revenue)\b/i.test(text)
+    && /\b(?:biashara|business|wifi|wi-?fi|hotspot|billing|intaneti|internet|mfumo|system|wotefy|lubfy)\b/i.test(text);
+}
+
 export const emailPattern = /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/u;
 
 /** Email the customer typed, used to find their account. */

@@ -8,7 +8,7 @@ import { adviseOnDevice } from './advisor.js';
 import { chatContext, compose, identifyDevice, loadCustomerMemory, recall, saveCustomerMemory, siteDistance, understandImage } from './brain.js';
 import { config } from './config.js';
 import {
-  accountQuestion, emailOf, messageLanguage, modelName, namesNewDevice, platformNotice, regionQuestion, smallTalkOnly, smallTalkReply,
+  accountQuestion, emailOf, messageLanguage, modelName, namesNewDevice, platformNotice, profitQuestion, regionQuestion, smallTalkOnly, smallTalkReply,
   supportQuestion, systemFrom, systemLabel,
 } from './customer-text.js';
 import { supportIntake, supportSummary } from './support.js';
@@ -949,6 +949,16 @@ async function answer(
     return result(say(`Kwa kuanza biashara ya Wi-Fi${where}, ningeshauri uanze na eneo moja lenye wateja. Kwenye survey tungeangalia wateja wanakaa wapi, intaneti inayopatikana hapo na sehemu nzuri za kuweka access point. Hapo tunaweza kukadiria gharama za vifaa na kuchagua mfumo wa kukusanya malipo. Eneo unalolenga ni la aina gani, kwa mfano hostel, soko au makazi?`,
       'I’d start with one site. A survey would check where customers spend time, which internet connection is available and where the access points could go. That gives us a basis for an equipment budget and a billing system. What kind of site are you considering, for example a hostel, market or residential area?'));
   }
+  if (!onlyDetect && profitQuestion(newest) && !monthly && !supportQuestion(newest)
+      && !['human', 'ready_to_pay', 'payment_reported'].includes(decision.intent)) {
+    delete memory.support;
+    const town = /\b(?:ukija|kuja|huku|nipo|niko)\s+([\p{L}]{2,30})\s+mjini\b/iu.exec(newest)?.[1];
+    memory.survey = { waitingFor: 'site', town };
+    const where = town ? ' ' + town[0].toUpperCase() + town.slice(1).toLowerCase() + ' mjini' : '';
+    return result(say(
+      `Biashara ya Wi-Fi billing${where} inaweza kuleta faida, lakini faida inategemea mambo matatu: idadi ya wateja wanaolipa, bei ya packages zako, na gharama za intaneti na vifaa. Kwa kawaida faida inakuja pale mapato ya kila siku yanapozidi gharama za kila mwezi (intaneti, umeme na matengenezo). Nisaidie nkadirie: eneo unalolenga ni la aina gani — hostel, soko au makazi — na unatarajia wateja wangapi kwa siku?`,
+      `A Wi-Fi billing business${where} can be profitable, but profit comes down to three things: how many paying customers you have, your package pricing, and your internet and equipment costs. Profit usually starts when daily income passes your monthly running costs (internet, power and maintenance). Let me help you estimate: what kind of site are you targeting — a hostel, market or residential area — and how many customers do you expect a day?`));
+  }
   if (!onlyDetect && memory.survey && !monthly && !signup) {
     const place = /^(?:ni |kwenye |eneo la |ni eneo la )?(hostel|hosteli|soko|sokoni|makazi|nyumba|shule|hoteli|hostels?|market|school|hotel)[.! ]*$/i.exec(newest.trim());
     if (place && memory.survey.waitingFor === 'site') {
@@ -1183,7 +1193,7 @@ async function answer(
     decision.query = 'access point';
     memory.requirements = { ...memory.requirements, coverageMeters: siteDistance(newest) };
   }
-  if (!monthly && /\b(?:mnayo|mnao|na\s?weza (?:ku)?pata|can i get|do you stock)\b/i.test(newest) && /\b(?:hii|hiyo|hiki|this|that)\b/i.test(newest) && !modelQuery(newest)) {
+  if (!monthly && !profitQuestion(newest) && /\b(?:mnayo|mnao|na\s?weza (?:ku)?pata|can i get|do you stock)\b/i.test(newest) && /\b(?:hii|hiyo|hiki|this|that)\b/i.test(newest) && !modelQuery(newest)) {
     decision.intent = 'product';
     decision.query = '';
   }
