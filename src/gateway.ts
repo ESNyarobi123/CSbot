@@ -310,13 +310,17 @@ class Session {
           // A restart request is normal: WhatsApp wants the client to reopen, so reconnect without backoff.
           this.verifying = this.verifying && code === DisconnectReason.restartRequired;
           this.retry(code === DisconnectReason.restartRequired);
-          if (code !== DisconnectReason.restartRequired) {
-            log.warn({ account: this.account.id, disconnectCode: code }, 'WhatsApp connection closed');
-          }
           const blocked = code === DisconnectReason.loggedOut || code === DisconnectReason.badSession
             ? 'logged_out' : code === DisconnectReason.connectionReplaced ? 'replaced'
               : code === DisconnectReason.forbidden || code === DisconnectReason.multideviceMismatch ? 'blocked' : '';
           this.blocked = Boolean(blocked);
+          if (code !== DisconnectReason.restartRequired) {
+            log.warn({ account: this.account.id, disconnectCode: code ?? null,
+              reason: code === DisconnectReason.connectionLost ? 'connectionLostOrTimedOut'
+                : code === undefined ? 'unknown' : DisconnectReason[code] ?? 'unknown',
+              nextState: blocked || 'reconnecting',
+              retryInMs: blocked ? null : Math.max(0, this.reconnectAt - Date.now()) }, 'WhatsApp connection closed');
+          }
           await this.status(blocked || (this.verifying ? 'verifying' : 'reconnecting'));
         }
       });

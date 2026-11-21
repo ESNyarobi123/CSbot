@@ -1,13 +1,14 @@
+import { availableModels, recordModelFailure } from './gemini-availability.js';
 import { replyEligible } from './reply-policy.js';
-import { photoInquiry, photoReply, printedModel } from './product-photo.js';
+import { photoInquiry, photoReply, printedModel, understoodReply } from './product-photo.js';
 import { GoogleGenAI } from '@google/genai';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { adviseOnDevice } from './advisor.js';
-import { compose, identifyDevice, loadCustomerMemory, recall, saveCustomerMemory, siteDistance } from './brain.js';
+import { chatContext, compose, identifyDevice, loadCustomerMemory, recall, saveCustomerMemory, siteDistance, understandImage } from './brain.js';
 import { config } from './config.js';
 import {
-  emailOf, messageLanguage, modelName, namesNewDevice, smallTalkOnly, smallTalkReply,
+  accountQuestion, emailOf, messageLanguage, modelName, namesNewDevice, platformNotice, smallTalkOnly, smallTalkReply,
   supportQuestion, systemFrom, systemLabel,
 } from './customer-text.js';
 import { supportIntake, supportSummary } from './support.js';
@@ -17,7 +18,7 @@ export { customerProfile, emailOf, messageLanguage, smallTalkOnly, supportQuesti
 export { supportIntake, supportSummary } from './support.js';
 import { log, row } from './db.js';
 import { sheetFor, specsFor, specsForMany, specLines } from './specs.js';
-import { cableQuote, catalog, installationOptions, isModelReference, modelQuery, money, planKind, readPlans, readProduct, searchProducts, serviceCatalog, systemName, variantLetter } from './pos.js';
+import { cableQuote, catalog, installationOptions, isModelReference, modelQuery, money, planKind, readPlans, readProduct, requestedBrand, searchProducts, serviceCatalog, systemName, variantLetter } from './pos.js';
 import type { InstallationOption } from './pos.js';
 import type { Conversation, Stage } from './store.js';
 
@@ -96,7 +97,11 @@ function fallback(text: string, memory: Conversation['memory']): Decision {
   } else if (/\b(namba (?:ya )?(?:kulipia|malipo)|nataka kulipa|niko tayari kulipa|ready to pay|how (?:do|can) i pay|send.{0,12}payment (?:number|details)|i want to pay)\b/i.test(text) ||
       (memory.lastQuote && /\b(nataka kununua|naichukua|(?:ile|hiyo) naitaka|i(?:'ll| will) take it)\b/i.test(text))) {
     answer.intent = 'ready_to_pay';
-  } else if (packageWords.test(text) || (memory.plan && answer.system && !purchaseWords.test(text))) {
+  } else if (supportQuestion(text) && !purchaseWords.test(text.replace(/\b(sina|hakuna|haipati)\b/gi, ' '))) {
+    // A broken system outranks a price lookup and an open package quote. A LubFy
+    // link in a withdrawal alert used to keep the old plan and ask which hotspot.
+    answer.intent = 'support';
+  } else if (packageWords.test(text) || (memory.plan && answer.system && !purchaseWords.test(text) && !platformNotice(text))) {
     answer.kind = /\b(bundle|pamoja na kifaa|installation package)\b/i.test(text) ? 'bundle'
       : /\b(data|bando|internet|voucher|gb|mbps|site|hotspot pass)\b/i.test(text) ? 'wifi'
         : /\b(subscription|usajili|ya mfumo|ya mwezi|ya mwaka|licen[cs]e)\b/i.test(text) ? 'subscription' : memory.plan?.kind ?? '';
@@ -108,10 +113,6 @@ function fallback(text: string, memory: Conversation['memory']): Decision {
     // rows as "closest models", which is the 2026-11-17 KAHAMA chat.
     answer.intent = 'product';
     answer.query = '';
-  } else if (supportQuestion(text) && !purchaseWords.test(text.replace(/\b(sina|hakuna|haipati)\b/gi, ' '))) {
-    // A broken system outranks a price lookup: someone whose portal will not open
-    // is not shopping for a model.
-    answer.intent = 'support';
   } else if (moreModelsWords.test(text) && memory.productOptions?.length) {
     // "Hauna model zingine?" widens the list the bot just sent instead of asking
     // the customer for a product name they are already looking at.
@@ -125,7 +126,11 @@ function fallback(text: string, memory: Conversation['memory']): Decision {
   } else if (purchaseWords.test(text)) {
     const productText = text.replace(/\b(naomba|nataka|nipe|habari|hello|hey|hi|bei|price|cost|stock|picha|photo|image|gani|ngapi|je|ipo|zipo|inapatikana|available|nunua|buy|show|please|the|of|for|do|you|have|what|is|it|sasa|tuma|ya|na|kwa|how|much)\b/gi, ' ')
       .replace(/[^\p{L}\p{N} -]+/gu, ' ').replace(/\s+/g, ' ').trim();
-    if (answer.system && !modelName.test(text) && !imageWords.test(text)) {
+    // "order Comfast AP 3000" names hardware even when the sentence also says LubFy.
+    // Treating every system mention as a package is how a storefront order became
+    // a question about subscriptions.
+    const namedHardware = modelName.test(text) || Boolean(requestedBrand(text)) || Boolean(modelQuery(text));
+    if (answer.system && !namedHardware && !imageWords.test(text)) {
       answer.intent = 'ambiguous_package';
     } else {
       answer.intent = 'product';
@@ -193,7 +198,7 @@ async function decide(text: string, memory: Conversation['memory'], history: Cha
     options: memory.productOptions?.slice(-12).map(item => item.name), awaitingService: memory.awaitingService,
     supportStep: memory.support?.waitingFor, siteFacts: memory.facts, requirements: memory.requirements },
     history, approvedKnowledge: knowledge.map(entry => ({ ...entry, content: entry.content.slice(0, 3000) })) });
-  const models = [...new Set([config.GEMINI_MODEL, config.GEMINI_FALLBACK_MODEL])];
+  const models = availableModels();
   // A customer is waiting. Free Gemini tiers answer 503 during demand spikes, so
   // stop spending the reply budget once the deadline is close and use local rules.
   // The 10s client timeout is the API minimum, so the budget must clear one full
@@ -236,6 +241,7 @@ Never give prices, stock levels, payment details, links absent from approved kno
       const value = decisionSchema.parse(JSON.parse(generated.text ?? ''));
       return resolveDecision(text, memory, value);
     } catch (error) {
+      recordModelFailure(model, error);
       // A rejected request (bad schema, wrong timeout) is not a demand spike; it
       // would otherwise look identical to a 503 in the logs and stay unnoticed.
       log.warn({ model, code: (error as { status?: string })?.status,
@@ -243,7 +249,7 @@ Never give prices, stock levels, payment details, links absent from approved kno
       `Gemini model ${model} unavailable or returned invalid output; trying the next model`);
     }
   }
-  log.warn('Every Gemini model failed; using local intent detection');
+  if (models.length) log.warn('Every Gemini model failed; using local intent detection');
   return resolveDecision(text, memory);
 }
 
@@ -871,6 +877,9 @@ async function answer(
   client: PoolClient, conversation: Conversation, newest: string, history: ChatLine[], onlyDetect = false,
   photo?: IncomingPhoto, voice = false,
 ): Promise<Outcome> {
+  // An automated LubFy alert is not a customer. Replying sells them a package
+  // and the next real question inherits that package as the topic.
+  if (platformNotice(newest)) return { body: '', memory: conversation.memory };
   const stored = onlyDetect || conversation.id === 'playground' ? {} : await loadCustomerMemory(client, conversation.account_id, conversation.customer_jid);
   const memory = {
     ...conversation.memory,
@@ -892,6 +901,32 @@ async function answer(
   const say = (sw: string, en: string) => decision.language === 'en' ? en : sw;
   const result = (body: string, changes: Partial<Omit<Outcome, 'body' | 'memory'>> = {}): Outcome =>
     ({ body, memory, ...changes });
+  if (!onlyDetect && accountQuestion(newest)) {
+    const omada = /\bomada\b/i.test(newest);
+    const lubfy = /\blubfy\b/i.test(newest);
+    const both = omada && lubfy;
+    const named = !both && (lubfy || decision.system === 'lubfy') ? 'LubFy'
+      : !both && (omada || decision.system === 'wotefy') ? 'WoteFy' : '';
+    return result(say(
+      'Akaunti ya mteja haifunguliwi ndani ya gateway. Inafunguliwa kwenye dashboard ya mfumo wa billing.\n'
+      + (named === 'WoteFy'
+        ? 'Kwa WoteFy, mteja anajiunga kwenye portal ya Wi-Fi na wewe unadhibiti akaunti kwenye dashboard ya WoteFy.'
+        : named === 'LubFy'
+          ? 'Kwa LubFy, unafungua mteja au voucher kwenye dashboard ya LubFy.'
+          : 'WoteFy (Omada): mteja anajiunga kwenye portal ya Wi-Fi, na wewe unadhibiti akaunti kwenye dashboard ya WoteFy. LubFy: unafungua mteja au voucher kwenye dashboard ya LubFy.')
+      + (named
+        ? '\n\nUnauona wapi kwenye dashboard sasa — orodha ya wateja, au bado hujafika kwenye akaunti?'
+        : '\n\nUnasanidi WoteFy au LubFy kwenye eneo hili? Nikuelekeze hatua inayofuata.'),
+      'A customer account is created in the billing dashboard, not on the gateway.\n'
+      + (named === 'WoteFy'
+        ? 'On WoteFy the customer joins through the Wi-Fi portal, and you manage the account in the WoteFy dashboard.'
+        : named === 'LubFy'
+          ? 'On LubFy you create the customer or voucher in the LubFy dashboard.'
+          : 'WoteFy (Omada): the customer joins through the Wi-Fi portal, and you manage the account in the WoteFy dashboard. LubFy: you create the customer or voucher in the LubFy dashboard.')
+      + (named
+        ? '\n\nWhere are you in the dashboard now — the customer list, or not signed in yet?'
+        : '\n\nAre you setting up WoteFy or LubFy at this site? I will point you to the next step.')));
+  }
   if (decision.system) memory.system = decision.system;
   // Support intake runs before every sales branch. A customer whose system is
   // broken gets three facts collected first — problem, system, login email —
@@ -1165,7 +1200,13 @@ async function answer(
       const seen = await identifyDevice(ai, photo).catch(() => undefined);
       if (seen && seen.confidence >= 0.8 && /[a-z]/i.test(seen.model) && /[0-9]/.test(seen.model)) model = seen.model;
     }
-    return photoReply({ model }, memory, say);
+    if (model) return photoReply({ model }, memory, say);
+    // No legible device. A photo is not always hardware: a customer can send a
+    // Wi-Fi package page, a receipt or an error screen. Classify it and answer
+    // that, instead of the old "write the model on the label".
+    const read = await understandImage(ai, photo).catch(() => undefined);
+    if (read) return understoodReply(read, memory, say);
+    return photoReply({}, memory, say);
   }
   // A question about what the quoted device can do ("ina uwezo wa kwenda umbali
   // gani") is answered from the catalog, never with a fitting fee. This runs
@@ -1198,7 +1239,7 @@ async function answer(
       const advised = await adviseOnDevice({
         ai, client, product: { id: target, name: memory.product?.name ?? '' },
         question: newest, memory, say, language: decision.language,
-        knowledge: topic?.content.slice(0, 2000),
+        knowledge: topic?.content.slice(0, 2000), history,
       }).catch(() => undefined);
       if (advised) {
         delete memory.awaitingService;
@@ -1330,9 +1371,14 @@ async function answer(
       if (uploaded) return result(uploaded.body, { imageUrl: uploaded.imageUrl });
     }
     try {
+      const customerBrand = requestedBrand(newest);
       const choice = memory.productOptions?.find(item => [item.name, item.sku].some(value =>
         value?.toLowerCase() === decision.query.toLowerCase()));
-      const items = choice ? [choice] : decision.query ? (await searchProducts(decision.query)).items : [memory.product!];
+      // Gemini often keeps the shared model number and drops the brand, so
+      // "Comfast AP 3000" was searched as "AP 3000" and answered with Cudy.
+      const lookup = decision.query && customerBrand && !customerBrand.test(decision.query) ? newest : decision.query;
+      const items = choice && (!customerBrand || customerBrand.test(`${choice.name} ${choice.sku ?? ''}`))
+        ? [choice] : lookup ? (await searchProducts(lookup)).items : [memory.product!];
       // A category request ("access point") is answered with devices; the loose
       // catalog search also returns the cable and the fitting services.
       const categoryOnly = !memory.product && !modelQuery(newest) && Boolean(deviceQuery(newest));
@@ -1349,6 +1395,11 @@ async function answer(
         // "EAP 605" is not stocked. Suggesting the nearest models is more useful
         // than asking the customer to retype a model that does not exist.
         return result(await missingProduct(decision.query ?? '', newest, memory, say, voice));
+      }
+      if (customerBrand) {
+        const matching = items.filter(item => customerBrand.test(`${item.name} ${'brand' in item ? item.brand ?? '' : ''}`));
+        items.splice(0, items.length, ...matching);
+        if (!items.length) return result(await missingProduct(decision.query ?? '', newest, memory, say, voice));
       }
       const exact = items.filter(item => [item.name, 'sku' in item ? item.sku : undefined].some(value =>
         typeof value === 'string' && value.toLowerCase() === decision.query.toLowerCase()));
@@ -1520,7 +1571,7 @@ async function answer(
         const topic = knowledge.find(entry => entry.id !== 'csolution');
         const advised = await adviseOnDevice({
           ai, client, product: { id: product.id, name: product.name }, question: newest,
-          memory, say, language: decision.language, knowledge: topic?.content.slice(0, 2000),
+          memory, say, language: decision.language, knowledge: topic?.content.slice(0, 2000), history,
           // The installation and plan lines are appended after this answer, so the
           // composer must not claim those prices are unknown.
           extraFacts: [
@@ -1578,6 +1629,7 @@ async function answer(
           ? `CUSTOMER SITE FACTS\n${Object.entries(memory.facts).map(([key, value]) => `${key}: ${value}`).join('\n')}`
           : '',
       ].filter(Boolean).join('\n\n'),
+      context: chatContext(history),
     }).catch(() => undefined);
     if (written) {
       memory.trace = [`Answered from knowledge: ${fact.title}`, 'Composed from the approved entry and site facts'];

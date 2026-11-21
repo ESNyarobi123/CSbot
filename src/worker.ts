@@ -8,7 +8,7 @@ import { shop } from './csolution-pos.js';
 import { db, log, row, transaction } from './db.js';
 import { beat } from './heartbeat.js';
 import { advanceSale, currentSale, withoutQuote } from './sales.js';
-import { latestConsent } from './customer-text.js';
+import { latestConsent, platformNotice } from './customer-text.js';
 import {
   alertAdmins, cancelFollowUps, customerOptedOut, dueFollowUps, enrichCustomer, enqueue,
   markFollowUpSent, recipient, scheduleFollowUp, setCustomerOptedOut, setMode, type Conversation,
@@ -80,7 +80,9 @@ async function planFollowUps(
   const { account_id: accountId, id: conversationId, customer_jid: jid } = conversation;
   const inHours = (n: number) => new Date(Date.now() + n * 3600_000);
   const en = outcome.memory.language === 'en';
-  const product = outcome.memory.product?.name ?? conversation.memory.product?.name;
+  const product = outcome.memory.quoteFor === 'plan'
+    ? (outcome.memory.system === 'lubfy' ? 'LubFy package' : outcome.memory.system === 'wotefy' ? 'WoteFy package' : undefined)
+    : outcome.memory.product?.name ?? conversation.memory.product?.name;
   // A closed sale has nothing left to nudge.
   if (outcome.stage === 'paid' || outcome.stage === 'completed') {
     await cancelFollowUps(client, conversationId);
@@ -91,8 +93,8 @@ async function planFollowUps(
     await scheduleFollowUp(client, {
       accountId, conversationId, jid, kind: 'quote_nudge', at: inHours(config.FOLLOWUP_QUOTE_HOURS),
       body: en
-        ? `Hi! Did you get a chance to look at ${product ?? 'the device'}? I'm here to finalise the order or answer anything.`
-        : `Habari! Ulipata muda kuangalia ${product ?? 'kifaa'}? Niko hapa nikikamilisha agizo au kujibu swali lolote.`,
+        ? `Hi! Did you get a chance to look at ${product ?? 'the quote'}? Would you like help checking whether it fits your needs?`
+        : `Habari! Ulipata muda kuangalia ${product ?? 'bei tuliyojadili'}? Ungependa nikusaidie kuthibitisha kama inakidhi mahitaji yako?`,
     });
   } else if (outcome.stage === 'ready_to_pay' && config.FOLLOWUP_PAYMENT_HOURS) {
     await cancelFollowUps(client, conversationId, ['quote_nudge', 'handoff_ping']);
@@ -107,8 +109,18 @@ async function planFollowUps(
     await scheduleFollowUp(client, {
       accountId, conversationId, jid, kind: 'handoff_ping', at: inHours(config.FOLLOWUP_HANDOFF_HOURS),
       body: en
-        ? "Hi, our team is still on it — sit tight, we'll be right back."
-        : 'Habari, bado timu yetu inakushughulikia — usijali, tutarudi hivi karibuni.',
+        ? "Hi, did you receive help with your question? If you still need assistance, let us know here."
+        : 'Habari, ulipata msaada kwa swali lako? Kama bado unahitaji msaada, tuambie hapa.',
+    });
+  } else if (outcome.memory.survey && config.FOLLOWUP_QUOTE_HOURS) {
+    await cancelFollowUps(client, conversationId, ['payment_reminder', 'handoff_ping']);
+    const town = outcome.memory.survey.town;
+    const named = town ? town.charAt(0).toUpperCase() + town.slice(1).toLowerCase() : '';
+    await scheduleFollowUp(client, {
+      accountId, conversationId, jid, kind: 'quote_nudge', at: inHours(config.FOLLOWUP_QUOTE_HOURS),
+      body: en
+        ? `Hi, shall we continue planning${named ? ' the ' + named + ' Wi-Fi site' : ''}? One detail is enough: the kind of place, or how many people would be online at once.`
+        : `Habari, tuendelee na mpango${named ? ' wa ' + named : ''}? Jambo moja linatosha: aina ya eneo, au watu wangapi watakuwa mtandaoni kwa pamoja.`,
     });
   }
 }
@@ -230,8 +242,12 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         photo = imageIds.length === 1 ? await newestPhoto(client, imageIds) : undefined;
         photo ??= { count: imageIds.length };
       }
+      const replyStarted = Date.now();
       const outcome = await respond(client, conversation, newest,
         history.map(line => ({ ...line, body: line.body.slice(0, 700) })), !canReply, photo, spoken);
+      const replyMs = Date.now() - replyStarted;
+      if (replyMs >= 5000) log.warn({ conversation: conversationId, replyMs, batchSize: pending.length,
+        withPhoto: Boolean(photo), withVoice: spoken, canReply }, 'Slow reply generation');
       await client.query('UPDATE conversations SET memory=$2,updated_at=now() WHERE id=$1', [conversationId, outcome.memory]);
       if (canReply && outcome.handoff) await setMode(client, conversationId, 'human');
       if (canReply && outcome.body) await enqueue(client, {
@@ -253,9 +269,10 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         await alertAdmins(client, { ...updated, memory },
           outcome.handoff ? 'Mazungumzo yanahitaji mhudumu' : 'Tatizo jipya la mfumo');
       }
-      if (canReply) {
+      if (canReply && !platformNotice(newest)) {
         // Keep the 360 record current with what this turn revealed, then queue
-        // the follow-up for wherever the chat just landed.
+        // the follow-up for wherever the chat just landed. A LubFy admin alert
+        // must not refresh a sales nudge.
         await enrichCustomer(client, conversation.account_id, conversation.customer_jid, {
           language: outcome.memory.language,
           email: outcome.memory.support?.email ?? outcome.memory.lastSupport?.email,
@@ -335,8 +352,13 @@ try {
               await cancelFollowUps(client, fu.conversation_id, [fu.kind]);
               continue;
             }
-            const mode = await row<{ mode: string }>(client,
-              'SELECT mode FROM conversations WHERE id=$1', [fu.conversation_id]);
+            const mode = await row<{ mode: string; stage: string }>(client,
+              'SELECT mode,stage FROM conversations WHERE id=$1', [fu.conversation_id]);
+            if (!mode || ['paid', 'completed', 'payment_reported'].includes(mode.stage) ||
+                (fu.kind !== 'handoff_ping' && mode.mode !== 'bot')) {
+              await cancelFollowUps(client, fu.conversation_id, [fu.kind]);
+              continue;
+            }
             // A handoff ping is pointless once the chat is back with the bot.
             if (fu.kind === 'handoff_ping' && mode?.mode !== 'human') {
               await cancelFollowUps(client, fu.conversation_id, ['handoff_ping']);
@@ -345,7 +367,7 @@ try {
             const account = await row(client, 'SELECT enabled FROM accounts WHERE id=$1', [fu.account_id]);
             if (!account?.enabled) { await cancelFollowUps(client, fu.conversation_id); continue; }
             await enqueue(client, { accountId: fu.account_id, conversationId: fu.conversation_id,
-              jid: fu.jid, origin: 'bot', body: fu.body });
+              jid: fu.jid, origin: fu.kind === 'handoff_ping' ? 'handoff' : 'bot', body: fu.body });
             await markFollowUpSent(client, fu.id);
           }
         });

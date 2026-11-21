@@ -40,6 +40,31 @@ export function supportQuestion(text: string) {
   return supportWords.test(text);
 }
 
+/**
+ * LubFy posts reseller, withdrawal and agent alerts into the shop WhatsApp.
+ * Those are not customers, and answering them with a price list trains the
+ * chat to sell to a notification.
+ */
+export function platformNotice(text: string) {
+  if (!/lubfy\.online\/admin\/(?:reseller|resellers|withdrawal|agent|onboarding)/i.test(text)) return false;
+  if (!/\b(?:new reseller|withdrawal request|agent request|self registration)\b/i.test(text)) return false;
+  // A person who forwards the alert and then asks a question still gets an answer.
+  if (/\?/.test(text) || supportQuestion(text)) return false;
+  return true;
+}
+
+/**
+ * "Where do I create the customer account?" is a dashboard question. The word
+ * "gateway" in the same sentence is the device they are configuring, not a
+ * model they want to buy.
+ */
+export function accountQuestion(text: string) {
+  if (platformNotice(text) || supportQuestion(text)) return false;
+  if (/\b(?:bei|price|nunua|buy|order|stock)\b/i.test(text)) return false;
+  return /\b(?:accounts?|akaunti|akaunt)\b/i.test(text)
+    && /\b(?:wapi|where|jinsi|namna|how|tunafung\w*|tunamtengenez\w*|kufungua|kuunda|create|fungua|inafunguliwa)\b/i.test(text);
+}
+
 export const emailPattern = /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/u;
 
 /** Email the customer typed, used to find their account. */

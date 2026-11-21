@@ -86,6 +86,7 @@ const searchNoise = new Set(['bei', 'price', 'cost', 'picha', 'photo', 'image', 
   'maelezo', 'specification', 'specifications', 'spec', 'camera', 'kamera', 'naitaji', 'nahitaji', 'ninahitaji',
   'tunahitaji', 'tunataka', 'niletee', 'nipa', 'nipe', 'niambie', 'tafuta', 'looking', 'need', 'want', 'would',
   'like', 'can', 'could', 'tell', 'about', 'original', 'new', 'latest', 'me', 'my', 'our', 'us', 'ikoje', 'je',
+  'order', 'hello', 'hey', 'hi', 'lubfy', 'wotefy', 'tzs', 'tsh', 'at', 'to',
   'vipi', 'what', 'which', 'does', 'this', 'that', 'there', 'give',
   // Words customers wrap around a model name. Left in, they break the search because
   // the catalog requires every word to appear in the product.
@@ -128,22 +129,29 @@ export function isModelReference(text: string) {
   return kept.length > 0 && kept.length <= 4 && words.length <= 5 && kept.some(token => /\d/.test(token));
 }
 
+const productBrands = [
+  /\bcomfast\b/i, /\bcudy\b/i, /\b(?:tp[ -]?link|tplink|omada)\b/i,
+  /\bmikrotik\b/i, /\b(?:ruijie|reyee)\b/i, /\bcambium\b/i,
+  /\b(?:unifi|ubiquiti)\b/i,
+];
+
+export function requestedBrand(search: string) {
+  const matches = productBrands.filter(pattern => pattern.test(search));
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 export async function searchProducts(search: string, limit = 6) {
-  // "Nahitaji access point ya mita 300" must reach the catalog as "access point",
-  // so the same cleaning runs for the shop database and the HTTP POS.
   const { primary, narrow, model } = searchTerms(search);
-  // Every word must match, so try the model first and widen only when it is not stocked.
-  const terms = [...new Set([model, primary, narrow].filter(Boolean))];
-  if (shop) {
-    for (const term of terms) {
-      const { items } = await searchShop(term, limit);
-      if (items.length) return { items };
-    }
-    return { items: [] };
-  }
+  const brand = requestedBrand(search);
+  // Try the full requested identity first. Model-only fallback still has to
+  // match the brand, because AP3000 is sold by several manufacturers.
+  const terms = [...new Set([primary, model, narrow].filter(Boolean))];
   for (const term of terms) {
-    const result = await request('products', productListSchema, { search: term, limit: String(limit) });
-    if (result.items.length) return { items: result.items.map(proxyAssets) };
+    const result = shop
+      ? await searchShop(term, limit)
+      : await request('products', productListSchema, { search: term, limit: String(limit) });
+    const items = result.items.filter(item => !brand || brand.test(`${item.name} ${item.brand ?? ''}`));
+    if (items.length) return { items: shop ? items : items.map(proxyAssets) };
   }
   return { items: [] };
 }

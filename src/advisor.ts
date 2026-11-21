@@ -1,6 +1,6 @@
 import type { GoogleGenAI } from '@google/genai';
 import type { PoolClient } from 'pg';
-import { compose, factBrief, type Facts } from './brain.js';
+import { chatContext, compose, factBrief, type Facts } from './brain.js';
 import { money, readProduct, searchProducts } from './pos.js';
 import { sheetFor, specsFor, specsForMany, specBrief } from './specs.js';
 import type { Conversation } from './store.js';
@@ -74,6 +74,8 @@ export interface AdviceInput {
   language: 'sw' | 'en';
   /** Approved knowledge that mentions this device or its system, if any. */
   knowledge?: string;
+  /** Recent turns, so a short follow-up ("na hiyo je?") stays on the same device. */
+  history?: { direction: string; body: string }[];
   /**
    * Facts the caller appends to the reply itself (installation fees, cable).
    * Without them the composer says "not recorded" and the deterministic lines
@@ -124,6 +126,9 @@ export async function adviseOnDevice(input: AdviceInput): Promise<Advice | undef
   if (sheet) {
     facts.push('--- DATASHEET ---', specBrief(sheet));
   }
+  if (!sheet?.coverage_m && !/\d{2,4}\s*(?:metres?|meters?|mtr|\bm\b)/i.test(description)) {
+    facts.push('Stated range: NOT RECORDED for this model. Do not invent a distance. Ask how many metres the Wi-Fi should reach. If a model under OTHER MODELS has a recorded range, you may offer that model as an alternative.');
+  }
 
   // The alternatives a real engineer would mention next to this one. Same
   // category, real prices, only recorded facts, and never the cable by the metre.
@@ -161,7 +166,7 @@ export async function adviseOnDevice(input: AdviceInput): Promise<Advice | undef
 
   const written = await compose({
     ai: input.ai, question: input.question, facts: facts.join('\n'), language: input.language,
-    goal: goalFrom(input.memory.facts),
+    goal: goalFrom(input.memory.facts), context: input.history ? chatContext(input.history) : '',
   });
   if (!written) {
     trace.push('Composer unavailable or ungrounded — using the recorded lines');

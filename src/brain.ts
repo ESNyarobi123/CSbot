@@ -1,7 +1,7 @@
+import { availableModels, recordModelFailure } from './gemini-availability.js';
 import type { GoogleGenAI } from '@google/genai';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
-import { config } from './config.js';
 import { log } from './db.js';
 import type { Conversation } from './store.js';
 
@@ -108,6 +108,12 @@ export function recall(text: string, previous?: Facts): Facts {
   if (/\b(cctv|camera|kamera)\b/i.test(text)) put('also', 'cctv');
   if (/\b(printer|printa|risiti)\b/i.test(text)) put('also', 'printer');
   if (/\b(mfumo|system|billing|bili)\b/i.test(text)) put('also', 'billing');
+  const town = /\b(?:ukija|kuja|huku|nipo|niko)\s+([\p{L}]{3,24})\s+mjini\b/iu.exec(text);
+  if (town) put('town', town[1].toLowerCase());
+  if (/\b(?:surv(?:ey|aey|ei)|invest(?:ment)?|uwekezaji|kuwekeza)\b/i.test(text)
+      && /\b(?:wi-?fi|hotspot|billing|intaneti|internet)\b/i.test(text)) {
+    put('goal', 'start a wifi billing site');
+  }
   return facts;
 }
 
@@ -120,6 +126,8 @@ export function factList(facts?: Facts) {
     use: 'Use case', budget: 'Budget', asked_mesh: 'Asked about mesh', also: 'Also interested in',
     last_model: 'Last model discussed',
     photo: 'Model read from photo',
+    town: 'Town',
+    goal: 'Goal',
   };
   return Object.entries(facts)
     .filter(([, value]) => Boolean(value))
@@ -204,6 +212,15 @@ export interface ComposeInput {
   language: 'sw' | 'en';
   /** One line describing what the customer is trying to do, e.g. "cover 300 m outdoors". */
   goal?: string;
+  /** Recent turns, so "hiyo" has a referent. Not a source of prices or ranges. */
+  context?: string;
+}
+
+/** The last few turns, short enough to keep the model on the current question. */
+export function chatContext(history: { direction: string; body: string }[]) {
+  return history.slice(-4).map(line =>
+    `${line.direction === 'inbound' ? 'Customer' : 'Shop'}: ${line.body.replace(/\s+/g, ' ').trim().slice(0, 220)}`)
+    .filter(line => line.length > 12).join('\n');
 }
 
 /**
@@ -214,8 +231,8 @@ export interface ComposeInput {
 export async function compose(input: ComposeInput): Promise<{ answer: string; confidence: number } | undefined> {
   if (!input.ai) return undefined;
   const language = input.language === 'en' ? 'English' : 'Kiswahili';
-  const models = [...new Set([config.GEMINI_MODEL, config.GEMINI_FALLBACK_MODEL])];
-  const prompt = `FACTS (the only truth you may use)
+  const models = availableModels();
+  const prompt = `${input.context ? `EARLIER MESSAGES (what the customer is referring to; prices, ranges and stock still come only from FACTS)\n${input.context}\n\n` : ''}FACTS (the only truth you may use)
 ${input.facts}
 
 CUSTOMER MESSAGE
@@ -233,7 +250,9 @@ Rules, in order of importance:
 7. Mention the price and stock only when FACTS contain them. Never quote installation or cable unless the customer asked for it.
 8. No headings, no markdown bold, no emoji. A short list of specs is fine when the customer asked for specs.
 9. When FACTS say the sheet is unverified, present the figures as the shop's record and offer to confirm with the manufacturer.
-10. Never promise a discount, a delivery date or stock you were not given.`;
+10. Never promise a discount, a delivery date or stock you were not given.
+11. Use EARLIER MESSAGES only to see which device or site the customer means. Never copy a price, range or stock figure from them.
+12. Close with at most one question, and only when one missing fact would change the recommendation.`;
 
   for (const model of models) {
     try {
@@ -256,6 +275,7 @@ Rules, in order of importance:
       }
       return { answer: clean(value.answer), confidence: value.confidence };
     } catch (error) {
+      recordModelFailure(model, error);
       log.warn({ model, code: (error as { status?: string })?.status,
         error: String((error as Error)?.message ?? error).slice(0, 240) },
       `Composer model ${model} failed`);
@@ -285,7 +305,7 @@ export async function identifyDevice(
   ai: GoogleGenAI | undefined, image: { base64: string; mimetype: string },
 ) {
   if (!ai) return undefined;
-  const models = [...new Set([config.GEMINI_MODEL, config.GEMINI_FALLBACK_MODEL])];
+  const models = availableModels();
   const systemInstruction = `You identify networking hardware from a customer photo for a Tanzanian shop.
 Return JSON only. "model" is the exact model printed on the device or its label (for example "EAP 650", "RG-RAP6262(G)", "hAP ax2"), or "" when no model is legible.
 "brand" is the maker. "kind" is a short category ("access point", "router", "switch", "antenna", "cable").
@@ -312,8 +332,70 @@ Use confidence below 0.5 when the photo is too far away, blurry or shows only pa
       });
       return identified.parse(JSON.parse(generated.text ?? ''));
     } catch (error) {
+      recordModelFailure(model, error);
       log.warn({ model, error: String((error as Error)?.message ?? error).slice(0, 200) },
         'Photo identification failed');
+    }
+  }
+  return undefined;
+}
+
+const understood = z.object({
+  kind: z.enum(['device', 'pricing', 'portal', 'receipt', 'error', 'document', 'other']).default('other'),
+  summary: z.string().max(400).default(''),
+  brand: z.string().max(60).default(''),
+  model: z.string().max(80).default(''),
+  confidence: z.number().min(0).max(1).default(0),
+});
+export type UnderstoodImage = z.infer<typeof understood>;
+
+/**
+ * Read whatever the customer sent and say what kind of image it is. The photo
+ * flow used to assume every picture is hardware and answer "write the model on
+ * the label" — which is nonsense for a Wi-Fi package page or a receipt. This is
+ * the general fallback: it classifies the image and the caller replies to that
+ * kind, so a portal screenshot is met with a portal question, not a label one.
+ */
+export async function understandImage(
+  ai: GoogleGenAI | undefined, image: { base64: string; mimetype: string },
+): Promise<UnderstoodImage | undefined> {
+  if (!ai) return undefined;
+  const models = availableModels();
+  const systemInstruction = `You look at whatever the customer sent and describe it for Connect Solution, a Tanzanian network-equipment shop.
+Return JSON only. Decide "kind":
+- "device": networking hardware — access point, router, switch, antenna, its box or label.
+- "pricing": a price list or a Wi-Fi package/pricing page (shows prices and data bundles).
+- "portal": a Wi-Fi login or landing page a customer sees to connect.
+- "receipt": a payment receipt or transaction confirmation.
+- "error": an error message or a broken screen.
+- "document": a letter, form or written document.
+- "other": anything else.
+"summary" is one short sentence describing what is visible (for example "a Wi-Fi package page listing 1GB for TSh 500"). "model" and "brand" are filled only when kind is "device" and the model is legible; otherwise empty strings.
+Use confidence below 0.5 when the image is too unclear to classify.`;
+  for (const model of models) {
+    try {
+      const generated = await ai.models.generateContent({
+        model,
+        config: {
+          maxOutputTokens: 500,
+          temperature: 0.1,
+          responseMimeType: 'application/json',
+          responseJsonSchema: z.toJSONSchema(understood),
+          systemInstruction,
+        },
+        contents: [{
+          role: 'user',
+          parts: [
+            { text: 'Describe this image.' },
+            { inlineData: { mimeType: image.mimetype, data: image.base64 } },
+          ],
+        }],
+      });
+      return understood.parse(JSON.parse(generated.text ?? ''));
+    } catch (error) {
+      recordModelFailure(model, error);
+      log.warn({ model, error: String((error as Error)?.message ?? error).slice(0, 200) },
+        'Image understanding failed');
     }
   }
   return undefined;

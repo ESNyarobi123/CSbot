@@ -17,6 +17,10 @@ const products = [
     brand: 'TP LINK OMADA', category: 'OUTDOOR ACCESS POINT',
     description: 'Wi-Fi 6 AX3000, PoE 802.3at.',
     price: { amount: 450000, currency: 'TZS' }, images: [] },
+  { id: 'cudy3000', name: 'Cudy AP 3000', sku: 'AP3000', brand: 'CUDY',
+    description: 'Outdoor access point', price: { amount: 350000, currency: 'TZS' }, images: [] },
+  { id: 'comfast3000', name: 'Comfast Outdoor AP 3000', sku: 'AP3000', brand: 'COMFAST',
+    description: 'Outdoor access point', price: { amount: 600000, currency: 'TZS' }, images: [] },
   // Matches an "access point" search only through its description, which is how
   // the cable ended up inside an access-point list in production.
   { id: 'cat6', name: 'CAT 6 OUTDOOR', sku: 'CAT6', type: 'Product', unit: 'meter',
@@ -91,4 +95,19 @@ test('asking about a missing model never quotes the previously selected device',
     'EAP 9999 ina band gani?', []);
   assert.doesNotMatch(reply.body, /EAP 650 —|450,000/);
   assert.notEqual(reply.stage, 'quoted');
+});
+
+
+test('a copied storefront order preserves the brand when the model SKU is shared', async () => {
+  const { searchProducts } = await import('../dist/pos.js');
+  const found = await searchProducts('Comfast Outdoor AP 3000');
+  assert.ok(found.items.length > 0);
+  assert.ok(found.items.every(item => item.brand === 'COMFAST'));
+  const reply = await respond(client, conversation({}),
+    'Hello LubFy, I would like to order Comfast Outdoor AP 3000 (AP 3000) at TZS 600,000.', []);
+  assert.match(reply.body, /Comfast Outdoor AP 3000/);
+  assert.match(reply.body, /600,000/);
+  assert.doesNotMatch(reply.body, /Cudy AP 3000|350,000/);
+  const absent = await searchProducts('Cambium AP 3000');
+  assert.equal(absent.items.length, 0);
 });

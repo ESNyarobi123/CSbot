@@ -1,6 +1,6 @@
+import { availableModels, recordModelFailure } from './gemini-availability.js';
 import type { GoogleGenAI } from '@google/genai';
 import { z } from 'zod';
-import { config } from './config.js';
 import { log } from './db.js';
 
 /**
@@ -43,7 +43,7 @@ export async function transcribe(
   ai: GoogleGenAI | undefined, audio: { mimetype: string; bytes: Buffer },
 ): Promise<{ text: string; language: 'sw' | 'en' | '' } | undefined> {
   if (!ai) return undefined;
-  const models = [...new Set([config.GEMINI_MODEL, config.GEMINI_FALLBACK_MODEL])];
+  const models = availableModels();
   const systemInstruction = `You transcribe WhatsApp voice notes for Connect Solution, a network-equipment shop in Dar es Salaam.
 Return JSON only. "text" is the speech exactly as spoken, in the language used (Kiswahili, English, or a mix of both), keeping model names, numbers and brand names as said.
 Do not answer the question, do not summarise, do not translate, do not correct the speaker, do not add words that were not said.
@@ -74,6 +74,7 @@ Ignore background noise, music and filler sounds. If there is no intelligible sp
       if (!text) return { text: '', language: '' };
       return { text: text.slice(0, 1200), language: value.language };
     } catch (error) {
+      recordModelFailure(model, error);
       log.warn({ model, code: (error as { status?: string })?.status,
         error: String((error as Error)?.message ?? error).slice(0, 200) },
       `Transcription model ${model} failed`);

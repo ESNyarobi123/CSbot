@@ -299,9 +299,10 @@ export async function cancelFollowUps(
 /** Follow-ups whose time has come, for the worker sweep to enqueue. */
 export async function dueFollowUps(client: PoolClient, limit: number) {
   const found = await client.query<{ id: string; account_id: string; conversation_id: string; jid: string; kind: FollowUpKind; body: string; created_at: Date }>(
-    `SELECT id,account_id,conversation_id,jid,kind,body,created_at FROM follow_ups
-      WHERE sent_at IS NULL AND canceled_at IS NULL AND scheduled_at <= now()
-      ORDER BY scheduled_at LIMIT $1`, [limit]);
+    `SELECT f.id,f.account_id,f.conversation_id,f.jid,f.kind,f.body,f.created_at
+      FROM follow_ups f JOIN conversations c ON c.id=f.conversation_id
+      WHERE f.sent_at IS NULL AND f.canceled_at IS NULL AND f.scheduled_at <= now()
+      ORDER BY f.scheduled_at,f.id LIMIT $1 FOR NO KEY UPDATE OF c SKIP LOCKED`, [limit]);
   return found.rows;
 }
 

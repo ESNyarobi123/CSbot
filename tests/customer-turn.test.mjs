@@ -114,6 +114,21 @@ test('onboarding asks which equipment is in use and never requests a support ema
   assert.equal(second.memory.onboarding, undefined);
 });
 
+test('a LubFy admin alert is not answered with a price list', async () => {
+  const notice = `💸 *Withdrawal request*\n\n🏢 Reseller\n💰 TZS 8,000 (mobile)\n\n👉 http://lubfy.online/admin/withdrawal`;
+  const reply = await say(notice, { plan: { kind: 'wifi' }, system: 'lubfy', quoteFor: 'plan' });
+  assert.equal(reply.body, '');
+  assert.equal(reply.memory.plan.kind, 'wifi');
+});
+
+test('creating a customer account is not answered by selling a gateway', async () => {
+  const reply = await say('Gateway tunamtengenezea mteja account wapi? Sd omada au lubfy');
+  assert.match(reply.body, /dashboard/i);
+  assert.match(reply.body, /WoteFy/);
+  assert.match(reply.body, /LubFy/);
+  assert.doesNotMatch(reply.body, /TZS|SKU|EAP|bei/i);
+});
+
 test('an Iringa site survey and investment enquiry gets planning advice', async () => {
   const reply = await say('Hivi ukija iringa mjini ukafanya survaey unashauli ni invest aje kwmeye wifi billing system na vifaa');
   assert.match(reply.body, /Iringa mjini/);

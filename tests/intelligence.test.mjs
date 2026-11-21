@@ -31,6 +31,13 @@ test('the equipment already owned is kept, not replaced', () => {
   assert.match(second.equipment, /EAP 610/);
 });
 
+test('a business-planning sentence remembers the town and the goal', () => {
+  const facts = recall('Hivi ukija iringa mjini ukafanya survey unashauri ni invest aje kwenye wifi billing');
+  assert.equal(facts.town, 'iringa');
+  assert.equal(facts.goal, 'start a wifi billing site');
+  assert.equal(recall('Nahitaji access point').goal, undefined);
+});
+
 test('a use case and a budget are read only when stated', () => {
   const facts = recall('Nataka wifi ya hoteli, bajeti yangu ni 900,000');
   assert.equal(facts.use, 'hotel');
