@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { log, row, transaction } from './db.js';
+import { supportAdminMessage, type SupportAlertStatus } from './support.js';
 
 export type Stage = 'inquiry' | 'quoted' | 'ready_to_pay' | 'payment_reported' | 'paid' | 'completed';
 export const stages: Stage[] = ['inquiry', 'quoted', 'ready_to_pay', 'payment_reported', 'paid', 'completed'];
@@ -46,7 +47,7 @@ export interface Conversation {
     /** Support intake: the problem, the system, and the login email. */
     support?: { problem?: string; system?: 'wotefy' | 'lubfy'; email?: string; waitingFor?: 'problem' | 'email' | 'system' | 'device' | 'check'; attempts?: number; sameEmail?: boolean };
     /** Last completed support intake, kept for the admin alert and audits. */
-    lastSupport?: { problem?: string; checkResult?: string; system?: 'wotefy' | 'lubfy'; email?: string };
+    lastSupport?: { problem?: string; checkResult?: string; system?: 'wotefy' | 'lubfy'; email?: string; sameEmail?: boolean };
     recentTopic?: string;
     /** Chat language, so a bare model name does not flip the reply to English. */
     language?: 'sw' | 'en';
@@ -195,7 +196,7 @@ export function recipient(conversation: Conversation) {
 }
 
 export async function alertAdmins(
-  client: PoolClient, conversation: Conversation, title: string, imageUrl?: string,
+  client: PoolClient, conversation: Conversation, title: string, imageUrl?: string, supportStatus?: SupportAlertStatus,
 ) {
   const { id, account_id: accountId, memory } = conversation;
   const admins = await client.query<{ phone: string }>('SELECT phone FROM admin_numbers WHERE account_id=$1', [accountId]);
@@ -217,9 +218,12 @@ export async function alertAdmins(
     !memory.documentSummary && !support && memory.lastQuote && 'Bei ya kumbukumbu: ' + memory.lastQuote,
     !memory.documentSummary && !support && memory.recentTopic?.slice(0, 280),
   ].filter(Boolean).join('\n');
+  const body = supportStatus && support
+    ? supportAdminMessage(conversation, support, supportStatus, Boolean(imageUrl))
+    : `CSbot — ${title}\n${customer}\n${subject}${detail ? '\n' + detail : ''}`;
   for (const admin of admins.rows) {
     await enqueue(client, { accountId, conversationId: id, jid: admin.phone + '@s.whatsapp.net',
-      body: `CSbot — ${title}\n${customer}\n${subject}${detail ? '\n' + detail : ''}`, origin: 'alert', imageUrl });
+      body, origin: 'alert', imageUrl });
   }
 }
 

@@ -83,13 +83,84 @@ export function supportIntake(
   return { support: next, ready: true };
 }
 
-/** One line for the admin alert, so the team starts with the facts. */
+/** Compact subject for the stored conversation context. */
 export function supportSummary(support: NonNullable<Conversation['memory']['support']>) {
   return [
     support.problem && `Tatizo: ${support.problem}`,
     support.system && `Mfumo: ${systemLabel(support.system)}`,
     support.email && `Email: ${support.email}`,
   ].filter(Boolean).join(' · ');
+}
+
+type SupportDetails = NonNullable<Conversation['memory']['lastSupport']>;
+type Say = (sw: string, en: string) => string;
+export type SupportAlertStatus = 'handoff' | 'guidance';
+
+function singleLine(value?: string | null) {
+  return value?.replace(/\s+/g, ' ').trim();
+}
+
+function reportedProblem(value: string, say: Say) {
+  if (/^(?:hivi\s+)?(?:mbona\s+)?vifaa(?:\s+vya[bn]gu)?\s+vina\s*waka na kuzima(?:[\s,.]+(?:shida|tatizo) ni mfumo(?: au)?)?[.!? ]*$/i.test(value)) {
+    return say('Vifaa vinawaka na kuzima.', 'The devices keep turning on and off.');
+  }
+  return value;
+}
+
+export function supportDetails(support: SupportDetails, say: Say) {
+  const problem = singleLine(support.problem);
+  const email = support.email || (support.sameEmail
+    ? say('Email iliyotajwa awali', 'Previous email referenced')
+    : say('Haijatolewa', 'Not provided'));
+  const checkResult = singleLine(support.checkResult);
+  return [
+    `*${say('Mfumo', 'System')}* ${support.system ? systemLabel(support.system) : say('Bado haujabainishwa', 'To be confirmed')}`,
+    `*${say('Changamoto', 'Reported issue')}* ${problem ? reportedProblem(problem, say) : say('Maelezo bado yanahitajika', 'More details needed')}`,
+    `*${say('Email ya akaunti', 'Account email')}* ${email}`,
+    checkResult && `*${say('Matokeo ya ukaguzi', 'Check result')}* ${checkResult}`,
+  ].filter(Boolean).join('\n');
+}
+
+export function supportReceipt(support: SupportDetails, say: Say, requestEvidence = false) {
+  const next = support.email
+    ? say('Timu ya support itakagua taarifa hizi na kukujibu hapa kwenye WhatsApp.',
+      'Our support team will review these details and reply here on WhatsApp.')
+    : say('Timu ya support itaangalia maelezo uliyotoa na kuendelea kukusaidia hapa kwenye WhatsApp.',
+      'Our support team will review what you shared and continue helping you here on WhatsApp.');
+  return [
+    `*${say('Ombi lako la msaada limepokelewa', 'Your support request has been received')}*`,
+    supportDetails(support, say),
+    `*${say('Hatua inayofuata', 'What happens next')}*\n${next}`,
+    requestEvidence && say('Ukiweza, tuma modeli ya kifaa au picha ya ujumbe unaoona.',
+      'If you can, send the device model or a screenshot of the message you see.'),
+  ].filter(Boolean).join('\n\n');
+}
+
+export function supportAdminMessage(
+  conversation: Conversation, support: SupportDetails, status: SupportAlertStatus, hasAttachment: boolean,
+) {
+  const say: Say = (sw) => sw;
+  const customer = singleLine(conversation.customer_name) || 'Jina halijapatikana';
+  const limit = (value: string | undefined, max: number) => value && value.length > max ? value.slice(0, max - 1) + '…' : value;
+  const details = hasAttachment ? { ...support,
+    problem: limit(support.problem, 220), checkResult: limit(support.checkResult, 140) } : support;
+  const next = status === 'guidance'
+    ? 'Soma mazungumzo na fuatilia ikiwa mteja ataripoti kuwa tatizo linaendelea.'
+    : support.system && support.email
+      ? `Fungua mazungumzo, kagua akaunti kwenye ${systemLabel(support.system)} kwa email hiyo, kisha mjibu mteja kwenye Inbox.`
+      : 'Fungua mazungumzo kwenye Inbox, kagua dalili zilizotajwa na omba taarifa zinazohitajika kuendelea.';
+  return [
+    '*CSbot | Msaada wa kiufundi*',
+    [
+      `*Hali* ${status === 'guidance' ? 'Mteja amepewa hatua za ukaguzi' : 'Inasubiri mhudumu'}`,
+      `*Mazungumzo* #${conversation.id}`,
+      `*Mteja* ${customer}`,
+      conversation.customer_phone && `*WhatsApp* +${conversation.customer_phone.replace(/^\+/, '')}`,
+    ].filter(Boolean).join('\n'),
+    supportDetails(details, say),
+    hasAttachment && '*Kiambatisho* Picha ya mteja',
+    `*Hatua inayofuata*\n${next}`,
+  ].filter(Boolean).join('\n\n');
 }
 
 /** Read-only checks based on the portal, trial and device flows in both platforms. */

@@ -63,3 +63,44 @@ test('a payment that did not unlock portal access is technical support, not a de
   assert.equal(outcome.stage, undefined);
   assert.equal(outcome.memory.support.waitingFor, 'check');
 });
+
+test('customer and admin see the reported symptom, platform and email on separate WhatsApp lines', async () => {
+  const first = await turn('Hivi mbona vifaa vyabgu vina waka na kuzima shida ni mfumo au');
+  assert.match(first.body, /WoteFy au LubFy/);
+  const second = await turn('Wotefy mkuu', first.memory);
+  assert.match(second.body, /email/i);
+  const final = await turn('mteja@example.test', second.memory);
+  assert.equal(final.handoff, true);
+  assert.equal(final.supportAlert, 'handoff');
+  assert.match(final.body, /\*Mfumo\* WoteFy\n\*Changamoto\* Vifaa vinawaka na kuzima\.\n\*Email ya akaunti\* mteja@example\.test/);
+  assert.match(final.body, /\*Hatua inayofuata\*\nTimu ya support/);
+
+  const { alertAdmins } = await import('../dist/store.js');
+  const queries = [];
+  const adminClient = { query: async (sql, args) => {
+    queries.push({ sql, args });
+    return { rows: sql.includes('FROM admin_numbers') ? [{ phone: '255700100001' }] : [] };
+  } };
+  await alertAdmins(adminClient, {
+    id: '123', account_id: 'channel', customer_name: 'Mteja wa jaribio',
+    customer_phone: '255700100002', memory: final.memory,
+  }, 'Mazungumzo yanahitaji mhudumu', undefined, final.supportAlert);
+  assert.deepEqual(queries[0].args, ['channel']);
+  const [, , jid, text, origin] = queries[1].args;
+  assert.equal(jid, '255700100001@s.whatsapp.net');
+  assert.equal(origin, 'alert');
+  assert.match(text, /\*Hali\* Inasubiri mhudumu\n\*Mazungumzo\* #123\n\*Mteja\* Mteja wa jaribio/);
+  assert.ok(text.includes('*Email ya akaunti* mteja@example.test'));
+  assert.match(text, /kagua akaunti kwenye WoteFy/);
+});
+
+test('the admin guidance template distinguishes self-help and keeps screenshot alerts readable', async () => {
+  const { supportAdminMessage } = await import('../dist/support.js');
+  const message = supportAdminMessage({ id: '123', customer_name: null },
+    { system: 'lubfy', problem: 'Z'.repeat(500), checkResult: 'R'.repeat(280) }, 'guidance', true);
+  assert.match(message, /Mteja amepewa hatua za ukaguzi/);
+  assert.match(message, /\*Email ya akaunti\* Haijatolewa/);
+  assert.match(message, /\*Matokeo ya ukaguzi\* R/);
+  assert.match(message, /Picha ya mteja/);
+  assert.ok(message.length < 1000);
+});

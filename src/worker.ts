@@ -276,7 +276,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
           outcome.alertTitle ?? (outcome.handoff ? 'Mazungumzo yanahitaji mhudumu' : 'Tatizo jipya la mfumo'),
           memory.lastSupport && !memory.documentSummary && outcome.handoff
             ? [...pending].reverse().find(message => message.kind === 'image' && message.media_id)?.media_id
-              ?.replace(/^/, 'csbot-media:') : undefined);
+              ?.replace(/^/, 'csbot-media:') : undefined, outcome.supportAlert);
       }
       if (canReply && !platformNotice(newest)) {
         // Keep the 360 record current with what this turn revealed, then queue

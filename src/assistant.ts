@@ -11,7 +11,7 @@ import {
   accountQuestion, adEnquiry, customerProfile, emailOf, messageLanguage, modelName, namesNewDevice, platformNotice, profitQuestion, regionQuestion, smallTalkOnly, smallTalkReply,
   supportQuestion, symptomOf, systemFrom, systemLabel,
 } from './customer-text.js';
-import { firstSupportStep, supportIntake, supportSummary } from './support.js';
+import { firstSupportStep, supportDetails, supportIntake, supportReceipt, supportSummary, type SupportAlertStatus } from './support.js';
 // Kept exported here because the tests and the dashboard import them from the
 // conversation module; the definitions now live in customer-text.ts and support.ts.
 export { customerProfile, emailOf, messageLanguage, smallTalkOnly, supportQuestion } from './customer-text.js';
@@ -46,6 +46,7 @@ export interface Outcome {
   /** Tell the admins without taking the chat away from the bot. */
   notify?: boolean;
   alertTitle?: string;
+  supportAlert?: SupportAlertStatus;
   imageUrl?: string;
   /** The steps the bot took to answer, shown in the admin playground. */
   trace?: string[];
@@ -1025,9 +1026,7 @@ async function answer(
       memory.lastSupport = { ...intakeState, email: emailOf(newest) ?? intakeState.email,
         checkResult: newest.slice(0, 280) };
       delete memory.support;
-      return result(say('Nimepeleka tatizo na matokeo ya ukaguzi kwa timu ya support. Ukiweza, tuma modeli ya kifaa au screenshot ya ujumbe unaoona.',
-        'I’ve shared the issue and the result of the check with support. If you can, send the device model or a screenshot of the message.'),
-      { handoff: true, alertTitle: 'Ukaguzi wa kiufundi unahitaji mhudumu' });
+      return result(supportReceipt(memory.lastSupport, say, true), { handoff: true, supportAlert: 'handoff' });
     }
     if (/\b(?:ile ile|ileile|same email|usual email)\b/i.test(newest)) {
       const previous = [...history].reverse().find(line => line.direction === 'inbound' && emailOf(line.body) === line.body.trim().toLowerCase());
@@ -1036,7 +1035,7 @@ async function answer(
     if (intakeState.attempts && intakeState.waitingFor === 'email' && !emailOf(newest) && !/vifaa|devices/i.test(newest)) {
       memory.lastSupport = { ...intakeState, problem: [intakeState.problem, newest].filter(Boolean).join(' · ').slice(0, 500) };
       delete memory.support;
-      return result(say('Nimeacha maelezo ya tatizo kwenye chat hii ili mhudumu aendelee kukusaidia.', 'I’ve left the issue details in this chat for a team member to follow up.'), { handoff: true });
+      return result(supportReceipt(memory.lastSupport, say), { handoff: true, supportAlert: 'handoff' });
     }
     const intake = supportIntake(newest, intakeState, say);
     memory.support = intake.support;
@@ -1052,23 +1051,21 @@ async function answer(
     const symptom = intake.support.problem ?? newest;
     const guidanceKnowledge = await retrieveKnowledge(client, symptom, intake.support.system);
     const guidance = relevantKnowledge(symptom, guidanceKnowledge, true, intake.support.system);
-    const facts = supportSummary(intake.support);
     if (guidance) {
       // Answer from the approved troubleshooting entry and keep the chat on the
       // bot; the team is only pulled in when nothing matches.
       delete memory.support;
       return result([
-        say(`Nimeona: ${facts}`, `Noted: ${facts}`),
-        guidance.content,
+        say('*Taarifa za tatizo*', '*Issue details*'),
+        supportDetails(intake.support, say),
+        say(`*Hatua za kujaribu*\n${guidance.content}`, `*Steps to try*\n${guidance.content}`),
         guidance.source_url ?? '',
         say('Kama hatua hizo hazijasaidia, niambie "nataka mhudumu" nikuunganishe na timu.',
           'If those steps do not help, say "I need a human" and I will bring in the team.'),
-      ].filter(Boolean).join('\n\n'), { notify: true });
+      ].filter(Boolean).join('\n\n'), { notify: true, supportAlert: 'guidance' });
     }
     delete memory.support;
-    return result(say(`Asante. Nimepokea: ${facts}. Nimempa timu ya msaada taarifa hizi; watakagua akaunti yako na kukurudia muda mfupi.`,
-      `Thanks. I have: ${facts}. I have passed these details to support, who will check your account and come back to you shortly.`),
-    { handoff: true });
+    return result(supportReceipt(intake.support, say), { handoff: true, supportAlert: 'handoff' });
   }
   // Someone saying "mambo" is a person, not a lead yet. Answer the greeting in
   // kind and let their next message show whether they are a customer at all.
@@ -1147,6 +1144,11 @@ async function answer(
   }
   if (onlyDetect) return result('');
   if (decision.intent === 'human') {
+    if (memory.support) {
+      memory.lastSupport = memory.support;
+      delete memory.support;
+      return result(supportReceipt(memory.lastSupport, say), { handoff: true, supportAlert: 'handoff' });
+    }
     return result(say('Sawa, nimekabidhi mazungumzo haya kwa timu yetu.', 'I’ve handed this conversation to our team.'),
       { handoff: true });
   }
