@@ -1,4 +1,4 @@
-import { emailOf, emailPattern, smallTalkOnly, supportQuestion, systemFrom, systemLabel } from './customer-text.js';
+import { emailOf, emailPattern, smallTalkOnly, supportQuestion, symptomOf, systemFrom, systemLabel } from './customer-text.js';
 import type { Conversation } from './store.js';
 
 /**
@@ -18,7 +18,7 @@ export function supportIntake(
   if (detectedSystem) next.system = detectedSystem;
   // The email answer itself is not the problem description.
   const rest = text.replace(emailPattern, ' ')
-    .replace(/\b(?:wotefy|lubfy)\b/gi, ' ')
+    .replace(/\b(?:wote[ -]?fy|ss[ -]?domada|lub[ -]?fy)\b/gi, ' ')
     .replace(/[\s.,!?;:]+/g, ' ').trim();
   const generic = /^(?:kaka|mkuu|boss|tatizo|shida|problem|support|msaada|nina (?:shida|tatizo)|mfumo wako|nipo .+|niko .+)$/i;
   // "My email is the same one" is an answer, not a refusal. Asking again is what
@@ -90,4 +90,30 @@ export function supportSummary(support: NonNullable<Conversation['memory']['supp
     support.system && `Mfumo: ${systemLabel(support.system)}`,
     support.email && `Email: ${support.email}`,
   ].filter(Boolean).join(' · ');
+}
+
+/** Read-only checks based on the portal, trial and device flows in both platforms. */
+export function firstSupportStep(
+  support: NonNullable<Conversation['memory']['support']>,
+  say: (sw: string, en: string) => string,
+) {
+  const symptom = symptomOf(support.problem ?? '');
+  if (symptom === 'power') return say(
+    'Angalia kwanza kama adapta au PoE inayotumika ni ile iliyopendekezwa kwa modeli hiyo, halafu hakiki taa ya power. Modeli ni ipi, na taa yoyote inawaka?',
+    'Check that the power adapter or PoE supply is the one recommended for this model, then check the power light. What model is it, and do any lights turn on?');
+  if (!support.system) return;
+  if (symptom === 'access_payment') return say(
+    `Kwa ${systemLabel(support.system)}, angalia status inayoonekana kwenye portal au dashboard baada ya malipo. Kama pesa tayari imekatwa, subiri timu ihakiki muamala kabla ya kujaribu kulipa tena. Inaonyesha malipo yanasubiri, au yamekamilika huku intaneti bado haifunguki?`,
+    `On ${systemLabel(support.system)}, check the payment status in the portal or dashboard. If you were charged already, wait for us to check before trying to pay again. Does it show a pending payment, or a completed payment with no internet access?`);
+  if (symptom === 'redirect') return say(
+    `Kwa ${systemLabel(support.system)}, tuangalie kama shida ni portal yenyewe au simu kutofungua portal kiotomatiki. Unganisha simu moja kwenye Wi-Fi husika, kisha jaribu kufungua portal kwenye browser. Je, portal inafunguka kwa mkono?`,
+    `On ${systemLabel(support.system)}, let’s check whether the portal works and the phone is failing to open it automatically. Connect one phone to the affected Wi-Fi and try opening the portal in a browser. Does it open manually?`);
+  if (symptom === 'trial') return say(
+    `Kwa ${systemLabel(support.system)}, tuanze na ujumbe halisi baada ya kubonyeza Free Trial. Jaribu kwenye simu ambayo haijatumia trial ya Wi-Fi hiyo. Ikiwa inagoma hapo pia, inasema nini?`,
+    `For ${systemLabel(support.system)}, let’s start with the exact message after tapping Free Trial. Try on a phone that hasn’t used that Wi-Fi’s trial. What does it say if it still fails?`);
+  if (symptom === 'offline') return support.system === 'wotefy' ? say(
+    'Kwa WoteFy, hakikisha kifaa kina umeme na uplink, kisha angalia status yake kwenye Omada Controller. Kinaonekana Offline huko pia, au kwenye WoteFy pekee?',
+    'For WoteFy, check the device power and uplink, then look up its status in Omada Controller. Is it offline there too, or only in WoteFy?') : say(
+    'Kwa LubFy, hakikisha router ina umeme na WAN ina internet. Kisha angalia muda wa mwisho kifaa kilipoonekana online kwenye dashboard. Tatizo linahusu router moja au router zote za eneo hilo?',
+    'For LubFy, check the router power and WAN connection, then look up when the device was last seen online in the dashboard. Does this affect one router or all routers at that site?');
 }

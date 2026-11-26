@@ -1,5 +1,5 @@
-import { availableModels, recordModelFailure } from './gemini-availability.js';
-import type { GoogleGenAI } from '@google/genai';
+import { config } from './config.js';
+import { documentJson } from './pos.js';
 import { z } from 'zod';
 import { log } from './db.js';
 
@@ -29,56 +29,36 @@ export function pendingVoice(body: string) {
   return /^\[WhatsApp (?:audio|voice note)\]$/i.test(body.trim());
 }
 
-const heard = z.object({
-  text: z.string().max(4000).default(''),
-  language: z.enum(['sw', 'en', '']).default(''),
-});
+const heard = z.object({ text: z.string() });
+let retryAfter = 0;
 
-/**
- * Recover the speech, never the answer. The model is told to transcribe only,
- * because a model that answers the question would put words in the customer's
- * mouth and the reply pipeline would then quote them back.
- */
+// The ASR supported language list includes English. A chat that primarily
+// uses Swahili or has no language history stays with human transcription.
 export async function transcribe(
-  ai: GoogleGenAI | undefined, audio: { mimetype: string; bytes: Buffer },
-): Promise<{ text: string; language: 'sw' | 'en' | '' } | undefined> {
-  if (!ai) return undefined;
-  const models = availableModels();
-  const systemInstruction = `You transcribe WhatsApp voice notes for Connect Solution, a network-equipment shop in Dar es Salaam.
-Return JSON only. "text" is the speech exactly as spoken, in the language used (Kiswahili, English, or a mix of both), keeping model names, numbers and brand names as said.
-Do not answer the question, do not summarise, do not translate, do not correct the speaker, do not add words that were not said.
-Ignore background noise, music and filler sounds. If there is no intelligible speech, return an empty "text".
-"language" is "sw" when the speech is mainly Kiswahili, "en" when mainly English, and "" when there is no speech.`;
+  audio: { mimetype: string; bytes: Buffer }, language?: 'sw' | 'en',
+): Promise<{ text: string } | undefined> {
+  const key = config.DEEPSEEK_API_KEY;
+  const type = audioType(audio.mimetype);
+  if (!key || language !== 'en' || Date.now() < retryAfter ||
+      !['audio/ogg', 'audio/wav'].includes(type) || !audio.bytes.length || audio.bytes.length > 8 * 1024 * 1024) return;
 
-  for (const model of models) {
-    try {
-      const generated = await ai.models.generateContent({
-        model,
-        config: {
-          maxOutputTokens: 900,
-          temperature: 0,
-          responseMimeType: 'application/json',
-          responseJsonSchema: z.toJSONSchema(heard),
-          systemInstruction,
-        },
-        contents: [{
-          role: 'user',
-          parts: [
-            { text: 'Transcribe this voice note.' },
-            { inlineData: { mimeType: audioType(audio.mimetype), data: audio.bytes.toString('base64') } },
-          ],
-        }],
-      });
-      const value = heard.parse(JSON.parse(generated.text ?? ''));
-      const text = value.text.replace(/\s+/g, ' ').trim();
-      if (!text) return { text: '', language: '' };
-      return { text: text.slice(0, 1200), language: value.language };
-    } catch (error) {
-      recordModelFailure(model, error);
-      log.warn({ model, code: (error as { status?: string })?.status,
-        error: String((error as Error)?.message ?? error).slice(0, 200) },
-      `Transcription model ${model} failed`);
+  try {
+    const form = new FormData();
+    const extension = type === 'audio/ogg' ? 'ogg' : 'wav';
+    form.set('file', new Blob([new Uint8Array(audio.bytes)], { type }), `voice.${extension}`);
+    const response = await fetch('https://api.deepseek.com/v1/tools/asr', {
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(12000),
+      headers: { authorization: 'Bearer ' + key }, body: form,
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      if (response.status === 429 || response.status === 503) retryAfter = Date.now() + 30_000;
+      log.warn({ status: response.status }, 'DeepSeek speech recognition returned an error');
+      return;
     }
+    const text = heard.parse(await documentJson(response)).text.replace(/\s+/g, ' ').trim().slice(0, 1200);
+    return text ? { text } : undefined;
+  } catch (error) {
+    log.warn({ code: (error as Error).name }, 'DeepSeek speech recognition was unavailable');
   }
-  return undefined;
 }

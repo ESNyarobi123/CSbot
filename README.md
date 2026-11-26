@@ -12,7 +12,7 @@ Namba zinaungwa kwa **Baileys**, library ya WhatsApp Web inayozungumza protocol 
 | --- | --- |
 | `api` | NestJS API ya akaunti na pairing, inbox, historia, maarifa, bidhaa, admin na mauzo |
 | `whatsapp-gateway` | Baileys: socket moja kwa kila namba, QR au pairing code, kuingiza history, blue ticks, “anaandika”, kuhifadhi picha za wateja na kutuma majibu na arifa |
-| `worker` | BullMQ, uchakataji wa ujumbe, Gemini, kutafuta bidhaa na packages, makabidhiano kwa admin na kufuta picha za zamani |
+| `worker` | BullMQ, uchakataji wa ujumbe, DeepSeek, kutafuta bidhaa na packages, makabidhiano kwa admin na kufuta picha za zamani |
 | `postgres` | Chanzo cha kudumu cha inbox, outbox, memory, maarifa na sessions za WhatsApp |
 | `redis` | Foleni ya BullMQ ya kuendesha kazi kwa sambamba |
 | `migrate` | Inaweka mabadiliko ya schema kabla ya huduma kuanza |
@@ -26,7 +26,7 @@ Kila huduma ndefu ina healthcheck. Gateway na worker huandika `service_heartbeat
 Tumia Docker Compose na Node.js 22 au mpya zaidi kwa scripts za hapa kwenye kompyuta.
 
 1. Nakili `.env.example` kwenda `.env`. Tengeneza `POSTGRES_PASSWORD` na `ADMIN_API_TOKEN` tofauti kwa `openssl rand -hex 32`. Tengeneza `SESSION_KEY` kwa `openssl rand -base64 32` na ihifadhi kwa usalama pamoja na backup ya database.
-2. Weka `GEMINI_API_KEY` na model inayopatikana kwenye akaunti yenu. CSbot hutumia sheria za ndani za Kiswahili na Kiingereza ikiwa key haijawekwa au Gemini haipatikani. Gemini ikitumika, hupokea ujumbe wa karibuni wa chat husika na maarifa yanayohitajika kuandaa jibu.
+2. Weka `DEEPSEEK_API_KEY` kwenye `.env` na tumia `deepseek-flash`. DeepSeek husaidia kuelewa muktadha, kuchagua aina ya ombi, kusoma picha na kuandika jibu. Bei na stock husomwa kwenye POS. CSbot hutumia sheria za ndani za Kiswahili na Kiingereza ikiwa key haijawekwa au DeepSeek haipatikani. DeepSeek ikitumika, hupokea ujumbe wa karibuni wa chat husika na maarifa yanayohitajika kuandaa jibu.
 3. Jenga na washa stack.
 
 ```sh
@@ -171,9 +171,19 @@ Script inaonyesha kama API inajibu, idadi ya bidhaa, idadi yenye picha, inapakua
 
 **Memory ya kudumu.** Kila ujumbe husasisha `memory.facts` (`coverage_m`, `clients`, `site`, `place`, `use`, `fleet`, `equipment`, `budget`, `system`, `photo`). Facts huhifadhiwa kwenye `customer_memory` kwa namba ya mteja, hivyo mteja anayerudi kesho haanze kueleza eneo lake tena. `memory.trace` huhifadhi hatua za jibu la mwisho.
 
-**Picha.** Mteja akituma picha, worker husoma bytes za picha ya mwisho na `identifyDevice()` kuitambua kwa Gemini Vision (brand, model, kile kinachoonekana). Model ikitambulika, CSbot huipata kwenye catalog na kujibu kwa bei, stock na datasheet; ikiwa label haisomeki, huomba picha ya karibu. Picha ya malipo haitambuliki kama kifaa, hivyo mtiririko wa malipo haubadiliki.
+**Picha.** Mteja akituma picha, worker husoma bytes za picha ya mwisho na `identifyDevice()` kuitambua kwa DeepSeek Vision (brand, model, kile kinachoonekana). Model ikitambulika, CSbot huipata kwenye catalog na kujibu kwa bei, stock na datasheet; ikiwa label haisomeki, huomba picha ya karibu. Picha ya malipo haitambuliki kama kifaa, hivyo mtiririko wa malipo haubadiliki.
 
 **Studio.** Ukurasa wa **Studio** kwenye dashboard ni simulator ya mteja inayotumia engine halisi: `POST /v1/playground` (`{"messages":["…","…"]}`) hurudisha jibu la kila hatua pamoja na `trace`, `facts` na `stage`. Hakuna ujumbe unaotumwa WhatsApp na hakuna conversation ya mteja inayoguswa.
+
+## Quotation, invoice na support
+
+Mteja anaweza kuomba quotation au proforma kwa WhatsApp. Kwa bidhaa moja ya stock, CSbot huthibitisha modeli na idadi, kisha huomba CSolution POS ihifadhi quotation na kurudisha namba na jumla. Quotation haina malipo wala reservation ya stock. Maombi yenye bidhaa nyingi, huduma, kodi au punguzo huenda kwa timu ya mauzo.
+
+Weka `CSOLUTION_QUOTATION_URL` kuwa URL kamili ya `/api/csbot/quotations` kwenye CSolution. Weka `CSOLUTION_QUOTATION_TOKEN` kwenye CSbot na thamani hiyohiyo kama `CSBOT_QUOTATION_TOKEN` kwenye CSolution. Token ya quotation iwe tofauti na token ya kusoma katalogi. Kwenye CSolution weka `CSBOT_QUOTATION_STAFF_ID` kuwa UUID ya akaunti hai yenye ruhusa ya mauzo. Bila mipangilio hiyo, CSbot hupeleka ombi kwa timu.
+
+Admin huthibitisha oda na mnunuzi, anatoa invoice kwenye CSolution POS na anapakua PDF. Kwenye CSbot Inbox, chagua chat husika, ambatisha PDF kupitia **Invoice PDF**, andika ujumbe na utume. PDF inaweza kuwa hadi 4 MB. Arifa hutumia namba zilizowekwa kwenye **Admin alerts** za akaunti iliyopokea ombi.
+
+CSbot inatambua SSDomada kama WoteFy. Kwa portal inayochelewa, Free Trial inayogoma, au kifaa kilicho offline, inauliza swali la ukaguzi linalolingana na mfumo. Tatizo likiendelea, arifa ya admin huonyesha mfumo, dalili na majibu ya ukaguzi. Oda na support zinafuatiliwa kivyake.
 
 ## Mteja 360 na follow-up
 
@@ -224,9 +234,9 @@ Tuma `Authorization: Bearer <ADMIN_API_TOKEN>` kwa routes za `/v1`.
 
 Mteja anapoomba maelekezo ya kulipa, chat husogea kwenye `ready_to_pay` na admin anaarifiwa. Mteja akiripoti kuwa amelipa, hatua huwa `payment_reported` hadi admin athibitishe. Arifa zinaonyesha mteja, mada na kiasi kilichotajwa kwenye mazungumzo. Admin akichukua chat, bot husubiri kuruhusiwa kuendelea. Baada ya oda kukamilika, ombi la bei likipata bidhaa au package kwenye katalogi linaweza kufungua oda mpya ikiwa bot imewashwa kwenye chat hiyo. Admin pia anaweza kufungua oda mpya mwenyewe. Rekodi ya bei na arifa za kila oda zinaendelea kupatikana kwenye historia. Tuma `saleId` ya oda unayothibitisha. Inahitajika mara chat inapokuwa na zaidi ya oda moja.
 
-Picha ya mteja huhifadhiwa kwenye table ya `media`. Arifa ya malipo huambatanisha risiti iliyowasili pamoja na taarifa ya malipo. Kwa swali la bidhaa, CSbot hujaribu kusoma lebo kwa Tesseract ndani ya container. Ikiwa lebo haisomeki na Gemini imewezeshwa, picha inaweza kutumwa kwa Gemini kutambua modeli. Bei na stock husomwa kwenye POS. Admin anaweza kuipata kwa `GET /v1/media/:id`. Worker hufuta picha zilizopita siku `MEDIA_RETENTION_DAYS` (default 90).
+Picha ya mteja huhifadhiwa kwenye table ya `media`. Arifa ya malipo huambatanisha risiti iliyowasili pamoja na taarifa ya malipo. Kwa swali la bidhaa, CSbot hujaribu kusoma lebo kwa Tesseract ndani ya container. Ikiwa lebo haisomeki na DeepSeek imewezeshwa, picha inaweza kutumwa kwa DeepSeek kutambua modeli. Bei na stock husomwa kwenye POS. Admin anaweza kuipata kwa `GET /v1/media/:id`. Worker hufuta picha zilizopita siku `MEDIA_RETENTION_DAYS` (default 90).
 
-**Voice note.** Mteja anapotuma sauti, faili huhifadhiwa kwenye `media` (`kind='audio'`) na maneno yake husomwa kwa Gemini kabla ya ujumbe kuainishwa. Maandishi hayo huhifadhiwa kama `messages.body`, hivyo inbox inaonyesha aliyosema mteja na CSbot inajibu kama kawaida. Wakati sauti inasomwa, mteja huona "typing". Ikiwa sauti haikusomeka (Gemini haipo, faili kubwa, au hakuna maneno), mazungumzo huhamishiwa kwa mhudumu na timu inapata arifa badala ya mteja kuachwa kimya.
+**Voice note.** CSbot hutuma Ogg au WAV kwenye DeepSeek Speech to Text ikiwa mazungumzo tayari yametambulika kuwa ya Kiingereza. Majibu yaliyosomeka huonekana kwenye Inbox kama maandishi. Kwa Kiswahili, lugha ambayo bado haijajulikana, au sauti ambayo API imeshindwa kusoma, CSbot inapeleka mazungumzo kwa mhudumu. Mhudumu anaweza kusikiliza voice note kwenye Inbox.
 
 `memory.profile` huhifadhi maelezo mteja aliyosema wazi kuhusu vifaa anavyotumia, bajeti na matumizi ya mtandao. Maelezo hayo yanaendelea kutumika kwenye oda inayofuata ya chat hiyo. CSbot inasasisha maelezo ya profile mteja anapotoa taarifa mpya inayotambulika.
 

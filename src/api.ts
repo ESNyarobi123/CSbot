@@ -1,8 +1,8 @@
 import 'reflect-metadata';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   BadRequestException, Body, ConflictException, Controller, ForbiddenException, Get, Header, HttpCode, Injectable, Module,
-  NotFoundException, Param, Patch, Post, Put, Query, Res, ServiceUnavailableException, UnauthorizedException, UseGuards,
+  NotFoundException, Param, Patch, Post, Put, Query, Res, ServiceUnavailableException, StreamableFile, UnauthorizedException, UseGuards,
   type CanActivate, type ExecutionContext,
 } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
@@ -303,6 +303,20 @@ class AdminController {
       dataUrl: `data:${item.mimetype};base64,${item.bytes.toString('base64')}` };
   }
 
+  @Get('conversations/:id/documents/:mediaId')
+  @Header('Cache-Control', 'private, no-store')
+  @Header('X-Content-Type-Options', 'nosniff')
+  async downloadDocument(@Param('id') id: string, @Param('mediaId') mediaId: string) {
+    read(recordId, id);
+    read(recordId, mediaId);
+    const item = await row<{ bytes: Buffer; document_name: string }>(db, `SELECT m.bytes,o.document_name FROM media m
+      JOIN outbound o ON o.document_id=m.id AND o.conversation_id=m.conversation_id
+      WHERE m.conversation_id=$1 AND m.id=$2 AND m.kind='document' AND o.state='sent'`, [id, mediaId]);
+    if (!item) throw new NotFoundException();
+    return new StreamableFile(item.bytes, { type: 'application/pdf',
+      disposition: `attachment; filename="${item.document_name}"` });
+  }
+
   @Get('conversations/:id/messages')
   async history(@Param('id') id: string, @Query() query: unknown) {
     read(recordId, id);
@@ -340,6 +354,10 @@ class AdminController {
     read(recordId, id);
     const input = read(z.object({ text: bodyText, requestId: z.string().min(8).max(100),
       imageUrl: z.url({ protocol: /^https$/ }).optional(),
+      invoicePdf: z.object({
+        name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,110}\.pdf$/i),
+        base64: z.base64().max(5_592_408),
+      }).optional(),
       // A dashboard reply means "a human owns this chat". Automated notices
       // (billing, reseller, payment alerts) must pass false or they silence the
       // bot for every customer who receives one.
@@ -347,20 +365,35 @@ class AdminController {
     if (input.imageUrl && !imageAllowed(input.imageUrl)) {
       throw new BadRequestException('Image host is not listed in PRODUCT_IMAGE_HOSTS');
     }
+    const documentBytes = input.invoicePdf && Buffer.from(input.invoicePdf.base64, 'base64');
+    if (documentBytes && (input.imageUrl || input.text.length > 1000 ||
+        documentBytes.length > 4 * 1024 * 1024 || documentBytes.subarray(0, 5).toString() !== '%PDF-')) {
+      throw new BadRequestException('Attach one PDF up to 4 MB with a caption up to 1,000 characters');
+    }
+    const documentHash = documentBytes ? createHash('sha256').update(documentBytes).digest('hex') : null;
     return transaction(async client => {
       const conversation = await row<Conversation>(client, 'SELECT * FROM conversations WHERE id=$1 FOR NO KEY UPDATE', [id]);
       if (!conversation) throw new NotFoundException();
-      const existing = await row(client, 'SELECT id,state,body,image_url FROM outbound WHERE conversation_id=$1 AND request_key=$2',
+      const existing = await row(client, 'SELECT id,state,body,image_url,document_name,document_hash FROM outbound WHERE conversation_id=$1 AND request_key=$2',
         [id, input.requestId]);
       if (existing) {
-        if (existing.body !== input.text || existing.image_url !== (input.imageUrl ?? null)) {
+        if (existing.body !== input.text || existing.image_url !== (input.imageUrl ?? null) ||
+            existing.document_name !== (input.invoicePdf?.name ?? null) || existing.document_hash !== documentHash) {
           throw new BadRequestException('Request ID was used with different content');
         }
         return { id: existing.id, state: existing.state };
       }
+      let document;
+      if (input.invoicePdf && documentBytes && documentHash) {
+        const attachment = (await row<{ id: string }>(client, `INSERT INTO media
+          (account_id,conversation_id,provider_id,kind,mimetype,bytes,size)
+          VALUES ($1,$2,$3,'document','application/pdf',$4,$5) RETURNING id`,
+        [conversation.account_id, id, randomUUID(), documentBytes, documentBytes.length]))!;
+        document = { id: attachment.id, name: input.invoicePdf.name, hash: documentHash };
+      }
       if (input.takeover) await setMode(client, id, 'human');
       return enqueue(client, { accountId: conversation.account_id, conversationId: id, jid: recipient(conversation),
-        origin: 'admin', body: input.text, imageUrl: input.imageUrl, requestKey: input.requestId });
+        origin: 'admin', body: input.text, imageUrl: input.imageUrl, requestKey: input.requestId, document });
     });
   }
 
@@ -583,7 +616,7 @@ class AdminController {
     } finally {
       client.release();
     }
-    return { turns, vision: Boolean(config.GEMINI_API_KEY), model: config.GEMINI_API_KEY ? config.GEMINI_MODEL : null };
+    return { turns, vision: Boolean(config.DEEPSEEK_API_KEY), model: config.DEEPSEEK_API_KEY ? config.DEEPSEEK_MODEL : null };
   }
 
   /** Live CSolution catalog: prices, stock, brand, description and photos. */

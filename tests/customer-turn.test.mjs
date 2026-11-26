@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 process.env.DATABASE_URL ??= 'postgres://localhost/csbot';
-delete process.env.GEMINI_API_KEY;
+delete process.env.DEEPSEEK_API_KEY;
 delete process.env.POS_BASE_URL;
 delete process.env.CSOLUTION_POS_DB_URL;
 delete process.env.LUBFY_PLANS_URL;

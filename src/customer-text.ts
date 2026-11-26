@@ -23,7 +23,8 @@ export function namesNewDevice(text: string) {
 }
 
 export const systemFrom = (text: string) => {
-  const systems = systemName.options.filter(name => new RegExp(`\\b${name}\\b`, 'i').test(text));
+  const aliases = { wotefy: /\b(?:wote[ -]?fy|ss[ -]?domada)\b/i, lubfy: /\blub[ -]?fy\b/i };
+  const systems = systemName.options.filter(name => aliases[name].test(text));
   return systems.length === 1 ? systems[0] : '';
 };
 
@@ -36,8 +37,25 @@ export const systemLabel = (system: string) => system === 'wotefy' ? 'WoteFy' : 
 const supportWords = /\b(shida|tatizo|matatizo|haifanyi kazi|haifanyi vizuri|haifunguki|haionekani|haiongei|haifikii|umesimama|imesimama|imekwama|imegoma|imefeli|imefail|imekataliwa na mtandao|siwezi kuingia|sijaweza kuingia|haikubali|inaleta error|naipata error|imebadilika ghafla|sina internet|hakuna internet|haipati internet|problem|issue|not working|doesn't work|does not work|can't log ?in|cannot log ?in|can't login|cannot login|failed|stuck|support|troubleshoot)\b/i;
 
 /** A first-line technical report, e.g. "Portal haifunguki kwenye simu". */
+const portalFailure = /\b(?:portal|captive portal)\b.{0,60}\b(?:inachelewa|inachukua muda|haitokei)|\b(?:haitoi|hakitoi|haitokei|haimpeleki|haileti|doesn.t open|doesn.t redirect)\b.{0,55}\bportal\b/i;
+const trialFailure = /\b(?:free[ -]?trial|jaribio la bure)\b/i;
+const failure = /\b(?:haiwa[ -]?connect|hai[ -]?connect|inakuja (?:hivyo|kama)|haifanyi|haifunguki|haitokei|haikubali|haianzi|inagoma|error|failed|unavailable|not working)\b/i;
+
+export function symptomOf(text: string) {
+  const line = text.replace(/\n/g, ' ');
+  if (/\b(?:nimelipa|wamelipa|amelipa|malipo|paid|payment)\b/i.test(line) &&
+      /\b(?:internet|intaneti|wi-?fi|portal|hotspot|voucher|package|kifurushi|subscription)\b/i.test(line) &&
+      /\b(?:haijafunguka|haijaanza|haijaingia|haijaactivate|haijaunganishwa|haipati|bado|pending|still|not activated|did not connect)\b/i.test(line)) return 'access_payment';
+  if (trialFailure.test(line) && failure.test(line)) return 'trial';
+  if (portalFailure.test(line)) return 'redirect';
+  if (/\b(?:offline|kimepoteza connection|disconnected)\b/i.test(line) &&
+      /\b(?:device|router|kifaa|gateway|eap|access point|mikrotik|cudy)\b/i.test(line)) return 'offline';
+  if (/\b(?:router|kifaa|access point|switch|eap)\b.{0,40}\b(?:haiwaki|hakiwaki|hakina umeme|no power|won.t power on)\b/i.test(line)) return 'power';
+  return undefined;
+}
+
 export function supportQuestion(text: string) {
-  return supportWords.test(text);
+  return supportWords.test(text) || Boolean(symptomOf(text));
 }
 
 /**
@@ -208,4 +226,8 @@ export function messageLanguage(text: string): 'sw' | 'en' | undefined {
   if (sw && !en) return 'sw';
   if (en && !sw) return 'en';
   return undefined;
+}
+
+export function adEnquiry(text: string) {
+  return /\b(?:tangazo|advertisement|saw your ad|your ad|came from (?:facebook|instagram)|naomba maelezo zaidi|(?:i(?:'m| am) )?interested|more (?:info|information))\b/i.test(text);
 }

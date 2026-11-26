@@ -1,4 +1,3 @@
-import type { GoogleGenAI } from '@google/genai';
 import type { PoolClient } from 'pg';
 import { chatContext, compose, factBrief, type Facts } from './brain.js';
 import { money, readProduct, searchProducts } from './pos.js';
@@ -65,7 +64,6 @@ function relatedLine(name: string, price: string | undefined, coverage: number |
 }
 
 export interface AdviceInput {
-  ai?: GoogleGenAI;
   client: PoolClient;
   product: { id: string; name: string };
   question: string;
@@ -165,7 +163,7 @@ export async function adviseOnDevice(input: AdviceInput): Promise<Advice | undef
   if (input.extraFacts?.length) facts.push('--- QUOTED SEPARATELY IN THIS REPLY ---', ...input.extraFacts);
 
   const written = await compose({
-    ai: input.ai, question: input.question, facts: facts.join('\n'), language: input.language,
+    question: input.question, facts: facts.join('\n'), language: input.language,
     goal: goalFrom(input.memory.facts), context: input.history ? chatContext(input.history) : '',
   });
   if (!written) {

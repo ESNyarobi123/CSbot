@@ -8,7 +8,7 @@ services:
       CSOLUTION_POS_DB_URL: ""
   worker:
     environment:
-      GEMINI_API_KEY: ""
+      DEEPSEEK_API_KEY: ""
       CSOLUTION_POS_DB_URL: ""
       WOTEFY_PLANS_URL: ""
       LUBFY_PLANS_URL: ""

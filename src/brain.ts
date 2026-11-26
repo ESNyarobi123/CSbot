@@ -1,5 +1,4 @@
-import { availableModels, recordModelFailure } from './gemini-availability.js';
-import type { GoogleGenAI } from '@google/genai';
+import { deepseekJson } from './deepseek.js';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 import { log } from './db.js';
@@ -205,7 +204,6 @@ export function grounded(answer: string, sources: string) {
 }
 
 export interface ComposeInput {
-  ai?: GoogleGenAI;
   question: string;
   /** Only facts the answer may use: datasheet, price, stock, approved knowledge. */
   facts: string;
@@ -229,9 +227,7 @@ export function chatContext(history: { direction: string; body: string }[]) {
  * support, so the caller can fall back to the deterministic lines.
  */
 export async function compose(input: ComposeInput): Promise<{ answer: string; confidence: number } | undefined> {
-  if (!input.ai) return undefined;
   const language = input.language === 'en' ? 'English' : 'Kiswahili';
-  const models = availableModels();
   const prompt = `${input.context ? `EARLIER MESSAGES (what the customer is referring to; prices, ranges and stock still come only from FACTS)\n${input.context}\n\n` : ''}FACTS (the only truth you may use)
 ${input.facts}
 
@@ -254,34 +250,14 @@ Rules, in order of importance:
 11. Use EARLIER MESSAGES only to see which device or site the customer means. Never copy a price, range or stock figure from them.
 12. Close with at most one question, and only when one missing fact would change the recommendation.`;
 
-  for (const model of models) {
-    try {
-      const generated = await input.ai.models.generateContent({
-        model,
-        config: {
-          maxOutputTokens: 900,
-          temperature: 0.3,
-          responseMimeType: 'application/json',
-          responseJsonSchema: z.toJSONSchema(composed),
-          systemInstruction,
-        },
-        contents: prompt,
-      });
-      const value = composed.parse(JSON.parse(generated.text ?? ''));
-      const check = grounded(value.answer, `${input.facts}\n${input.question}`);
-      if (!check.ok) {
-        log.warn({ model, number: check.value }, 'Composed answer used a number outside the facts');
-        continue;
-      }
-      return { answer: clean(value.answer), confidence: value.confidence };
-    } catch (error) {
-      recordModelFailure(model, error);
-      log.warn({ model, code: (error as { status?: string })?.status,
-        error: String((error as Error)?.message ?? error).slice(0, 240) },
-      `Composer model ${model} failed`);
-    }
+  const value = await deepseekJson({ schema: composed, system: systemInstruction, prompt, maxTokens: 650 });
+  if (!value) return;
+  const check = grounded(value.answer, `${input.facts}\n${input.question}`);
+  if (!check.ok) {
+    log.warn('Composed answer used a number outside the facts');
+    return;
   }
-  return undefined;
+  return { answer: clean(value.answer), confidence: value.confidence };
 }
 
 /* ------------------------------------------------------------------------- *
@@ -302,42 +278,14 @@ const identified = z.object({
  * anything about it.
  */
 export async function identifyDevice(
-  ai: GoogleGenAI | undefined, image: { base64: string; mimetype: string },
+  image: { base64: string; mimetype: string },
 ) {
-  if (!ai) return undefined;
-  const models = availableModels();
   const systemInstruction = `You identify networking hardware from a customer photo for a Tanzanian shop.
 Return JSON only. "model" is the exact model printed on the device or its label (for example "EAP 650", "RG-RAP6262(G)", "hAP ax2"), or "" when no model is legible.
 "brand" is the maker. "kind" is a short category ("access point", "router", "switch", "antenna", "cable").
 "visible" lists only what you can actually read or see: band, port count, LEDs, label text. Never guess a specification that is not visible.
 Use confidence below 0.5 when the photo is too far away, blurry or shows only part of the device.`;
-  for (const model of models) {
-    try {
-      const generated = await ai.models.generateContent({
-        model,
-        config: {
-          maxOutputTokens: 400,
-          temperature: 0.1,
-          responseMimeType: 'application/json',
-          responseJsonSchema: z.toJSONSchema(identified),
-          systemInstruction,
-        },
-        contents: [{
-          role: 'user',
-          parts: [
-            { text: 'Identify this device.' },
-            { inlineData: { mimeType: image.mimetype, data: image.base64 } },
-          ],
-        }],
-      });
-      return identified.parse(JSON.parse(generated.text ?? ''));
-    } catch (error) {
-      recordModelFailure(model, error);
-      log.warn({ model, error: String((error as Error)?.message ?? error).slice(0, 200) },
-        'Photo identification failed');
-    }
-  }
-  return undefined;
+  return deepseekJson({ schema: identified, system: systemInstruction, prompt: 'Identify this device.', image, maxTokens: 400 });
 }
 
 const understood = z.object({
@@ -357,10 +305,8 @@ export type UnderstoodImage = z.infer<typeof understood>;
  * kind, so a portal screenshot is met with a portal question, not a label one.
  */
 export async function understandImage(
-  ai: GoogleGenAI | undefined, image: { base64: string; mimetype: string },
+  image: { base64: string; mimetype: string },
 ): Promise<UnderstoodImage | undefined> {
-  if (!ai) return undefined;
-  const models = availableModels();
   const systemInstruction = `You look at whatever the customer sent and describe it for Connect Solution, a Tanzanian network-equipment shop.
 Return JSON only. Decide "kind":
 - "device": networking hardware — access point, router, switch, antenna, its box or label.
@@ -372,31 +318,5 @@ Return JSON only. Decide "kind":
 - "other": anything else.
 "summary" is one short sentence describing what is visible (for example "a Wi-Fi package page listing 1GB for TSh 500"). "model" and "brand" are filled only when kind is "device" and the model is legible; otherwise empty strings.
 Use confidence below 0.5 when the image is too unclear to classify.`;
-  for (const model of models) {
-    try {
-      const generated = await ai.models.generateContent({
-        model,
-        config: {
-          maxOutputTokens: 500,
-          temperature: 0.1,
-          responseMimeType: 'application/json',
-          responseJsonSchema: z.toJSONSchema(understood),
-          systemInstruction,
-        },
-        contents: [{
-          role: 'user',
-          parts: [
-            { text: 'Describe this image.' },
-            { inlineData: { mimeType: image.mimetype, data: image.base64 } },
-          ],
-        }],
-      });
-      return understood.parse(JSON.parse(generated.text ?? ''));
-    } catch (error) {
-      recordModelFailure(model, error);
-      log.warn({ model, error: String((error as Error)?.message ?? error).slice(0, 200) },
-        'Image understanding failed');
-    }
-  }
-  return undefined;
+  return deepseekJson({ schema: understood, system: systemInstruction, prompt: 'Describe this image.', image, maxTokens: 460 });
 }

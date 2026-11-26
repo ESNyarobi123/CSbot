@@ -122,7 +122,7 @@ const commands = {
     const daemon = spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], { encoding: 'utf8' });
     if (daemon.status !== 0) problems.push('Docker daemon is not reachable');
     else console.log('Docker ' + daemon.stdout.trim());
-    if (!env.GEMINI_API_KEY) console.log('Note: GEMINI_API_KEY is empty, so CSbot will use its local rules only.');
+    if (!env.DEEPSEEK_API_KEY) console.log('Note: DEEPSEEK_API_KEY is empty, so CSbot will use its local rules only.');
     if (!env.POS_BASE_URL && !env.CSOLUTION_POS_DB_URL) console.log('Note: no POS source configured; prices and stock come from the local catalog.');
     if (problems.length) {
       for (const problem of problems) console.error('- ' + problem);

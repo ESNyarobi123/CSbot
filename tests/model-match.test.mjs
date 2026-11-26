@@ -49,7 +49,7 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 
 process.env.POS_BASE_URL = `http://127.0.0.1:${server.address().port}`;
 process.env.DATABASE_URL ??= 'postgres://localhost/csbot';
-delete process.env.GEMINI_API_KEY;
+delete process.env.DEEPSEEK_API_KEY;
 delete process.env.CSOLUTION_POS_DB_URL;
 
 const { respond } = await import('../dist/assistant.js');

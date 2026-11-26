@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
-import { ai, customerTurn as respond, type Outcome } from './assistant.js';
+import { customerTurn as respond, type Outcome } from './assistant.js';
 import { replyEligible } from './reply-policy.js';
 import { config } from './config.js';
 import { shop } from './csolution-pos.js';
@@ -22,7 +22,7 @@ async function beginPresence(conversationId: string): Promise<Presence | undefin
     c.customer_jid,a.mode FROM conversations c JOIN accounts a ON a.id=c.account_id
     WHERE c.id=$1 AND c.mode='bot' AND a.enabled AND a.mode='baileys'`, [conversationId]);
   if (!target) return;
-  // Written outside the reply transaction so the gateway can show "typing" before Gemini answers.
+  // Written outside the reply transaction so the gateway can show "typing" before the reply is ready.
   await db.query("INSERT INTO gateway_signals (account_id,jid,kind) VALUES ($1,$2,'composing')",
     [target.account_id, target.customer_jid]).catch(() => undefined);
   return { accountId: target.account_id, jid: target.customer_jid };
@@ -43,7 +43,7 @@ async function heardAudio(client: Parameters<typeof respond>[0], mediaId: string
     const stored = await row<{ bytes: Buffer; mimetype: string }>(client,
       'SELECT bytes,mimetype FROM media WHERE id=$1', [mediaId]);
     if (!stored?.bytes?.length || !audioAllowed(stored.mimetype, stored.bytes.length)) return undefined;
-    return await transcribe(ai, stored);
+    return await transcribe(stored, 'en');
   } catch {
     return undefined;
   }
@@ -86,6 +86,10 @@ async function planFollowUps(
   // A closed sale has nothing left to nudge.
   if (outcome.stage === 'paid' || outcome.stage === 'completed') {
     await cancelFollowUps(client, conversationId);
+    return;
+  }
+  if (outcome.memory.support || outcome.memory.documentRequest) {
+    await cancelFollowUps(client, conversationId, ['quote_nudge', 'payment_reminder']);
     return;
   }
   if (outcome.stage === 'quoted' && config.FOLLOWUP_QUOTE_HOURS) {
@@ -147,6 +151,9 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         FROM messages WHERE conversation_id=$1 AND processing='pending' ORDER BY id LIMIT 20`, [conversationId])).rows;
       if (pending[0]?.id !== firstMessage) return;
       const ids = pending.map(message => message.id);
+      const optedOut = await customerOptedOut(client, conversation.account_id, conversation.customer_jid);
+      const textConsent = latestConsent(pending);
+      const mayTranscribe = !optedOut && textConsent !== 'stop' && conversation.mode === 'bot' && conversation.memory.language === 'en';
       // A voice note is the customer's own words, so the words are recovered
       // before anything is classified. A customer who cannot type should not be
       // asked to type their question again.
@@ -157,7 +164,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       let voiceUnread = false;
       for (const message of pending) {
         if (message.kind !== 'audio' || !pendingVoice(message.body)) continue;
-        if (!message.media_id) { voiceUnread = true; continue; }
+        if (!message.media_id || !mayTranscribe) { voiceUnread = true; continue; }
         const heard = await heardAudio(client, message.media_id);
         if (heard?.text) {
           message.body = heard.text;
@@ -177,7 +184,6 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       const eligible = replyEligible(newest, conversation.memory, history, hasPhoto);
       // A number that asked to be left alone stays silent unless it asks to come
       // back. Opt-out beats every sales branch, or the number gets reported.
-      const optedOut = await customerOptedOut(client, conversation.account_id, conversation.customer_jid);
       const consent = latestConsent(pending);
       const resume = consent === 'resume';
       if (consent === 'stop') {
@@ -244,7 +250,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       }
       const replyStarted = Date.now();
       const outcome = await respond(client, conversation, newest,
-        history.map(line => ({ ...line, body: line.body.slice(0, 700) })), !canReply, photo, spoken);
+        history.map(line => ({ ...line, body: line.body.slice(0, 700) })), !canReply, photo, spoken, `${conversation.account_id}:${firstMessage}`);
       const replyMs = Date.now() - replyStarted;
       if (replyMs >= 5000) log.warn({ conversation: conversationId, replyMs, batchSize: pending.length,
         withPhoto: Boolean(photo), withVoice: spoken, canReply }, 'Slow reply generation');
@@ -263,11 +269,14 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
               ? pending.find(message => message.body === '[WhatsApp image]')?.media_id : undefined) : undefined;
         await advanceSale(client, updated, sale, outcome.stage, 'customer_message', receipt ?? undefined);
       }
-      else if (canReply && (outcome.handoff || outcome.notify)) {
+      if (canReply && (outcome.notify || (!outcome.stage && outcome.handoff))) {
         const closedOrder = conversation.stage === 'completed' || conversation.stage === 'paid';
-        const memory = closedOrder ? withoutQuote(updated.memory) : updated.memory;
+        const memory = closedOrder && !outcome.alertTitle ? withoutQuote(updated.memory) : updated.memory;
         await alertAdmins(client, { ...updated, memory },
-          outcome.handoff ? 'Mazungumzo yanahitaji mhudumu' : 'Tatizo jipya la mfumo');
+          outcome.alertTitle ?? (outcome.handoff ? 'Mazungumzo yanahitaji mhudumu' : 'Tatizo jipya la mfumo'),
+          memory.lastSupport && !memory.documentSummary && outcome.handoff
+            ? [...pending].reverse().find(message => message.kind === 'image' && message.media_id)?.media_id
+              ?.replace(/^/, 'csbot-media:') : undefined);
       }
       if (canReply && !platformNotice(newest)) {
         // Keep the 360 record current with what this turn revealed, then queue

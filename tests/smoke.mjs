@@ -152,7 +152,7 @@ assert.match(outbound(otherHistory)[0].body, /Integration Test LubFy/);
 assert.equal((await api(otherPath)).stage, 'quoted');
 console.log('Passed: account isolation, debounce, deduplication, product photo, fresh pricing, plan clarification, sales alerts, payment confirmation, repeat sales, saved customer context, stale payment protection and idempotent admin actions.');
 
-// A voice note the stack cannot read (this compose file runs without a Gemini
+// A voice note the stack cannot read (this compose file runs without a DeepSeek
 // key) must reach a person, not vanish. This is the failure the feature exists
 // to prevent: a customer who speaks instead of typing is still a customer.
 const voiceChat = await api(`/v1/accounts/${account}/simulate`, { method: 'POST', status: 202,
@@ -179,3 +179,24 @@ assert.match(outbound(photoMessages)[0].body, /lebo.*WR3000/i);
 assert.match(outbound(photoMessages)[0].body, /99,000/);
 assert.equal((await api(photoPath)).memory.product.id, 'wr3000');
 console.log('Passed: printed model identified from a product photograph, priced from POS and remembered on its own conversation.');
+
+const invoicePdf = { name: 'INV-1001.pdf', base64: Buffer.from('%PDF-1.7\n% local fixture\n%%EOF\n').toString('base64') };
+const invoice = { method: 'POST', status: 202, data: {
+  text: 'Hii ndiyo invoice ya oda yako.', requestId: 'smoke-invoice-pdf', invoicePdf,
+} };
+const [invoiceSent, invoiceRetry] = await Promise.all([api(messagesPath, invoice), api(messagesPath, invoice)]);
+assert.equal(invoiceSent.id, invoiceRetry.id);
+await api(messagesPath, { ...invoice, status: 400, data: {
+  ...invoice.data, invoicePdf: { ...invoicePdf, name: 'another.pdf' },
+} });
+const invoiceMessages = await waitFor(messagesPath, value => value.some(item => item.kind === 'document'));
+const documents = invoiceMessages.filter(item => item.kind === 'document');
+assert.equal(documents.length, 1);
+assert.ok(documents[0].media_id);
+const downloadUrl = base + path + '/documents/' + documents[0].media_id;
+assert.equal((await fetch(downloadUrl)).status, 401);
+const download = await fetch(downloadUrl, { headers: { authorization: 'Bearer ' + token } });
+assert.equal(download.status, 200);
+assert.equal(download.headers.get('content-disposition'), 'attachment; filename="INV-1001.pdf"');
+assert.equal(Buffer.from(await download.arrayBuffer()).toString('base64'), invoicePdf.base64);
+console.log('Passed: invoice PDF reached the mock gateway once and can only be downloaded by an admin.');

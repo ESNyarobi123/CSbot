@@ -29,7 +29,7 @@ export async function studio(container, signal) {
       <section class="card chat-pane">
         <header class="chat-head">
           <span class="chat-avatar">${icon('bot', 19)}</span>
-          <div><b>CSbot</b><small id="chat-status">Ready — Gemini not used for this answer yet</small></div>
+          <div><b>CSbot</b><small id="chat-status">Ready to test a reply</small></div>
           <span class="pill green"><span class="pill-dot"></span>Live engine</span>
         </header>
         <div class="chat-log" id="chat-log" aria-live="polite"></div>
@@ -143,8 +143,8 @@ export async function studio(container, signal) {
       if (photo) pending = null;
       drawAttached();
       status.textContent = result.vision
-        ? `Vision ready · ${result.model ?? 'Gemini'}`
-        : 'Rule engine only — Gemini is not configured, so photos cannot be read';
+        ? `Vision ready · ${result.model ?? 'DeepSeek'}`
+        : 'Local rules and label OCR are available';
     } catch (error) {
       notify(error.message, true);
       turns = turns.concat([{ customer: body, reply: 'CSbot could not answer that one. Try again.',
@@ -200,7 +200,7 @@ export async function studio(container, signal) {
     picked = 0;
     pending = null;
     drawAttached();
-    status.textContent = 'Ready — Gemini not used for this answer yet';
+    status.textContent = 'Ready to test a reply';
     draw();
     trace();
     field.focus();

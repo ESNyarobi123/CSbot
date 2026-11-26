@@ -43,7 +43,7 @@ export async function openSale(client: PoolClient, conversation: Conversation, r
 }
 
 export function withoutQuote(memory: Conversation['memory']): Conversation['memory'] {
-  const { lastQuote, quoteFor, product, productOptions, optionQuery, lastOptionIds, awaitingService, plan, ...context } = memory;
+  const { lastQuote, quoteFor, product, productOptions, optionQuery, lastOptionIds, awaitingService, plan, documentRequest, documentSummary, lastDocument, posQuotation, ...context } = memory;
   return context;
 }
 
@@ -78,7 +78,7 @@ export async function advanceSale(
       VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING stage`, [sale.id, conversation.id, stage]);
     if (event) {
       const title = stage === 'ready_to_pay' ? 'Mteja yuko tayari kulipa' : 'Mteja ameripoti malipo. Thibitisha.';
-      const alertMemory = { ...withoutQuote(memory), lastQuote: updated.quote?.text, product: updated.quote?.product,
+      const alertMemory = { ...withoutQuote(memory), lastSupport: undefined, support: undefined, documentSummary: memory.documentSummary, lastQuote: updated.quote?.text, product: updated.quote?.product,
         quoteFor: updated.quote?.kind, system: updated.quote?.system ?? memory.system };
       await alertAdmins(client, { ...conversation, memory: alertMemory }, `${title} · Oda #${sale.id}`,
         receiptId ? `csbot-media:${receiptId}` : undefined);

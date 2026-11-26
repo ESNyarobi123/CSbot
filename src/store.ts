@@ -20,6 +20,7 @@ export interface Conversation {
   memory: {
     replyStatus?: 'waiting' | 'answered';
     onboarding?: boolean;
+    profile?: import('./customer-text.js').CustomerProfile;
     system?: 'wotefy' | 'lubfy';
     product?: { id: string; name: string };
     lastQuote?: string;
@@ -36,12 +37,16 @@ export interface Conversation {
     survey?: { waitingFor: 'site' | 'users'; town?: string; site?: string };
     planning?: 'mesh' | 'coverage';
     quoteFor?: 'product' | 'plan';
+    documentRequest?: import('./quotation.js').DocumentRequest;
+    documentSummary?: string;
+    lastDocument?: string;
+    posQuotation?: { number: string; productId: string; quantity: number };
     /** Set while the bot waits for "yes" to its installation/cable offer. */
     awaitingService?: boolean;
     /** Support intake: the problem, the system, and the login email. */
-    support?: { problem?: string; system?: 'wotefy' | 'lubfy'; email?: string; waitingFor?: 'problem' | 'email' | 'system' | 'device'; attempts?: number; sameEmail?: boolean };
+    support?: { problem?: string; system?: 'wotefy' | 'lubfy'; email?: string; waitingFor?: 'problem' | 'email' | 'system' | 'device' | 'check'; attempts?: number; sameEmail?: boolean };
     /** Last completed support intake, kept for the admin alert and audits. */
-    lastSupport?: { problem?: string; system?: 'wotefy' | 'lubfy'; email?: string };
+    lastSupport?: { problem?: string; checkResult?: string; system?: 'wotefy' | 'lubfy'; email?: string };
     recentTopic?: string;
     /** Chat language, so a bare model name does not flip the reply to English. */
     language?: 'sw' | 'en';
@@ -176,12 +181,13 @@ export async function setMode(client: PoolClient, id: string, mode: Conversation
 export async function enqueue(client: PoolClient, item: {
   accountId: string; conversationId: string; jid: string; body: string;
   origin: 'bot' | 'admin' | 'alert' | 'handoff'; imageUrl?: string; requestKey?: string;
+  document?: { id: string; name: string; hash: string };
 }) {
   const providerId = '3EB0' + randomBytes(10).toString('hex').toUpperCase();
-  return row(client, `INSERT INTO outbound (account_id, conversation_id, jid, body, origin, image_url, provider_id, request_key)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (conversation_id,request_key) DO NOTHING RETURNING id,state`,
+  return row(client, `INSERT INTO outbound (account_id, conversation_id, jid, body, origin, image_url, provider_id, request_key, document_id, document_name, document_hash)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (conversation_id,request_key) DO NOTHING RETURNING id,state`,
   [item.accountId, item.conversationId, item.jid, item.body, item.origin, item.imageUrl ?? null, providerId,
-    item.requestKey ?? null]);
+    item.requestKey ?? null, item.document?.id ?? null, item.document?.name ?? null, item.document?.hash ?? null]);
 }
 
 export function recipient(conversation: Conversation) {
@@ -198,16 +204,18 @@ export async function alertAdmins(
     return;
   }
   const customer = [conversation.customer_name, conversation.customer_phone, `chat #${id}`].filter(Boolean).join(' · ');
-  const support = memory.lastSupport;
-  const subject = support?.system
+  const support = memory.documentSummary ? undefined : memory.support ?? memory.lastSupport;
+  const subject = memory.documentSummary ? 'Mauzo ya Connect Solution' : support?.system
     ? `Msaada wa kiufundi · ${support.system === 'wotefy' ? 'WoteFy' : 'LubFy'}`
     : (memory.quoteFor === 'plan' ? memory.system : memory.product?.name ?? memory.system)
       ?? 'Bidhaa au huduma inahitaji kufafanuliwa';
   const detail = [
+    memory.documentSummary,
     support?.problem && 'Tatizo: ' + support.problem,
+    !memory.support && memory.lastSupport?.checkResult && support && 'Matokeo ya ukaguzi: ' + memory.lastSupport.checkResult,
     support?.email && 'Email ya akaunti: ' + support.email,
-    !support && memory.lastQuote && 'Bei ya kumbukumbu: ' + memory.lastQuote,
-    !support && memory.recentTopic?.slice(0, 280),
+    !memory.documentSummary && !support && memory.lastQuote && 'Bei ya kumbukumbu: ' + memory.lastQuote,
+    !memory.documentSummary && !support && memory.recentTopic?.slice(0, 280),
   ].filter(Boolean).join('\n');
   for (const admin of admins.rows) {
     await enqueue(client, { accountId, conversationId: id, jid: admin.phone + '@s.whatsapp.net',

@@ -31,6 +31,9 @@ interface Outbound {
   origin: 'bot' | 'handoff' | 'admin' | 'alert';
   body: string;
   image_url: string | null;
+  document_id: string | null;
+  document_name: string | null;
+  document_hash: string | null;
   provider_id: string;
 }
 
@@ -386,6 +389,13 @@ class Session {
           await client.query("UPDATE outbound SET state='queued',attempted_at=NULL WHERE id=$1", [picked.id]);
           return;
         }
+        const document = picked.document_id && await row<{ bytes: Buffer }>(client,
+          "SELECT bytes FROM media WHERE id=$1 AND conversation_id=$2 AND kind='document'",
+          [picked.document_id, picked.conversation_id]);
+        if (picked.document_hash && !document) {
+          await client.query("UPDATE outbound SET state='canceled',reason='document_expired' WHERE id=$1", [picked.id]);
+          return;
+        }
         let body = picked.body;
         if (picked.image_url && !mock && !image) body += '\nPicha haipatikani kwa sasa / Photo unavailable right now.';
         if (!mock) {
@@ -396,7 +406,10 @@ class Session {
             socket.end(new Error('Message submission timed out'));
           }, 20000);
           try {
-            const sent = await socket.sendMessage(picked.jid, image ? { ...image, caption: body } : { text: body },
+            const content = document ? { document: document.bytes, mimetype: 'application/pdf',
+              fileName: picked.document_name ?? 'Invoice.pdf', caption: body }
+              : image ? { ...image, caption: body } : { text: body };
+            const sent = await socket.sendMessage(picked.jid, content,
               { messageId: picked.provider_id, mediaUploadTimeoutMs: 10000 });
             if (!sent?.key.id) throw new Error('Message submission was not confirmed');
           } finally {
@@ -405,10 +418,11 @@ class Session {
         }
         await client.query("UPDATE outbound SET state='sent',body=$2,sent_at=now() WHERE id=$1", [picked.id, body]);
         if (picked.origin !== 'alert') {
-          await client.query(`INSERT INTO messages (conversation_id,provider_id,direction,actor,body,kind,occurred_at)
-            VALUES ($1,$2,'outbound',$3,$4,$5,now()) ON CONFLICT DO NOTHING`,
+          await client.query(`INSERT INTO messages (conversation_id,provider_id,direction,actor,body,kind,occurred_at,media_id)
+            VALUES ($1,$2,'outbound',$3,$4,$5,now(),$6) ON CONFLICT DO NOTHING`,
           [picked.conversation_id, picked.provider_id, picked.origin === 'admin' ? 'admin' : 'bot',
-            body, image || (mock && picked.image_url) ? 'image' : 'text']);
+            body, document ? 'document' : image || (mock && picked.image_url) ? 'image' : 'text',
+            document ? picked.document_id : null]);
           await client.query('UPDATE conversations SET last_body=left($2,240),last_at=now() WHERE id=$1',
             [picked.conversation_id, body]);
         }

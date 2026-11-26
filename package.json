@@ -19,7 +19,6 @@
     "catalog:check": "node --env-file-if-exists=.env scripts/catalog-check.mjs"
   },
   "dependencies": {
-    "@google/genai": "3.4.0",
     "@nestjs/common": "11.2.10",
     "@nestjs/core": "11.2.10",
     "@nestjs/platform-express": "11.2.10",

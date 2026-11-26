@@ -5,7 +5,7 @@ import { test } from 'node:test';
 // the last device survive the chat, the dashboard shows them, and the composer
 // is not told about a model the customer never claimed to own.
 process.env.DATABASE_URL ??= 'postgres://localhost/csbot';
-delete process.env.GEMINI_API_KEY;
+delete process.env.DEEPSEEK_API_KEY;
 delete process.env.POS_BASE_URL;
 delete process.env.CSOLUTION_POS_DB_URL;
 

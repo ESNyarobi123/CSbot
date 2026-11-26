@@ -25,8 +25,9 @@ const person = (name) => {
 const messageBody = (body) => esc(body).replace(/\*([^*\n]+)\*/g, '<strong>$1</strong>');
 
 function customerBrief(thread) {
-  const { profile = {}, requirements = {}, product, productOptions = [], language, support,
+  const { profile = {}, requirements = {}, product, productOptions = [], language, support, lastSupport, lastDocument, posQuotation,
     facts: siteFacts = {}, trace = [] } = thread.memory || {};
+  const caseDetails = support ?? lastSupport;
   const environments = { indoor: 'Indoors', outdoor: 'Outdoors', mixed: 'Indoors and outdoors' };
   const obstacles = { open: 'Open area', obstructed: 'Obstructions present' };
   // The flexible memory the bot keeps between chats: whatever the customer said
@@ -63,14 +64,25 @@ function customerBrief(thread) {
       <dl class="brief-facts">${site.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(String(value).replace(/\b\w/g, (char) => char.toUpperCase()))}</dd></div>`).join('')}</dl></section>` : ''}
     ${models.length ? `<section class="details-section"><h3>${icon('box', 15)} Models discussed</h3>
       <ul class="brief-models">${models.map((item) => `<li>${esc(item.name)}</li>`).join('')}</ul></section>` : ''}
-    ${support?.problem ? `<section class="details-section"><h3>${icon('alert', 15)} Support request</h3>
-      <p>${esc(support.problem)}</p></section>` : ''}
+    ${caseDetails?.problem ? `<section class="details-section"><h3>${icon('alert', 15)} Support request</h3>
+      <p>${esc(caseDetails.problem)}</p>${caseDetails.checkResult ? `<p>${esc(caseDetails.checkResult)}</p>` : ''}</section>` : ''}
+    ${lastDocument || posQuotation ? `<section class="details-section"><h3>${icon('bag', 15)} Sales documents</h3>
+      <p>${esc(lastDocument || posQuotation.number)}</p></section>` : ''}
     ${trace.length ? `<section class="details-section"><h3>${icon('book', 15)} Last answer, step by step</h3>
       <ol class="brief-trace">${trace.map((step) => `<li>${esc(step)}</li>`).join('')}</ol></section>` : ''}
     <section class="details-section"><h3>${icon('bag', 15)} Latest order</h3>
       ${thread.sale ? `<div class="details-row"><a class="quiet-link" href="#sales/${esc(thread.id)}/${esc(thread.sale.id)}">Order #${esc(thread.sale.id)} ${icon('chevron', 13)}</a>${stagePill(thread.sale.stage)}</div>
         ${thread.sale.quote?.text ? `<p class="details-quote">${esc(thread.sale.quote.text)}</p>` : ''}` : '<p>No order yet.</p>'}
     </section>`;
+}
+
+function encodePdf(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',', 2)[1]);
+    reader.onerror = () => reject(new Error('The PDF could not be read.'));
+    reader.readAsDataURL(file);
+  });
 }
 
 export async function inbox(container, signal, segments, initialSearch = '') {
@@ -197,6 +209,7 @@ export async function inbox(container, signal, segments, initialSearch = '') {
         <button type="button" class="icon-btn brief-trigger" data-brief aria-haspopup="dialog" aria-label="Open customer brief" title="Customer brief" disabled>${icon('book', 17)}</button></div></header>
         <div class="thread-messages" role="region" aria-label="Message history" tabindex="0"></div>
         <form class="composer"><div class="compose-box"><textarea placeholder="Write a reply…" aria-label="Reply message" aria-describedby="compose-hint" maxlength="3500" rows="2" required></textarea>
+          <label class="composer-attachment">Invoice PDF <input type="file" accept=".pdf,application/pdf" aria-describedby="compose-hint"></label>
           <div class="composer-actions"><small id="compose-hint"></small><button class="btn primary" type="submit" title="Send reply (Ctrl or ⌘ + Enter)" disabled>${icon('send', 15)} Send</button></div></div></form>`;
       pane.querySelector('[data-back]').onclick = () => selectChat('');
       pane.querySelector('[data-handoff]').onclick = changeMode;
@@ -205,6 +218,7 @@ export async function inbox(container, signal, segments, initialSearch = '') {
       };
       const form = pane.querySelector('form');
       form.onsubmit = send;
+      form.querySelector('[type=file]').onchange = updateComposer;
       const input = form.querySelector('textarea');
       input.value = drafts.get(selected) || '';
       input.oninput = () => {
@@ -251,7 +265,11 @@ export async function inbox(container, signal, segments, initialSearch = '') {
         return (
           divider +
           `<div class="bubble ${item.direction === 'outbound' ? 'outgoing' : ''} ${painted && fresh.has(item.id) ? 'bubble-new' : ''}">
-        ${item.media_id ? `<button type="button" class="media-link" data-image="${esc(item.media_id)}">${icon('image', 17)} View image</button>` : ''}
+        ${item.media_id && item.kind === 'document'
+          ? `<a class="media-link" href="/v1/conversations/${esc(selected)}/documents/${esc(item.media_id)}" download>Download PDF</a>`
+          : item.media_id && item.kind === 'audio'
+            ? `<button type="button" class="media-link" data-audio="${esc(item.media_id)}">Play voice note</button>`
+            : item.media_id ? `<button type="button" class="media-link" data-image="${esc(item.media_id)}">${icon('image', 17)} View image</button>` : ''}
         ${item.body ? `<div class="message-body">${messageBody(item.body)}</div>` : ''}
         <small>${item.actor === 'bot' ? 'CSbot · ' : item.actor === 'admin' ? 'Admin · ' : ''}${timeLabel(item.occurred_at)}</small>
       </div>`
@@ -297,6 +315,18 @@ export async function inbox(container, signal, segments, initialSearch = '') {
         if (event.target instanceof HTMLButtonElement) event.target.disabled = false;
       }
     });
+    target.querySelectorAll('[data-audio]').forEach(button => {
+      button.onclick = async () => {
+        try {
+          const { dataUrl } = await api('/media/' + button.dataset.audio, { signal });
+          if (signal.aborted || !/^data:audio\/(?:ogg|opus|mpeg|mp4|aac|amr|wav|webm);base64,[a-z0-9+/=]+$/i.test(dataUrl)) return;
+          showModal('Customer voice note', '',
+            `<audio controls src="${esc(dataUrl)}"></audio><p><a download href="${esc(dataUrl)}">Download audio</a></p>`);
+        } catch (error) {
+          if (!signal.aborted) notify(error.message, true);
+        }
+      };
+    });
     target.querySelectorAll('[data-image]').forEach(
       (button) =>
         (button.onclick = async () => {
@@ -334,9 +364,13 @@ export async function inbox(container, signal, segments, initialSearch = '') {
   function updateComposer() {
     const form = pane.querySelector('form');
     if (!form) return;
-    form.querySelector('button').disabled = !thread || sending.has(selected) || !form.querySelector('textarea').value.trim();
-    form.querySelector('#compose-hint').textContent = thread?.mode === 'bot'
-      ? 'Sending a reply takes over this chat.' : 'You are replying as an agent.';
+    const file = form.querySelector('[type=file]').files[0];
+    const text = form.querySelector('textarea').value.trim();
+    const invalid = file && (file.size > 4 * 1024 * 1024 || !/\.pdf$/i.test(file.name) || text.length > 1000);
+    form.querySelector('button').disabled = !thread || sending.has(selected) || !text || Boolean(invalid);
+    form.querySelector('#compose-hint').textContent = invalid
+      ? 'Choose a PDF up to 4 MB and keep its caption under 1,001 characters.'
+      : thread?.mode === 'bot' ? 'Sending a reply takes over this chat.' : 'You are replying as an agent.';
   }
 
   async function changeMode() {
@@ -414,20 +448,29 @@ export async function inbox(container, signal, segments, initialSearch = '') {
     const active = selected;
     const form = event.currentTarget;
     const input = form.querySelector('textarea');
+    const attachment = form.querySelector('[type=file]');
+    const file = attachment.files[0];
     const text = input.value.trim();
-    if (!text || sending.has(active) || !thread) return;
-    const previous = retryRequests.get(active);
-    const request = previous?.text === text ? previous : { text, requestId: crypto.randomUUID() };
-    retryRequests.set(active, request);
+    if (form.querySelector('button').disabled) return;
     sending.add(active);
     updateComposer();
     try {
+      const invoicePdf = file ? { name: file.name.slice(0, -4).replace(/[^A-Za-z0-9 ._-]/g, '_')
+        .replace(/^[^A-Za-z0-9]+/, '').slice(0, 110).concat('.pdf'), base64: await encodePdf(file) } : undefined;
+      if (invoicePdf?.name === '.pdf') invoicePdf.name = 'Invoice.pdf';
+      const previous = retryRequests.get(active);
+      const sameAttachment = previous?.invoicePdf?.name === invoicePdf?.name &&
+        previous?.invoicePdf?.base64 === invoicePdf?.base64;
+      const request = previous?.text === text && sameAttachment ? previous
+        : { text, invoicePdf, requestId: crypto.randomUUID() };
+      retryRequests.set(active, request);
       await api('/conversations/' + active + '/messages', { method: 'POST', data: request });
       retryRequests.delete(active);
       if (drafts.get(active)?.trim() === text) drafts.delete(active);
       if (selected === active && !signal.aborted) {
         const current = pane.querySelector('textarea');
         if (current.value.trim() === text) current.value = '';
+        if (attachment.files[0] === file) attachment.value = '';
         await loadThread();
       }
       if (!signal.aborted) notify('Reply queued.');

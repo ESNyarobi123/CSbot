@@ -1712,6 +1712,20 @@ select {
   min-height: 43px;
   max-height: 90px;
 }
+.composer-attachment {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.625rem 0.375rem;
+  font-size: 0.75rem;
+}
+
+.composer-attachment input {
+  width: min(100%, 14rem);
+  font: inherit;
+}
+
 .composer-actions {
   display: flex;
   align-items: center;

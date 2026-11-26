@@ -1,3 +1,5 @@
+import { adEnquiry, supportQuestion, systemFrom } from './customer-text.js';
+import { documentReply, quotationWords } from './quotation.js';
 import type { Conversation } from './store.js';
 
 const business = /\b(?:wotefy|lubfy|mfumo|billing|router|wifi|wi-fi|access point|hotspot|internet|intaneti|wireless|kuunganisha|umbali|kilomit\w*|mikrotik|microtick|microtik|omada|mesh(?:ing)?|installation|ufungaji|katalogi|mtandao|kifaa|kusajiliwa|stock|bei|price|catalog|subscription|vifurushi|kifurushi|packages?|kujiunga|kusajili|signup|sign up|register|portal|ssid|voucher|vifaa|sku|ofisi(?:ni)?|opening hours|malipo|nimelipa|kulipia|paid|payment|order|mhudumu|cudy|ruijie|reyee|comfast|faida|mapato|profit|income|revenue|biashara|business)\b|\b(?:eap|rap|wr|rb|ax|ap)[ -]?\d{2,5}\b/i;
@@ -29,16 +31,17 @@ export function replyEligible(text: string, memory: Conversation['memory'], hist
   // An address is never idle chatter; it is someone asking to be helped.
   if (memory.survey && /^(?:ni |kwenye |eneo la |ni eneo la )?(?:hosteli?|soko(?:ni)?|makazi|nyumba|shule|hoteli|hostels?|market|school|hotel)[.! ]*$/i.test(value)) return true;
   if (memory.survey?.waitingFor === 'users' && /\b\d{1,5}\b/.test(value) && value.split(/\s+/).length <= 5) return true;
+  if (quotationWords.test(value) || (memory.documentRequest && documentReply(value))) return true;
   if (emailOnly.test(value)) return true;
   if (placeAsk.test(value)) return true;
-  if (business.test(value) || trouble.test(value)
+  if (adEnquiry(value) || systemFrom(value) || supportQuestion(value) || business.test(value) || trouble.test(value)
     || /\b(nataka mtu|need a human|talk to an agent|ready to pay|namba ya kulipia)\b/i.test(value)) return true;
   if (photo && /\b(?:kwenu|mnayo|mnauza|inapatikana|stock|sell|available|cost|price)\b/i.test(value)) return true;
   const lastReply = history.filter(line => line.direction === 'outbound').at(-1)?.body || '';
   if (bareLocation.test(value)) return /\b(?:mkoa|mji|city|delivery|usafirishaji|location|uko wapi)\b/i.test(lastReply) && business.test(lastReply);
   if (/\b(?:naweza|na weza|can i) (?:ku)?(?:pata|get) (?:hii|hiyo|this|that)|\b(?:mnayo|mnauza) (?:hii|hiyo)/i.test(value)) return true;
   if (memory.support && (memory.support.problem || memory.support.waitingFor)) {
-    return detail.test(value) || emailOnly.test(value) ||
+    return (memory.support.waitingFor === 'check' && (photo || /\b(?:bado|imefunguka|imefanya|imekubali|kimewaka|sasa iko sawa|moja|zote|error|none|both|still|fixed|works|working|only|opened|pending|completed|yanasubiri|yamekamilika)\b/i.test(value))) || detail.test(value) || emailOnly.test(value) ||
       (memory.support.waitingFor === 'problem' && /\b(?:ina|hai|ime|ume|error|failed|screen|ukurasa|login|offline)/i.test(value));
   }
   const active = !!(memory.product || memory.productOptions?.length || memory.plan || memory.planning || memory.onboarding || memory.requirements || business.test(lastReply));

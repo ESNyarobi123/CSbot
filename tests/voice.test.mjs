@@ -2,25 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 process.env.DATABASE_URL ??= 'postgres://localhost/csbot';
-delete process.env.GEMINI_API_KEY;
+process.env.DEEPSEEK_API_KEY = 'local-test-key';
 
 const { audioAllowed, audioType, maxAudioBytes, pendingVoice, transcribe } = await import('../dist/voice.js');
 const { replyEligible } = await import('../dist/reply-policy.js');
 
 const audio = { mimetype: 'audio/ogg; codecs=opus', bytes: Buffer.from('OggS voice') };
-
-function fakeAi(reply) {
-  const calls = [];
-  return {
-    calls,
-    models: {
-      generateContent: async request => {
-        calls.push(request);
-        return typeof reply === 'function' ? reply(request) : { text: JSON.stringify(reply) };
-      },
-    },
-  };
-}
 
 test('a WhatsApp voice note is an accepted audio attachment', () => {
   assert.equal(audioType('audio/ogg; codecs=opus'), 'audio/ogg');
@@ -38,31 +25,27 @@ test('only the placeholder body counts as an unread voice note', () => {
   assert.equal(pendingVoice('[WhatsApp image]'), false);
 });
 
-test('the transcript is the speech, cleaned, with the audio sent as ogg', async () => {
-  const ai = fakeAi({ text: '  Nahitaji access point ya nje,   bei ni shingapi?  ', language: 'sw' });
-  const heard = await transcribe(ai, audio);
-  assert.equal(heard.text, 'Nahitaji access point ya nje, bei ni shingapi?');
-  assert.equal(heard.language, 'sw');
-  const [request] = ai.calls;
-  assert.equal(request.config.temperature, 0);
-  assert.equal(request.contents[0].parts[1].inlineData.mimeType, 'audio/ogg');
-  assert.equal(request.contents[0].parts[1].inlineData.data, audio.bytes.toString('base64'));
+test('English audio uses the speech endpoint with an Ogg file', async (t) => {
+  const call = t.mock.method(globalThis, 'fetch', async () => Response.json({ text: '  I need  an access point. ' }));
+  assert.deepEqual(await transcribe(audio, 'en'), { text: 'I need an access point.' });
+  const [url, request] = call.mock.calls[0].arguments;
+  assert.equal(url, 'https://api.deepseek.com/v1/tools/asr');
+  assert.equal(request.body.get('file').type, 'audio/ogg');
+  assert.equal(await request.body.get('file').text(), 'OggS voice');
 });
 
-test('an unintelligible note yields no text rather than invented words', async () => {
-  const heard = await transcribe(fakeAi({ text: '   ', language: '' }), audio);
-  assert.equal(heard.text, '');
-  assert.equal(heard.language, '');
+test('Kiswahili and unclassified voice notes go to staff without calling ASR', async (t) => {
+  const call = t.mock.method(globalThis, 'fetch', async () => { throw new Error('unexpected'); });
+  assert.equal(await transcribe(audio, 'sw'), undefined);
+  assert.equal(await transcribe(audio), undefined);
+  assert.equal(call.mock.callCount(), 0);
 });
 
-test('every model failing returns undefined so the chat can go to a person', async () => {
-  const failing = fakeAi(() => { throw new Error('503'); });
-  assert.equal(await transcribe(failing, audio), undefined);
-  assert.ok(failing.calls.length >= 1);
-});
-
-test('without a Gemini key there is no transcription attempt', async () => {
-  assert.equal(await transcribe(undefined, audio), undefined);
+test('blank or unavailable ASR results go to staff', async (t) => {
+  const call = t.mock.method(globalThis, 'fetch', async () => Response.json({ text: '   ' }));
+  assert.equal(await transcribe(audio, 'en'), undefined);
+  call.mock.mockImplementation(async () => new Response(null, { status: 503 }));
+  assert.equal(await transcribe(audio, 'en'), undefined);
 });
 
 test('the placeholder is silent but the recovered words are answered', () => {

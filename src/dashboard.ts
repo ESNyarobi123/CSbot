@@ -68,7 +68,7 @@ export class DashboardController {
   @Get(['', 'admin'])
   @Header('Cache-Control', 'no-store')
   @Header('X-Content-Type-Options', 'nosniff')
-  @Header('Content-Security-Policy', "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+  @Header('Content-Security-Policy', "default-src 'self'; img-src 'self' data: blob:; media-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
   ui(@Res() response: DashboardResponse) {
     response.sendFile(dashboardDir + 'index.html');
   }

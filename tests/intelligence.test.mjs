@@ -4,7 +4,7 @@ import { test } from 'node:test';
 // The thinking layer: what the bot remembers, and the rule that a written
 // answer may not contain a figure the shop never recorded.
 process.env.DATABASE_URL ??= 'postgres://localhost/csbot';
-delete process.env.GEMINI_API_KEY;
+delete process.env.DEEPSEEK_API_KEY;
 
 const { factBrief, factList, grounded, numbersIn, recall } = await import('../dist/brain.js');
 const { specBrief, specLines } = await import('../dist/specs.js');
