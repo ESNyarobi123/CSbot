@@ -18,7 +18,23 @@ const salutation = /^(?:kaka|dada|mkuu|boss|bro|brother|chief|mzee|mambo|habari|
 const trouble = /\b(?:tatizo|matatizo|shida|problem|support|msaada|imesimama|imekwama|haifunguki|haifanyi kazi|haifanyi|imekataa|error|imefeli|failed|offline|haionekani)\b/i;
 const emailOnly = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
-export function replyEligible(text: string, memory: Conversation['memory'], history: { direction: string; body: string }[], photo: boolean) {
+export interface ReplyHistoryLine {
+  direction: 'inbound' | 'outbound';
+  body: string;
+  occurred_at?: Date;
+}
+
+const opening = /^(?:kaka|dada|mkuu|boss|bro|brother|chief|mzee|mambo|habari|vipi|sasa|hello|hi|hey|shikamoo|salama)\b/i;
+const greetingGap = 24 * 60 * 60 * 1000;
+
+export function returningGreeting(text: string, history: ReplyHistoryLine[], now = Date.now()) {
+  if (!opening.test(text.trim()) || !salutation.test(text.trim())) return false;
+  const previous = [...history].reverse().find(line => line.direction === 'outbound');
+  return previous?.occurred_at !== undefined && previous.occurred_at.getTime() + greetingGap <= now;
+}
+
+
+export function replyEligible(text: string, memory: Conversation['memory'], history: ReplyHistoryLine[], photo: boolean) {
   const value = text.trim();
   if (unrelated.test(value) && !/\b(?:router|hotspot|wi-fi|wifi|portal|wotefy|lubfy|internet)\b/i.test(value)) return false;
   if (salutation.test(value)) {
@@ -26,7 +42,7 @@ export function replyEligible(text: string, memory: Conversation['memory'], hist
     // customer is invited to say what they need. Repeating it later is silence,
     // not another "which system?".
     const firstContact = history.every(line => line.direction !== 'outbound');
-    return firstContact && !memory.support && !memory.product && !memory.plan && !memory.planning;
+    return returningGreeting(value, history) || firstContact && !memory.support && !memory.product && !memory.plan && !memory.planning;
   }
   // An address is never idle chatter; it is someone asking to be helped.
   if (memory.survey && /^(?:ni |kwenye |eneo la |ni eneo la )?(?:hosteli?|soko(?:ni)?|makazi|nyumba|shule|hoteli|hostels?|market|school|hotel)[.! ]*$/i.test(value)) return true;

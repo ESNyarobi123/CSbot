@@ -1,6 +1,6 @@
 import { deepseekJson } from './deepseek.js';
 import { quotationTurn, quotationWords } from './quotation.js';
-import { replyEligible } from './reply-policy.js';
+import { replyEligible, returningGreeting, type ReplyHistoryLine } from './reply-policy.js';
 import { photoInquiry, photoReply, printedModel, understoodReply } from './product-photo.js';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
@@ -24,10 +24,7 @@ import type { Conversation, Stage } from './store.js';
 
 type IncomingPhoto = { base64: string; mimetype: string } | { count: number };
 
-export interface ChatLine {
-  direction: 'inbound' | 'outbound';
-  body: string;
-}
+export type ChatLine = ReplyHistoryLine;
 
 const decisionSchema = z.object({
   intent: z.enum(['general', 'product', 'plan', 'ambiguous_package', 'ready_to_pay', 'payment_reported', 'human', 'support']),
@@ -818,6 +815,13 @@ export async function customerTurn(...args: Parameters<typeof respond>): Promise
   const [, conversation, newest, history, , photo] = args;
   if (!replyEligible(newest, conversation.memory, history, Boolean(photo))) {
     return { body: '', memory: { ...conversation.memory, replyStatus: 'waiting' }, trace: ['Waiting for a business enquiry'] };
+  }
+  if (!args[4] && !photo && returningGreeting(newest, history)) {
+    const language = messageLanguage(newest) ?? conversation.memory.language ?? 'sw';
+    return {
+      body: smallTalkReply(newest, (sw, en) => language === 'en' ? en : sw),
+      memory: { ...conversation.memory, language, replyStatus: 'answered' },
+    };
   }
   const outcome = await respond(...args);
   if (outcome.body && !args[4]) outcome.memory.replyStatus = 'answered';

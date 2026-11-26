@@ -172,7 +172,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         } else voiceUnread = true;
       }
       const spoken = pending.some(message => !pendingVoice(message.body) && message.kind === 'audio');
-      const history = (await client.query<{ direction: 'inbound' | 'outbound'; body: string }>(`SELECT direction,body
+      const history = (await client.query<{ direction: 'inbound' | 'outbound'; body: string; occurred_at: Date }>(`SELECT direction,body,occurred_at
         FROM messages WHERE conversation_id=$1 AND processing='done'
         AND occurred_at <= $2 ORDER BY occurred_at DESC,id DESC LIMIT 16`,
       [conversationId, new Date(Math.max(...pending.map(message => message.occurred_at.getTime())))])).rows.reverse();

@@ -161,3 +161,16 @@ test('ambiguous and unavailable product photos cannot quote a previously discuss
     assert.doesNotMatch(reply.body, /123,000|Old router/);
   }
 });
+
+test('a customer greeting after a long break gets a fresh welcome and keeps their quotation', async () => {
+  const memory = { product: { id: 'ap', name: 'EAP 650' }, lastQuote: 'EAP 650 · TZS 200,000' };
+  const fourDaysAgo = new Date(Date.now() - 4 * 24 * 3600_000);
+  const history = [{ direction: 'outbound', body: 'Your quote was sent.', occurred_at: fourDaysAgo }];
+  const greeting = await say('Habari', memory, history);
+  assert.match(greeting.body, /karibu|kusaidia/i);
+  assert.equal(greeting.memory.lastQuote, memory.lastQuote);
+  assert.equal(greeting.memory.replyStatus, 'answered');
+  assert.equal((await say('Asante', memory, history)).body, '');
+  const recent = [...history, { direction: 'outbound', body: greeting.body, occurred_at: new Date() }];
+  assert.equal((await say('Habari', memory, recent)).body, '');
+});
