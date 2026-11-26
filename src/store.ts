@@ -21,6 +21,7 @@ export interface Conversation {
   memory: {
     replyStatus?: 'waiting' | 'answered';
     onboarding?: boolean;
+    setup?: import('./installation-guide.js').SetupContext;
     profile?: import('./customer-text.js').CustomerProfile;
     system?: 'wotefy' | 'lubfy';
     product?: { id: string; name: string };

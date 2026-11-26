@@ -1,6 +1,7 @@
+import { installationGuide } from './installation-guide.js';
 import { deepseekJson } from './deepseek.js';
 import { quotationTurn, quotationWords } from './quotation.js';
-import { openingGreeting, replyEligible, type ReplyHistoryLine } from './reply-policy.js';
+import { openingGreeting, replyEligible, unrelatedChat, type ReplyHistoryLine } from './reply-policy.js';
 import { photoInquiry, photoReply, printedModel, understoodReply } from './product-photo.js';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
@@ -611,8 +612,8 @@ export function cableMeters(text: string) {
 
 // WoteFy is built around Omada EAP; LubFy covers the other vendor families listed
 // in the approved knowledge entry. The device decides, not the customer's guess.
-const omadaFleet = /\b(omada|eap)\b/i;
-const multiVendorFleet = /\b(mikrotik|hap|hex|cudy|ruijie|reyee|cambium|unifi|ubiquiti|comfast|router|gateway)\b/i;
+const omadaFleet = /\bomada\b|\beap(?:\b|\d)/i;
+const multiVendorFleet = /\b(mikrotik|hap|hex|cudy|ruijie|reyee|cambium|unifi|ubiquiti)\b/i;
 
 export function systemFit(product: { name: string; brand?: string | null; category?: string | null }) {
   const text = `${product.name} ${product.brand ?? ''} ${product.category ?? ''}`;
@@ -631,12 +632,12 @@ export function systemAdvice(
 ) {
   const fit = systemFit(product);
   if (fit === 'wotefy') {
-    return say(`\n\nKwa kifaa hiki (Omada), WoteFy ndiyo inafaa zaidi — inatumia Omada EAP na portal yenye chapa yako.`,
-      `\n\nFor this Omada device, WoteFy is the better fit — it runs on Omada EAP with your own branded portal.`);
+    return say(`\n\nKwa vifaa vya Omada, WoteFy hutumia Omada Controller na LubFy ina njia yake ya portal. Mfumo uliopo na modeli vitasaidia kuchagua mpangilio unaofaa.`,
+      `\n\nFor Omada equipment, WoteFy uses Omada Controller and LubFy has its own portal setup. Your existing platform and the model help determine the right configuration.`);
   }
   if (fit === 'lubfy') {
-    return say(`\n\nKwa kifaa hiki, LubFy ndiyo inafaa zaidi — inasimamia MikroTik, Cudy, Ruijie/Reyee, Cambium na UniFi.`,
-      `\n\nFor this device, LubFy is the better fit — it manages MikroTik, Cudy, Ruijie/Reyee, Cambium and UniFi.`);
+    return say(`\n\nLubFy ina njia za kuunganisha familia hii ya vifaa. Modeli na firmware ndizo zitakazotusaidia kuchagua hatua sahihi.`,
+      `\n\nLubFy offers setup paths for this device family. The model and firmware determine the right steps.`);
   }
   return '';
 }
@@ -813,17 +814,28 @@ async function serviceQuote(
 
 /** Both WhatsApp and Studio use this gate before running the conversational engine. */
 export async function customerTurn(...args: Parameters<typeof respond>): Promise<Outcome> {
-  const [, conversation, newest, history, , photo] = args;
-  if (!replyEligible(newest, conversation.memory, history, Boolean(photo))) {
+  const [, conversation, newest, , onlyDetect, photo] = args;
+  if (!replyEligible(newest, Boolean(photo))) {
     return { body: '', memory: { ...conversation.memory, replyStatus: 'waiting' }, trace: ['Waiting for a business enquiry'] };
   }
-  const greeting = !args[4] && !photo && openingGreeting(newest);
-  if (greeting) {
-    const language = messageLanguage(greeting) ?? conversation.memory.language ?? 'sw';
-    return {
-      body: smallTalkReply(greeting, (sw, en) => language === 'en' ? en : sw),
-      memory: { ...conversation.memory, language, replyStatus: 'answered' },
-    };
+  if (!photo) {
+    const language = messageLanguage(newest) ?? conversation.memory.language ?? 'sw';
+    const say = (sw: string, en: string) => language === 'en' ? en : sw;
+    const greeting = openingGreeting(newest);
+    const acknowledgement = smallTalkOnly(newest) &&
+      (/^(?:asante|shukran|thank you|thanks|thx|poa|safi|nzuri)\b/i.test(newest.trim()) ||
+        !conversation.memory.awaitingService && !conversation.memory.support && !conversation.memory.survey &&
+        !conversation.memory.documentRequest);
+    const offTopic = unrelatedChat(newest);
+    if (offTopic || greeting || acknowledgement) {
+      const body = offTopic
+        ? say('Nipo hapa kukusaidia kuhusu vifaa vya mtandao, WoteFy au LubFy. Ungependa tuangalie nini?',
+          'I can help with networking equipment, WoteFy or LubFy. What would you like to look at?')
+        : smallTalkReply(greeting || newest, say);
+      return { body: onlyDetect ? '' : body, memory: {
+        ...conversation.memory, language, ...(onlyDetect ? {} : { replyStatus: 'answered' }),
+      } };
+    }
   }
   const outcome = await respond(...args);
   if (outcome.body && !args[4]) outcome.memory.replyStatus = 'answered';
@@ -875,6 +887,11 @@ async function answer(
       return { ...outcome, memory };
     }
     delete memory.documentRequest;
+  }
+  if (!onlyDetect) {
+    const language = messageLanguage(newest) ?? memory.language ?? 'sw';
+    const setup = installationGuide(newest, memory, (sw, en) => language === 'en' ? en : sw);
+    if (setup) return { body: setup, memory: { ...memory, language } };
   }
   const knownSymptom = symptomOf(newest) || memory.support?.waitingFor === 'check';
   const knowledge = onlyDetect || knownSymptom ? [] : await retrieveKnowledge(client, newest, systemFrom(newest) || memory.system);
@@ -1592,8 +1609,8 @@ async function answer(
         say(`Vitengo ${quantity} × ${price} = ${money({ amount: product.price.amount * quantity, currency: product.price.currency })}`,
           `${quantity} × ${price} = ${money({ amount: product.price.amount * quantity, currency: product.price.currency })}`),
         stock.available_to_sell < quantity
-          ? say(`Dukani tuna ${stock.available_to_sell} kwa sasa — nyingine zitakuja.`,
-            `Only ${stock.available_to_sell} in stock right now — the rest would be ordered.`)
+          ? say(`Dukani tuna ${stock.available_to_sell} kwa sasa. Timu inaweza kukagua upatikanaji wa idadi iliyobaki.`,
+            `Only ${stock.available_to_sell} in stock right now. Our team can check availability for the rest.`)
           : '',
       ].filter(Boolean).join('\n') : '';
       memory.product = { id: product.id, name: product.name };

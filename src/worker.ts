@@ -181,7 +181,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       // box. The bytes go to the model only for identification, never stored in
       // the prompt history.
       const hasPhoto = pending.some(message => message.kind === 'image');
-      const eligible = replyEligible(newest, conversation.memory, history, hasPhoto);
+      const eligible = replyEligible(newest, hasPhoto);
       // A number that asked to be left alone stays silent unless it asks to come
       // back. Opt-out beats every sales branch, or the number gets reported.
       const consent = latestConsent(pending);
@@ -227,6 +227,12 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         await client.query('UPDATE conversations SET memory=$2,updated_at=now() WHERE id=$1',
           [conversationId, memory]);
         await setMode(client, conversationId, 'human');
+        await enqueue(client, {
+          accountId: conversation.account_id, conversationId, jid: recipient(conversation), origin: 'handoff',
+          body: memory.language === 'en'
+            ? 'I received your voice note and shared it with our team so someone can listen and help you here.'
+            : 'Nimepokea voice note yako. Nimekabidhi mazungumzo kwa timu ili isikilize na ikusaidie hapa.',
+        });
         await alertAdmins(client, { ...conversation, memory }, 'Voice note haijasikika');
         log.warn({ conversation: conversationId }, 'Voice note could not be transcribed; handed to a person');
         return;

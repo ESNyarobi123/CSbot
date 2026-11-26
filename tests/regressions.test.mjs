@@ -107,9 +107,8 @@ test('a model number typed after a quote is a follow-up, not silence', async () 
   assert.notEqual(next.body, '');
   assert.match(next.body, /610/);
   assert.doesNotMatch(next.body, /Waiting for a business enquiry/);
-  // Idle chatter without a number stays quiet.
   const quiet = await say('poa sana', first.memory, [{ direction: 'outbound', body: first.body }]);
-  assert.equal(quiet.body, '');
+  assert.match(quiet.body, /Vizuri/);
 });
 
 test('site requirements are read from what the customer wrote', () => {

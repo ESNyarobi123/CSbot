@@ -18,7 +18,7 @@ test('a greeting receives a welcome on a new or active chat', async () => {
   assert.match(again.body, /karibu|kusaidia/i);
   for (const text of ['Nipo mtwara', 'Nimelipa chakula', 'Uko na gme']) {
     const reply = await say(text, { support: { problem: 'Nipo Mtwara', system: 'lubfy' } });
-    assert.equal(reply.body, '', text);
+    assert.ok(reply.body, text);
     assert.equal(reply.stage, undefined);
     assert.equal(reply.handoff, undefined);
   }
@@ -39,7 +39,7 @@ test('support asks about the affected device when the customer has several, and 
   const saved = await say('imeli yangu ile ile', one.memory, [{direction:'inbound',body:'customer@example.test'}]);
   assert.equal(saved.memory.lastSupport?.email, 'customer@example.test');
   const noise = await say('Hr fgrgd', one.memory);
-  assert.equal(noise.body, '');
+  assert.ok(noise.body);
 });
 
 test('a kilometre planning request and its follow-up keep the distance and clarify the network layout', async () => {
@@ -173,5 +173,49 @@ test('a repeated greeting keeps the open quote and support intake', async () => 
     assert.equal(reply.memory.replyStatus, 'answered');
     assert.equal(reply.stage, undefined);
   }
-  assert.equal((await say('Asante', memory, history)).body, '');
+  assert.match((await say('Asante', memory, history)).body, /karibu sana/i);
+});
+
+test('messages without sales keywords receive a response without opening a sale', async () => {
+  const dialogue = [{ direction: 'outbound', body: 'Niko hapa kukusaidia.' }];
+  const reply = await say('Ningependa kuanza ila sijui nianzie wapi', {}, dialogue);
+  assert.ok(reply.body);
+  assert.equal(reply.stage, undefined);
+  const offTopic = await say('Nimelipa chakula', {}, dialogue);
+  assert.match(offTopic.body, /WoteFy au LubFy/);
+  assert.equal(offTopic.stage, undefined);
+});
+
+test('installation advice follows the selected Omada platform and remembers the device model', async () => {
+  const one = await say('Nauliza nafungaje TP-Link EAP650?');
+  assert.match(one.body, /WoteFy na LubFy/);
+  assert.equal(one.memory.setup.model, 'EAP650');
+  const two = await say('WoteFy', one.memory);
+  assert.match(two.body, /Omada Controller/);
+  assert.match(two.body, /portal ya WoteFy/);
+  assert.match(two.body, /Nimepata modeli EAP650/);
+  const three = await say('firmware ni v1.2.0', two.memory);
+  assert.match(three.body, /EAP650 na firmware 1\.2\.0/);
+  assert.match(three.body, /jaribu simu moja/);
+  assert.equal(three.memory.setup, undefined);
+  assert.equal(three.stage, undefined);
+});
+
+test('installation advice checks device family and avoids quoting when the customer asks for steps', async () => {
+  const m = await say('Jinsi ya kufunga MikroTik hAP ax2 kwenye LubFy');
+  assert.match(m.body, /Add Router/);
+  assert.match(m.body, /RouterOS/);
+  assert.equal(m.stage, undefined);
+  const c = await say('Cudy WR3000 nafungaje kwenye WoteFy?');
+  assert.match(c.body, /WoteFy hutumia Omada Controller/);
+  assert.doesNotMatch(c.body, /^\*Hatua za mwanzo kwenye WoteFy\*/);
+  const unknown = await say('Nafungaje switch hii?');
+  assert.match(unknown.body, /modeli kamili/);
+});
+
+test('a generic router or Comfast gets no automatic compatibility recommendation', async () => {
+  const { systemFit } = await import('../dist/assistant.js');
+  assert.equal(systemFit({ name: 'Generic router', category: 'Router' }), '');
+  assert.equal(systemFit({ name: 'COMFAST AP3000', category: 'Access point' }), '');
+  assert.equal(systemFit({ name: 'TP-Link EAP650' }), 'wotefy');
 });

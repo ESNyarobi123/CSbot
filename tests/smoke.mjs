@@ -161,7 +161,8 @@ const voiceChat = await api(`/v1/accounts/${account}/simulate`, { method: 'POST'
 const voicePath = '/v1/conversations/' + voiceChat.conversationId;
 const voiceState = await waitFor(voicePath, value => value.mode === 'human');
 assert.match(voiceState.memory.recentTopic ?? '', /voice note/i);
-const voiceMessages = await api(voicePath + '/messages');
+const voiceMessages = await waitFor(voicePath + '/messages',
+  value => value.some(item => item.actor === 'bot' && /voice note yako/.test(item.body)));
 const voiceInbound = voiceMessages.filter(message => message.direction === 'inbound');
 assert.equal(voiceInbound.length, 1);
 assert.equal(voiceInbound[0].body, '[WhatsApp audio]');

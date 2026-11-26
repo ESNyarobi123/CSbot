@@ -116,6 +116,7 @@ export async function adviseOnDevice(input: AdviceInput): Promise<Advice | undef
     `Product: ${product.name}`,
     `Price: ${money(product.price)}`,
     `Stock: ${inStock ? 'in stock' : 'out of stock'}`,
+    product.type === 'Stocked' && `Units available at the time of lookup: ${stock.available_to_sell}`,
     [product.brand && `Brand: ${product.brand}`, product.category && `Category: ${product.category}`,
       product.warranty ? `Warranty: ${product.warranty} months` : ''].filter(Boolean).join(' · '),
     description && `Shop description: ${description}`,
@@ -133,6 +134,7 @@ export async function adviseOnDevice(input: AdviceInput): Promise<Advice | undef
   try {
     const { items } = await searchProducts(product.category || product.name, 20);
     const others = items.filter(item => item.id !== product.id && item.type !== 'Service'
+      && (item.available ?? (item.available_to_sell ?? 0) > 0)
       && !/^(m|meter|metre|metres|meters)$/i.test(item.unit ?? '')
       && !/cable|service/i.test(item.category ?? '')).slice(0, 4);
     if (others.length) {
@@ -159,7 +161,8 @@ export async function adviseOnDevice(input: AdviceInput): Promise<Advice | undef
   }
   if (input.knowledge) facts.push('--- APPROVED SHOP KNOWLEDGE ---', input.knowledge.slice(0, 2500));
   facts.push('--- SYSTEM FIT ---',
-    'WoteFy runs on TP-Link Omada EAP. LubFy manages MikroTik, Cudy, TP-Link Omada, Ruijie/Reyee, Cambium and Ubiquiti UniFi.');
+    'WoteFy has an Omada Controller setup. LubFy has setup profiles for MikroTik, Cudy, TP-Link Omada, Ruijie/Reyee, Cambium and Ubiquiti UniFi.',
+    'A vendor profile is not proof of support for every model or firmware. State exact compatibility only when the approved record confirms it.');
   if (input.extraFacts?.length) facts.push('--- QUOTED SEPARATELY IN THIS REPLY ---', ...input.extraFacts);
 
   const written = await compose({

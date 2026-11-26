@@ -51,6 +51,6 @@ test('blank or unavailable ASR results go to staff', async (t) => {
 test('the placeholder is silent but the recovered words are answered', () => {
   // This is why the worker transcribes before it decides: the placeholder alone
   // never reaches the conversational engine.
-  assert.equal(replyEligible('[WhatsApp audio]', {}, [], false), false);
-  assert.equal(replyEligible('Nahitaji access point ya nje', {}, [], false), true);
+  assert.equal(replyEligible('[WhatsApp audio]', false), false);
+  assert.equal(replyEligible('Nahitaji access point ya nje', false), true);
 });

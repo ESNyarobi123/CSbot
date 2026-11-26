@@ -24,10 +24,6 @@ export type DocumentRequest = {
   product?: NonNullable<Conversation['memory']['product']>;
   quantity?: number;
 };
-export function documentReply(text: string) {
-  return quantityOnly.test(text.trim()) || isModelReference(text) || [...text.matchAll(unitCount)].length === 1;
-}
-
 export async function quotationTurn(
   text: string, memory: Conversation['memory'], requestKey: string | undefined,
   say: (sw: string, en: string) => string,
