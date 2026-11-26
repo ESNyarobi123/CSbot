@@ -1,6 +1,6 @@
 import { deepseekJson } from './deepseek.js';
 import { quotationTurn, quotationWords } from './quotation.js';
-import { replyEligible, returningGreeting, type ReplyHistoryLine } from './reply-policy.js';
+import { openingGreeting, replyEligible, type ReplyHistoryLine } from './reply-policy.js';
 import { photoInquiry, photoReply, printedModel, understoodReply } from './product-photo.js';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
@@ -817,10 +817,11 @@ export async function customerTurn(...args: Parameters<typeof respond>): Promise
   if (!replyEligible(newest, conversation.memory, history, Boolean(photo))) {
     return { body: '', memory: { ...conversation.memory, replyStatus: 'waiting' }, trace: ['Waiting for a business enquiry'] };
   }
-  if (!args[4] && !photo && returningGreeting(newest, history)) {
-    const language = messageLanguage(newest) ?? conversation.memory.language ?? 'sw';
+  const greeting = !args[4] && !photo && openingGreeting(newest);
+  if (greeting) {
+    const language = messageLanguage(greeting) ?? conversation.memory.language ?? 'sw';
     return {
-      body: smallTalkReply(newest, (sw, en) => language === 'en' ? en : sw),
+      body: smallTalkReply(greeting, (sw, en) => language === 'en' ? en : sw),
       memory: { ...conversation.memory, language, replyStatus: 'answered' },
     };
   }

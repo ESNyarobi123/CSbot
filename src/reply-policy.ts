@@ -1,4 +1,4 @@
-import { adEnquiry, supportQuestion, systemFrom } from './customer-text.js';
+import { adEnquiry, smallTalkOnly, supportQuestion, systemFrom } from './customer-text.js';
 import { documentReply, quotationWords } from './quotation.js';
 import type { Conversation } from './store.js';
 
@@ -21,28 +21,23 @@ const emailOnly = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 export interface ReplyHistoryLine {
   direction: 'inbound' | 'outbound';
   body: string;
-  occurred_at?: Date;
 }
 
-const opening = /^(?:kaka|dada|mkuu|boss|bro|brother|chief|mzee|mambo|habari|vipi|sasa|hello|hi|hey|shikamoo|salama)\b/i;
-const greetingGap = 24 * 60 * 60 * 1000;
+const opening = /^(?:kaka|dada|mkuu|boss|bro|brother|chief|mzee|mambo+|habari|vipi|vpp|niaje|hujambo|sijambo|sasa|hello+|hi+|hey+|yo|sup|shikamoo|salama|asubuhi|mchana|jioni|(?:good )?(?:morning|afternoon|evening))\b/i;
 
-export function returningGreeting(text: string, history: ReplyHistoryLine[], now = Date.now()) {
-  if (!opening.test(text.trim()) || !salutation.test(text.trim())) return false;
-  const previous = [...history].reverse().find(line => line.direction === 'outbound');
-  return previous?.occurred_at !== undefined && previous.occurred_at.getTime() + greetingGap <= now;
+export function openingGreeting(text: string) {
+  const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+  if (!lines.every(line => salutation.test(line) || smallTalkOnly(line))) return;
+  return lines.find(line => opening.test(line));
 }
-
 
 export function replyEligible(text: string, memory: Conversation['memory'], history: ReplyHistoryLine[], photo: boolean) {
   const value = text.trim();
   if (unrelated.test(value) && !/\b(?:router|hotspot|wi-fi|wifi|portal|wotefy|lubfy|internet)\b/i.test(value)) return false;
+  if (openingGreeting(value)) return true;
   if (salutation.test(value)) {
-    // A greeting is worth one warm answer on first contact — that is how a new
-    // customer is invited to say what they need. Repeating it later is silence,
-    // not another "which system?".
     const firstContact = history.every(line => line.direction !== 'outbound');
-    return returningGreeting(value, history) || firstContact && !memory.support && !memory.product && !memory.plan && !memory.planning;
+    return firstContact && !memory.support && !memory.product && !memory.plan && !memory.planning;
   }
   // An address is never idle chatter; it is someone asking to be helped.
   if (memory.survey && /^(?:ni |kwenye |eneo la |ni eneo la )?(?:hosteli?|soko(?:ni)?|makazi|nyumba|shule|hoteli|hostels?|market|school|hotel)[.! ]*$/i.test(value)) return true;

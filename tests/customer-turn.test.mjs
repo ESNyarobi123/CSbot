@@ -10,13 +10,12 @@ const client = { query: async () => ({ rows: [] }) };
 const chat = (memory = {}) => ({ id: 'playground', account_id: 'a', customer_jid: 'a', stage: 'inquiry', memory });
 const say = (text, memory, history = []) => customerTurn(client, chat(memory), text, history);
 
-test('a greeting gets one warm welcome and asks what they need, then stays quiet', async () => {
+test('a greeting receives a welcome on a new or active chat', async () => {
   const first = await say('Kaka');
   assert.match(first.body, /nini|nini leo|kusaidia/i);
   assert.doesNotMatch(first.body, /WoteFy|LubFy|bei/i);
-  // The same greeting after the bot has spoken is not worth another reply.
   const again = await say('Kaka', {}, [{ direction: 'outbound', body: first.body }]);
-  assert.equal(again.body, '');
+  assert.match(again.body, /karibu|kusaidia/i);
   for (const text of ['Nipo mtwara', 'Nimelipa chakula', 'Uko na gme']) {
     const reply = await say(text, { support: { problem: 'Nipo Mtwara', system: 'lubfy' } });
     assert.equal(reply.body, '', text);
@@ -162,15 +161,17 @@ test('ambiguous and unavailable product photos cannot quote a previously discuss
   }
 });
 
-test('a customer greeting after a long break gets a fresh welcome and keeps their quotation', async () => {
-  const memory = { product: { id: 'ap', name: 'EAP 650' }, lastQuote: 'EAP 650 · TZS 200,000' };
-  const fourDaysAgo = new Date(Date.now() - 4 * 24 * 3600_000);
-  const history = [{ direction: 'outbound', body: 'Your quote was sent.', occurred_at: fourDaysAgo }];
-  const greeting = await say('Habari', memory, history);
-  assert.match(greeting.body, /karibu|kusaidia/i);
-  assert.equal(greeting.memory.lastQuote, memory.lastQuote);
-  assert.equal(greeting.memory.replyStatus, 'answered');
+test('a repeated greeting keeps the open quote and support intake', async () => {
+  const memory = { product: { id: 'ap', name: 'EAP 650' }, lastQuote: 'EAP 650 · TZS 200,000',
+    support: { system: 'wotefy', problem: 'Kifaa kimezimika', waitingFor: 'email' } };
+  const history = [{ direction: 'outbound', body: 'Habari! Karibu.' }];
+  for (const message of ['Habari', 'Habari mkuu', 'Habari\nHabari mkuu', 'Hujambo']) {
+    const reply = await say(message, memory, history);
+    assert.match(reply.body, /karibu|kusaidia/i, message);
+    assert.equal(reply.memory.lastQuote, memory.lastQuote);
+    assert.deepEqual(reply.memory.support, memory.support);
+    assert.equal(reply.memory.replyStatus, 'answered');
+    assert.equal(reply.stage, undefined);
+  }
   assert.equal((await say('Asante', memory, history)).body, '');
-  const recent = [...history, { direction: 'outbound', body: greeting.body, occurred_at: new Date() }];
-  assert.equal((await say('Habari', memory, recent)).body, '');
 });
