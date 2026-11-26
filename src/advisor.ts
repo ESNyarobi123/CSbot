@@ -116,7 +116,7 @@ export async function adviseOnDevice(input: AdviceInput): Promise<Advice | undef
     `Product: ${product.name}`,
     `Price: ${money(product.price)}`,
     `Stock: ${inStock ? 'in stock' : 'out of stock'}`,
-    product.type === 'Stocked' && `Units available at the time of lookup: ${stock.available_to_sell}`,
+    product.type === 'Stocked' ? `Units available at the time of lookup: ${stock.available_to_sell}` : '',
     [product.brand && `Brand: ${product.brand}`, product.category && `Category: ${product.category}`,
       product.warranty ? `Warranty: ${product.warranty} months` : ''].filter(Boolean).join(' · '),
     description && `Shop description: ${description}`,
