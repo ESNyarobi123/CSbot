@@ -10,10 +10,10 @@ FROM node:24-bookworm-slim
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
-COPY --from=build /app/package.json ./
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/dist ./dist
-COPY db ./db
-COPY web ./web
+COPY --chown=node:node --from=build /app/package.json ./
+COPY --chown=node:node --from=build /app/node_modules ./node_modules
+COPY --chown=node:node --from=build /app/dist ./dist
+COPY --chown=node:node db ./db
+COPY --chown=node:node web ./web
 USER node
 CMD ["node", "dist/api.js"]
