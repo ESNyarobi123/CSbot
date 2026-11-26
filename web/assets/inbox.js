@@ -17,7 +17,8 @@ import {
 } from './ui.js';
 
 const limit = 30;
-const modePill = (mode) => (mode === 'human' ? pill('Manual', 'amber') : pill('CSbot', 'blue'));
+const modePill = (mode, pending = false) => mode === 'human'
+  ? pill(pending ? 'Waiting for agent' : 'Manual', 'amber') : pill('CSbot', 'blue');
 const person = (name) => {
   const tone = [...name].reduce((sum, letter) => sum + letter.codePointAt(0), 0) % 5;
   return `<span aria-hidden="true" class="person tone-${tone}">${esc(initials(name))}</span>`;
@@ -114,7 +115,7 @@ export async function inbox(container, signal, segments, initialSearch = '') {
       <aside class="chat-list" aria-label="Conversations"><div class="inbox-filters">
         <div class="list-head"><h2>Chats</h2><select aria-label="Filter by WhatsApp number"><option value="">All numbers</option>${accounts.map((item) => `<option value="${esc(item.id)}" ${item.id === account ? 'selected' : ''}>${esc(item.label)}</option>`).join('')}</select></div>
         <label class="field-search">${icon('search', 16)}<input type="search" aria-label="Search conversations" placeholder="Search chats" maxlength="80" value="${esc(query)}"></label>
-        <div class="reply-filters" role="group" aria-label="Filter by reply mode">${[['', 'All'], ['bot', 'CSbot'], ['human', 'Manual']].map(([value, label]) => `<button type="button" data-mode="${value}" aria-pressed="${mode === value}">${label}</button>`).join('')}</div>
+        <div class="reply-filters" role="group" aria-label="Filter by reply mode">${[['', 'All'], ['bot', 'CSbot'], ['human', 'Agent inbox']].map(([value, label]) => `<button type="button" data-mode="${value}" aria-pressed="${mode === value}">${label}</button>`).join('')}</div>
         </div><div id="conversation-list" class="conversation-list"></div></aside>
       <section id="conversation-pane" class="conversation-pane" aria-label="Conversation"></section>
       <aside id="conversation-details" class="conversation-details" aria-label="Customer brief"></aside>
@@ -138,7 +139,7 @@ export async function inbox(container, signal, segments, initialSearch = '') {
             return `<button type="button" class="conversation-item ${chat.id === selected ? 'selected' : ''}" data-conversation="${esc(chat.id)}" aria-pressed="${chat.id === selected}">
         ${person(name)}<span class="conversation-preview"><span class="chat-line"><b>${esc(name)}</b><small>${dateLabel(chat.last_at || chat.updated_at)}</small></span>
         <span class="preview-text">${esc(chat.last_body || 'Conversation started')}</span>
-        <span class="chat-line">${modePill(chat.mode)}${chat.unread_count ? `<span class="unread-count" aria-label="${esc(chat.unread_count)} unread">${esc(chat.unread_count)}</span>` : ''}</span></span>
+        <span class="chat-line">${modePill(chat.mode, chat.memory?.handoffPending)}${chat.unread_count ? `<span class="unread-count" aria-label="${esc(chat.unread_count)} unread">${esc(chat.unread_count)}</span>` : ''}</span></span>
       </button>`;
           })
           .join('') +
@@ -350,9 +351,9 @@ export async function inbox(container, signal, segments, initialSearch = '') {
     const name = customer(thread);
     const number = accounts.find((item) => item.id === thread.account_id);
     pane.querySelector('.thread-customer').innerHTML =
-      `${person(name)}<div><strong>${esc(name)}</strong><small>${esc(number?.label || thread.account_id)} · ${modePill(thread.mode)}</small></div>`;
+      `${person(name)}<div><strong>${esc(name)}</strong><small>${esc(number?.label || thread.account_id)} · ${modePill(thread.mode, thread.memory?.handoffPending)}</small></div>`;
     const handoff = pane.querySelector('[data-handoff]');
-    handoff.textContent = thread.mode === 'bot' ? 'Take over' : 'Enable bot';
+    handoff.textContent = thread.mode === 'bot' || thread.memory?.handoffPending ? 'Take over' : 'Enable bot';
     handoff.disabled = switching.has(selected);
     pane.querySelector('[data-brief]').disabled = false;
     const brief = customerBrief(thread);
@@ -370,7 +371,7 @@ export async function inbox(container, signal, segments, initialSearch = '') {
     form.querySelector('button').disabled = !thread || sending.has(selected) || !text || Boolean(invalid);
     form.querySelector('#compose-hint').textContent = invalid
       ? 'Choose a PDF up to 4 MB and keep its caption under 1,001 characters.'
-      : thread?.mode === 'bot' ? 'Sending a reply takes over this chat.' : 'You are replying as an agent.';
+      : thread?.mode === 'bot' || thread?.memory?.handoffPending ? 'Sending a reply takes over this chat.' : 'You are replying as an agent.';
   }
 
   async function changeMode() {
@@ -379,7 +380,7 @@ export async function inbox(container, signal, segments, initialSearch = '') {
     switching.add(active);
     infoView();
     try {
-      await api('/conversations/' + active + '/mode', { method: 'PATCH', data: { mode: thread.mode === 'bot' ? 'human' : 'bot' } });
+      await api('/conversations/' + active + '/mode', { method: 'PATCH', data: { mode: thread.mode === 'bot' || thread.memory?.handoffPending ? 'human' : 'bot' } });
       if (selected === active && !signal.aborted) await loadThread();
     } catch (error) { handleError(error); }
     finally {

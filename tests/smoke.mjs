@@ -76,13 +76,15 @@ assert.match(digits(outbound(messages)[0].body), /99000/);
 let state = await waitFor(path, value => value.outbound.some(item => item.origin === 'alert' && item.state === 'sent'));
 assert.equal(state.stage, 'ready_to_pay');
 assert.equal(state.mode, 'human');
+assert.equal(state.memory.handoffPending, true);
 
 const receiptPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 await api(`/v1/accounts/${account}/simulate`, { method: 'POST', status: 202,
   data: { phone, messageId: 'paid', text: 'Nimelipa', imageBase64: receiptPng } });
 state = await waitFor(path, value => value.stage === 'payment_reported'
   && value.outbound.filter(item => item.origin === 'alert' && item.state === 'sent').length === 2);
-assert.equal(outbound(await api(messagesPath)).length, 2);
+const paymentMessages = await waitFor(messagesPath, value => outbound(value).length === 3);
+assert.match(outbound(paymentMessages)[0].body, /itathibitishia|kukuthibitishia/);
 const receiptAlert = state.outbound.find(item => item.origin === 'alert' && item.image_url);
 assert.match(receiptAlert.image_url, /^csbot-media:\d+$/, 'payment alert forwards the receipt photo');
 assert.equal(state.media.length, 1);
@@ -98,6 +100,7 @@ const message = { method: 'POST', status: 202, data: { text: 'Asante kwa kuwasil
 const [attempt1, attempt2] = await Promise.all([api(messagesPath, message), api(messagesPath, message)]);
 assert.equal(attempt1.id, attempt2.id);
 await waitFor(messagesPath, value => outbound(value, 'admin').length === 1);
+assert.equal((await api(path)).memory.handoffPending, undefined);
 
 const firstSale = (await api(path)).sale;
 assert.equal(firstSale.stage, 'completed');
@@ -107,7 +110,7 @@ await simulate(account, 'project', 'Nina Cudy WR3000. Bajeti yangu ni TSh 200,00
 await waitFor(path, value => value.memory.profile?.useCase?.includes('wageni'));
 await api(path + '/mode', { method: 'PATCH', data: { mode: 'bot' } });
 await simulate(account, 'ambiguous-next', 'Naomba namba ya kulipia');
-messages = await waitFor(messagesPath, value => outbound(value).length === 3);
+messages = await waitFor(messagesPath, value => outbound(value).length === 4);
 assert.match(outbound(messages)[0].body, /oda mpya/);
 assert.equal((await api(path)).sale.id, firstSale.id);
 
@@ -168,7 +171,18 @@ assert.equal(voiceInbound.length, 1);
 assert.equal(voiceInbound[0].body, '[WhatsApp audio]');
 await api(`/v1/accounts/${account}/simulate`, { method: 'POST', status: 400,
   data: { phone: '+255700100012', messageId: 'voice-bad', audioBase64: 'AAAA', audioMime: 'image/png' } });
-console.log('Passed: an unreadable voice note hands the chat to a person instead of being dropped.');
+const waitPhone = '+255700100012';
+const followUpVoice = messageId => api(`/v1/accounts/${account}/simulate`, { method: 'POST', status: 202,
+  data: { phone: waitPhone, messageId, text: 'Habari mkuu' } });
+assert.equal(voiceState.memory.handoffPending, true);
+await followUpVoice('waiting-for-agent');
+await waitFor(voicePath + '/messages', value => outbound(value).length === 2);
+await api(voicePath + '/mode', { method: 'PATCH', data: { mode: 'human' } });
+assert.equal((await api(voicePath)).memory.handoffPending, undefined);
+await followUpVoice('staff-is-active');
+await sleep(2000);
+assert.equal(outbound(await api(voicePath + '/messages')).length, 2);
+console.log('Passed: CSbot acknowledges voice notes, handles the next message while waiting, and stops on actual staff takeover.');
 
 const sharp = (await import('sharp')).default;
 const label = await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="640" height="180"><rect width="640" height="180" fill="white"/><text x="36" y="118" font-family="sans-serif" font-size="84" fill="black">WR3000</text></svg>')).png().toBuffer();

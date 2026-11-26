@@ -153,14 +153,16 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       const ids = pending.map(message => message.id);
       const optedOut = await customerOptedOut(client, conversation.account_id, conversation.customer_jid);
       const textConsent = latestConsent(pending);
-      const mayTranscribe = !optedOut && textConsent !== 'stop' && conversation.mode === 'bot' && conversation.memory.language === 'en';
+      const awaitingAgent = conversation.mode === 'human' && conversation.memory.handoffPending === true;
+      const canAssist = conversation.mode === 'bot' || awaitingAgent;
+      const mayTranscribe = !optedOut && textConsent !== 'stop' && canAssist && conversation.memory.language === 'en';
       // A voice note is the customer's own words, so the words are recovered
       // before anything is classified. A customer who cannot type should not be
       // asked to type their question again.
       const hasVoice = pending.some(message => pendingVoice(message.body) && message.media_id);
       // Show typing while the note is being read: listening takes a few seconds,
       // and silence reads as "the bot is broken".
-      if (hasVoice && conversation.mode === 'bot') presence = beginPresence(conversationId).catch(() => undefined);
+      if (hasVoice && canAssist) presence = beginPresence(conversationId).catch(() => undefined);
       let voiceUnread = false;
       for (const message of pending) {
         if (message.kind !== 'audio' || !pendingVoice(message.body)) continue;
@@ -191,8 +193,8 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         await cancelFollowUps(client, conversationId);
         await client.query(`UPDATE outbound SET state='canceled',reason='customer_opt_out'
           WHERE conversation_id=$1 AND origin IN ('bot','handoff') AND state IN ('queued','sending')`, [conversationId]);
-        if (!optedOut && conversation.mode === 'bot' && pending.some(message => message.auto_reply)) await enqueue(client, { accountId: conversation.account_id, conversationId, jid: recipient(conversation),
-          origin: 'bot', body: 'Sawa, sitakutumia ujumbe tena. Ukitaka nianze tena, andika "anza".' });
+        if (!optedOut && (awaitingAgent || (canAssist && pending.some(message => message.auto_reply)))) await enqueue(client, { accountId: conversation.account_id, conversationId, jid: recipient(conversation),
+          origin: awaitingAgent ? 'handoff' : 'bot', body: 'Sawa, sitakutumia ujumbe tena. Ukitaka nianze tena, andika "anza".' });
         await client.query("UPDATE messages SET processing='done' WHERE id=ANY($1::bigint[])", [ids]);
         return;
       }
@@ -201,23 +203,19 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         return;
       }
       if (resume && optedOut) await setCustomerOptedOut(client, conversation.account_id, conversation.customer_jid, false);
-      // A chat parked in human mode answers nothing, forever. If no agent has
-      // written for the idle window, give it back to the bot instead of leaving
-      // a paying customer on read. The pending messages were flagged
-      // auto_reply=false by the takeover, so re-arm them here.
+      // A bot handoff stays in the team's inbox while the bot handles new
+      // messages. A staff takeover clears the pending flag and stops bot replies.
       let mode = conversation.mode;
-      if (eligible && mode === 'human' && config.HANDOFF_IDLE_MINUTES > 0) {
+      if (eligible && mode === 'human' && !awaitingAgent && config.HANDOFF_IDLE_MINUTES > 0) {
         const since = conversation.human_since ? new Date(conversation.human_since).getTime() : 0;
         if (!since || Date.now() - since >= config.HANDOFF_IDLE_MINUTES * 60_000) {
           await setMode(client, conversationId, 'bot');
-          await client.query(`UPDATE messages SET auto_reply=true
-            WHERE conversation_id=$1 AND processing='pending' AND direction='inbound'`, [conversationId]);
           mode = 'bot';
           for (const message of pending) message.auto_reply = true;
           log.info({ conversation: conversationId }, 'Idle handoff released back to the bot');
         }
       }
-      const canReply = mode === 'bot' && pending.some(message => message.auto_reply);
+      const canReply = awaitingAgent || (mode === 'bot' && pending.some(message => message.auto_reply));
       if (voiceUnread && canReply) {
         // Nothing read the words. Dropping the message would be the worst
         // outcome for a customer who spoke instead of typing, so a person gets
@@ -226,7 +224,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         await client.query("UPDATE messages SET processing='done' WHERE id=ANY($1::bigint[])", [ids]);
         await client.query('UPDATE conversations SET memory=$2,updated_at=now() WHERE id=$1',
           [conversationId, memory]);
-        await setMode(client, conversationId, 'human');
+        if (!awaitingAgent) await setMode(client, conversationId, 'human', true);
         await enqueue(client, {
           accountId: conversation.account_id, conversationId, jid: recipient(conversation), origin: 'handoff',
           body: memory.language === 'en'
@@ -239,7 +237,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       }
       // Show typing and decode images only when this batch is eligible for a reply.
       if (eligible && canReply && !presence) presence = beginPresence(conversationId).catch(() => undefined);
-      const imageIds = pending.filter(message => message.kind === 'image' && message.auto_reply).map(message => message.id);
+      const imageIds = pending.filter(message => message.kind === 'image' && (awaitingAgent || message.auto_reply)).map(message => message.id);
       if (eligible && canReply && !imageIds.length && /\b(?:hii|hiki|hiyo|this|that)\b/i.test(newest)) {
         // Forwarded product photos and their question can arrive in different batches.
         const previous = await row<{ id: string; kind: string; direction: string; body: string }>(client,
@@ -261,10 +259,10 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       if (replyMs >= 5000) log.warn({ conversation: conversationId, replyMs, batchSize: pending.length,
         withPhoto: Boolean(photo), withVoice: spoken, canReply }, 'Slow reply generation');
       await client.query('UPDATE conversations SET memory=$2,updated_at=now() WHERE id=$1', [conversationId, outcome.memory]);
-      if (canReply && outcome.handoff) await setMode(client, conversationId, 'human');
+      if (canReply && outcome.handoff && !awaitingAgent) await setMode(client, conversationId, 'human', true);
       if (canReply && outcome.body) await enqueue(client, {
         accountId: conversation.account_id, conversationId, jid: recipient(conversation),
-        origin: outcome.handoff ? 'handoff' : 'bot', body: outcome.body.slice(0, 3600), imageUrl: outcome.imageUrl,
+        origin: outcome.handoff || awaitingAgent ? 'handoff' : 'bot', body: outcome.body.slice(0, 3600), imageUrl: outcome.imageUrl,
       });
       const updated = { ...conversation, memory: outcome.memory };
       if (outcome.stage) {
@@ -293,7 +291,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
           email: outcome.memory.support?.email ?? outcome.memory.lastSupport?.email,
           segment: outcome.memory.facts?.use,
         });
-        await planFollowUps(client, conversation, outcome);
+        if (!awaitingAgent || outcome.handoff) await planFollowUps(client, conversation, outcome);
       }
       await client.query("UPDATE messages SET processing='done' WHERE id=ANY($1::bigint[])", [ids]);
     });

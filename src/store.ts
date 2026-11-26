@@ -20,6 +20,7 @@ export interface Conversation {
   last_at: Date | null;
   memory: {
     replyStatus?: 'waiting' | 'answered';
+    handoffPending?: true;
     onboarding?: boolean;
     setup?: import('./installation-guide.js').SetupContext;
     profile?: import('./customer-text.js').CustomerProfile;
@@ -170,14 +171,17 @@ export async function ingest(message: Incoming) {
   });
 }
 
-export async function setMode(client: PoolClient, id: string, mode: Conversation['mode']) {
+export async function setMode(client: PoolClient, id: string, mode: Conversation['mode'], pendingHandoff = false) {
   await client.query(`UPDATE conversations SET mode=$2,
-    human_since=CASE WHEN $2='human' THEN now() ELSE NULL END, updated_at=now() WHERE id=$1`, [id, mode]);
+    human_since=CASE WHEN $2='human' THEN now() ELSE NULL END,
+    memory=CASE WHEN $2='human' AND $3::boolean THEN memory || '{"handoffPending":true}'::jsonb
+      ELSE memory - 'handoffPending' END, updated_at=now() WHERE id=$1`, [id, mode, pendingHandoff]);
   if (mode === 'human') {
     await client.query(`UPDATE outbound SET state='canceled',reason='human_takeover'
       WHERE conversation_id=$1 AND origin IN ('bot','handoff') AND state IN ('queued','sending')`, [id]);
-    await client.query("UPDATE messages SET auto_reply=false WHERE conversation_id=$1 AND processing='pending'", [id]);
   }
+  await client.query(`UPDATE messages SET auto_reply=$2
+    WHERE conversation_id=$1 AND direction='inbound' AND processing='pending'`, [id, mode === 'bot']);
 }
 
 export async function enqueue(client: PoolClient, item: {
