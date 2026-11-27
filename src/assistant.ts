@@ -857,8 +857,16 @@ async function answer(
   delete memory.trace;
   if (!onlyDetect && (quotationWords.test(newest) || memory.documentRequest) && !supportQuestion(newest)) {
     const language = messageLanguage(newest) ?? memory.language ?? 'sw';
+    // Older chats could retain the bundle while treating the plan capacity as
+    // a hardware count. Recover the immediately preceding plan request.
+    const bundle = memory.installationQuote;
+    const prior = bundle?.awaiting === 'plan' ? [...history].reverse().find(line =>
+      line.direction === 'inbound' && !quotationWords.test(line.body))?.body : undefined;
+    const priorSystem = prior && systemFrom(prior);
+    const planChoice = prior && asksPlanCapacity(prior) && (!priorSystem || priorSystem === bundle?.system) &&
+      !namesNewDevice(prior) ? prior : undefined;
     const outcome = await quotationTurn(newest, memory, requestKey,
-      (sw, en) => language === 'en' ? en : sw);
+      (sw, en) => language === 'en' ? en : sw, planChoice);
     if (outcome) {
       delete memory.support;
       memory.language = language;

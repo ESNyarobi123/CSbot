@@ -51,7 +51,9 @@ function orderSummary(order: OrderPreview, say: Say) {
   return [...list, say(`*Jumla ya kuanza* ${format(total)}`, `*Initial total* ${format(total)}`)].join('\n');
 }
 
-async function proformaTurn(text: string, memory: Conversation['memory'], requestKey: string | undefined, say: Say) {
+async function proformaTurn(
+  text: string, memory: Conversation['memory'], requestKey: string | undefined, say: Say, priorPlanChoice?: string,
+) {
   const product = memory.product;
   const quote = memory.installationQuote;
   const pending = memory.documentRequest;
@@ -75,7 +77,7 @@ async function proformaTurn(text: string, memory: Conversation['memory'], reques
     let order: OrderPreview;
     if (quote.fitting || quote.supply || quote.wantsPlan) {
       if (quote.supply === 'shop' && stock.available_to_sell < (quote.quantity ?? 1)) return handoff();
-      const answer = await installationQuote(fresh, text, say, quote);
+      const answer = await installationQuote(fresh, priorPlanChoice && !quote.planName ? priorPlanChoice : text, say, quote);
       if (!quote.order) {
         delete memory.documentRequest;
         if (!quote.awaiting) return handoff();
@@ -141,13 +143,13 @@ function quotationId(requestKey: string) {
 
 export async function quotationTurn(
   text: string, memory: Conversation['memory'], requestKey: string | undefined,
-  say: (sw: string, en: string) => string,
+  say: Say, priorPlanChoice?: string,
 ) {
   const explicit = quotationWords.test(text);
   const pending = memory.documentRequest;
   if (!explicit && !pending) return;
   if (!explicit && pending?.resumeAfterPlan) return;
-  const proforma = await proformaTurn(text, memory, requestKey, say);
+  const proforma = await proformaTurn(text, memory, requestKey, say, priorPlanChoice);
   if (proforma) return proforma;
   if (!explicit && pending?.order) return;
   const counts = [...text.matchAll(unitCount)];

@@ -188,6 +188,13 @@ test('a two-device LubFy request keeps the order through confirmation and PDF de
       cableMeters: 30, wantsPlan: true, system: 'lubfy', awaiting: 'plan',
       planNames: ['LubFy Growth', 'LubFy Power', 'LubFy Ultra'] },
   } };
+  const recovered = await customerTurn(client, structuredClone(chat), 'nitengenezee invoice nitumie nione', [
+    { direction: 'inbound', body: 'nataka lubfy ya plan ya vifaa 2' },
+    { direction: 'outbound', body: 'TP LINK EAP 650 — TZS 450,000' },
+    { direction: 'inbound', body: 'nitengenezee invoice nitumie nione' },
+  ]);
+  assert.match(recovered.body, /LubFy Power — TZS 25,000/);
+  assert.match(recovered.body, /Ndiyo/);
   const turn = async (message) => {
     const result = await customerTurn(client, chat, message, [], false, undefined, false, 'account:' + message);
     chat.memory = JSON.parse(JSON.stringify(result.memory, (_key, value) => (
