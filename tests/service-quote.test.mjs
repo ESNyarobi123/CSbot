@@ -243,6 +243,7 @@ test('a two-device LubFy request keeps the order through confirmation and PDF de
   const prematurePayment = await customerTurn(client, { ...chat, memory: afterIssueEdit.memory }, 'Nataka kulipia hiyo', [],
     false, undefined, false, 'account:revised-payment');
   assert.equal(prematurePayment.stage, undefined);
+  assert.match(prematurePayment.body, /Tuthibitishe kwanza proforma hii/);
   assert.ok(prematurePayment.memory.documentRequest?.order);
 
   const history = [

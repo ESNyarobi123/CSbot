@@ -863,8 +863,10 @@ async function answer(
   };
   delete memory.documentSummary;
   delete memory.trace;
+  const askingToPayBeforeApproval = memory.documentRequest?.order &&
+    fallback(newest, memory).intent === 'ready_to_pay';
   if (!onlyDetect && (quotationWords.test(newest) || memory.documentRequest || revisesIssuedProforma(newest, memory)) &&
-      !supportQuestion(newest)) {
+      !supportQuestion(newest) && !askingToPayBeforeApproval) {
     const language = messageLanguage(newest) ?? memory.language ?? 'sw';
     // Older chats could retain the bundle while treating the plan capacity as
     // a hardware count. Recover the immediately preceding plan request.
