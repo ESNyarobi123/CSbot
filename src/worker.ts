@@ -1,3 +1,4 @@
+import { asksNewCommercialQuestion } from './admin-support.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -217,7 +218,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       }
       const canReply = awaitingAgent || (mode === 'bot' && pending.some(message => message.auto_reply));
       if (conversation.memory.supportUpdate?.status === 'details' &&
-          eligible && !resume && !smallTalkOnly(newest) && !platformNotice(newest) && !/\?\s*$/.test(newest)) {
+          eligible && !resume && !smallTalkOnly(newest) && !platformNotice(newest) && !asksNewCommercialQuestion(newest) && !/\?\s*$/.test(newest)) {
         const memory = { ...conversation.memory };
         delete memory.supportUpdate;
         delete memory.documentSummary;

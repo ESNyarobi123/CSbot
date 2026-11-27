@@ -232,10 +232,17 @@ await onChannel(other, adminPhone, 'cross-account', 'Tume fix hili tatizo', aler
 await onChannel(account, adminPhone, 'no-quote', 'Tume fix hili tatizo');
 assert.equal((await api(supportPath)).memory.supportUpdate, undefined);
 
+await onChannel(account, adminPhone, 'empty-details', 'Tunahitaji taarifa hizi:', alert.provider_id);
+assert.equal((await api(supportPath)).memory.supportUpdate, undefined);
+assert.ok(!(await api(supportPath)).outbound.some(item => item.origin === 'admin'));
 await onChannel(account, adminPhone, 'request-details', 'Tunahitaji taarifa hizi: modeli na firmware', alert.provider_id);
 await waitFor(supportPath + '/messages', value => value.some(item => item.actor === 'admin' && /modeli na firmware/.test(item.body)));
 await onChannel(account, adminPhone, 'request-details', 'Tunahitaji taarifa hizi: modeli na firmware', alert.provider_id);
 assert.equal((await api(supportPath)).outbound.filter(item => item.origin === 'admin' && /modeli na firmware/.test(item.body)).length, 1);
+await onChannel(account, supportPhone, 'buy-while-waiting', 'Bei ya Cudy WR3000');
+await waitFor(supportPath + '/messages', value => value.some(item =>
+  item.actor === 'bot' && /WR3000.*99,000/.test(item.body)));
+assert.equal((await api(supportPath)).memory.supportUpdate?.status, 'details');
 await onChannel(account, supportPhone, 'customer-details', 'EAP650 firmware v1.2.0');
 const detailed = await waitFor(supportPath, value => value.outbound.some(
   item => item.origin === 'alert' && item.state === 'sent' && /Matokeo ya ukaguzi.*EAP650/.test(item.body)));
@@ -250,3 +257,18 @@ assert.equal((await api(supportPath)).mode, 'bot');
 await onChannel(account, adminPhone, 'resolve-repeat', 'Tume fix: ujumbe mwingine', newAlert.provider_id);
 assert.equal((await api(supportPath)).outbound.filter(item => item.origin === 'admin' && /tatizo limetatuliwa/.test(item.body)).length, 1);
 console.log('Passed: quoted admin support replies route to the right customer, hand details back to the team, and reject stale or duplicate updates.');
+
+const optedPhone = '+255700100046';
+const stopped = await onChannel(account, optedPhone, 'optout-case',
+  'WoteFy vifaa vyangu vinawaka na kuzima, shida ni mfumo au? mteja@example.test');
+const stoppedPath = '/v1/conversations/' + stopped.conversationId;
+const stoppedState = await waitFor(stoppedPath, value => value.outbound.some(
+  item => item.origin === 'alert' && item.state === 'sent' && /Msaada wa kiufundi/.test(item.body)));
+const stoppedAlert = stoppedState.outbound.find(item => item.origin === 'alert' && /Msaada wa kiufundi/.test(item.body));
+await onChannel(account, optedPhone, 'optout-stop', 'Usinitumie ujumbe');
+await waitFor(stoppedPath + '/messages', value => value.some(item => item.actor === 'bot' && /sitakutumia/.test(item.body)));
+await onChannel(account, adminPhone, 'optout-admin-request', 'Mjibu hivi: Ujumbe wa majaribio.', stoppedAlert.provider_id);
+const opted = await waitFor(stoppedPath, value => value.outbound.some(
+  item => item.origin === 'alert' && item.state === 'sent' && /Taarifa haijatumwa/.test(item.body)));
+assert.ok(!opted.outbound.some(item => item.origin === 'admin'));
+console.log('Passed: incomplete admin requests are held, commercial questions stay separate, and opted-out customers receive no support update.');

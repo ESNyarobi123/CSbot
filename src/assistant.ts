@@ -61,11 +61,15 @@ const purchaseWords = /\b(bei|price|cost|stock|picha|photo|image|availability|ip
 const strongPurchaseWords = /\b(bei|price|cost|stock|picha|photo|image|nunua|order|buy|available)\b/i;
 const imageWords = /\b(picha|photo|image|picture|photos)\b/i;
 function asksForProductPhoto(text: string) {
-  const request = /\b(?:naomba|nahitaji|nataka|nitumie|tuma|nionyeshe|nioneshe|nipe|niletee|nipatie|send|show|share|can i see|may i see)\b[^.!?\n]{0,48}\b(?:picha|photos?|images?|pictures?)\b/i;
-  const bare = /^(?:picha|photos?|images?|pictures?)(?:[ ,]+(?:yake|hiyo|hii|tafadhali|please|ya|[a-z]+[- ]?\d+|[a-z]{2,16}|\d{2,5})){0,4}[.!? ]*$/i;
+  const request = /\b(?:naomba|nahitaji|nataka|nitumie|unitumie|mnitumie|tuma|nionyeshe|nioneshe|nipe|niletee|nipatie|send(?: me)?|show(?: me)?|share|can i see|may i see)\s+(?:(?:bei|price)\s+(?:na|and)\s+|(?:na|the|a|some)\s+)?(?:picha|photos?|images?|pictures?)\b/i;
+  const bare = /^(?:picha|photos?|images?|pictures?)(?:[ ,]+(?:yake|hiyo|hii|ile|tafadhali|please)){0,3}[.!? ]*$/i;
+  const named = /^(?:picha|photos?|images?|pictures?)\s+(?:ya|of)\s+[^.!?\n]{2,50}[.!? ]*$/i;
+  const refersToSeenPhoto = /\b(?:nimeona|niliona|ulionyesha|kwenye|instagram|tangazo|i saw|i saw it)\b/i.test(text);
   return !/\b(?:usitume|sitaki|bila|no need for|no|without|don.t send)\s+(?:the\s+|a\s+)?(?:picha|photos?|images?|pictures?)\b/i.test(text)
-    && (request.test(text) || bare.test(text.trim()) || /\bpicha (?:yake )?(?:ipo|unayo|mnayo|mnao)\b/i.test(text));
+    && (request.test(text) || bare.test(text.trim()) || (named.test(text.trim()) && !refersToSeenPhoto)
+      || /\bpicha (?:yake )?(?:ipo|unayo|mnayo|mnao)\b/i.test(text));
 }
+
 const followUp = /\b(ile|hiyo|yake|that one|it)\b/i;
 const paymentDenied = /\b(sijalipa|hajalipa|sijakamilisha malipo|haven't paid|have not paid|not paid|didn’t pay|didn't pay)\b/i;
 const paymentQuestion = /\b(je nimelipa|nikisema nimelipa|kama nimelipa|did i pay|have i paid|if i paid)\b/i;

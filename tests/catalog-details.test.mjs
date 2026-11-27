@@ -211,6 +211,10 @@ test('an Instagram price enquiry gets current price and stock, with a photo only
   assert.equal(first.imageUrl, undefined);
   const seen = await respond(client, conversation(first.memory), 'Nimeona picha ya EAP 650 kwenye tangazo, bei gani?', []);
   assert.equal(seen.imageUrl, undefined);
+  for (const message of ['Picha ile kwenye Instagram niliona', 'Naomba bei ya kifaa nilichoona kwenye picha']) {
+    const reply = await respond(client, conversation(first.memory), message, []);
+    assert.equal(reply.imageUrl, undefined, message);
+  }
   const requested = await respond(client, conversation(first.memory), 'Naomba picha yake', []);
   assert.match(requested.body, /EAP 650/);
   assert.equal(requested.imageUrl, 'https://assets.example.test/eap650.jpg');
