@@ -234,6 +234,16 @@ test('a two-device LubFy request keeps the order through confirmation and PDF de
   assert.equal(pay.stage, 'ready_to_pay');
   assert.match(pay.body, /PF-12345678901234567890/);
   assert.match(pay.memory.documentSummary, /CAT 6 CABLE, mita 30/);
+  const afterIssueEdit = await customerTurn(client, structuredClone(chat), 'Ongeza waya mita 45', [],
+    false, undefined, false, 'account:after-issue-edit');
+  assert.equal(afterIssueEdit.document, undefined);
+  assert.equal(afterIssueEdit.memory.issuedProforma, undefined);
+  assert.equal(afterIssueEdit.memory.supersededProforma, true);
+  assert.match(afterIssueEdit.body, /CAT 6 CABLE, mita 45/);
+  const prematurePayment = await customerTurn(client, { ...chat, memory: afterIssueEdit.memory }, 'Nataka kulipia hiyo', [],
+    false, undefined, false, 'account:revised-payment');
+  assert.equal(prematurePayment.stage, undefined);
+  assert.ok(prematurePayment.memory.documentRequest?.order);
 
   const history = [
     { direction: 'outbound', body: preview.body },

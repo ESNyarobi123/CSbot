@@ -5,7 +5,7 @@ import {
 } from './installation-quote.js';
 export { cableMeters } from './installation-quote.js';
 import { deepseekJson } from './deepseek.js';
-import { confirmsProforma, quotationTurn, quotationWords, recoverProformaConfirmation } from './quotation.js';
+import { confirmsProforma, orderSummary, quotationTurn, quotationWords, recoverProformaConfirmation, revisesIssuedProforma } from './quotation.js';
 import { openingGreeting, replyEligible, unrelatedChat, type ReplyHistoryLine } from './reply-policy.js';
 import { photoInquiry, photoReply, printedModel, understoodReply } from './product-photo.js';
 import type { PoolClient } from 'pg';
@@ -863,7 +863,8 @@ async function answer(
   };
   delete memory.documentSummary;
   delete memory.trace;
-  if (!onlyDetect && (quotationWords.test(newest) || memory.documentRequest) && !supportQuestion(newest)) {
+  if (!onlyDetect && (quotationWords.test(newest) || memory.documentRequest || revisesIssuedProforma(newest, memory)) &&
+      !supportQuestion(newest)) {
     const language = messageLanguage(newest) ?? memory.language ?? 'sw';
     // Older chats could retain the bundle while treating the plan capacity as
     // a hardware count. Recover the immediately preceding plan request.
@@ -1149,6 +1150,18 @@ async function answer(
     if (conversation.stage === 'paid') {
       return result(say('Timu yetu inakamilisha oda yako. Nimekabidhi mazungumzo ili ikusaidie na malipo unayoulizia.',
         'Our team is completing your order. I’ve handed over this conversation to help with your payment question.'), { handoff: true });
+    }
+    if (!onlyDetect && memory.documentRequest?.order) {
+      return result(say(
+        `Tuthibitishe kwanza proforma hii ili mauzo yafuate oda sahihi.\n\n${orderSummary(memory.documentRequest.order, say)}\n\nOda ikiwa sawa, niambie nikutumie PDF hapa.`,
+        `Let’s confirm this proforma first so sales can use the right order.\n\n${orderSummary(memory.documentRequest.order, say)}\n\nIf it looks right, let me know and I’ll send the PDF here.`,
+      ));
+    }
+    if (!onlyDetect && memory.supersededProforma) {
+      const revised = await quotationTurn('proforma', memory, requestKey, say);
+      if (revised) return result(revised.body, revised);
+      return result(say('Oda imebadilika. Nimepeleka kwa timu ya mauzo ithibitishe toleo jipya kabla ya malipo.',
+        'The order has changed. Sales will confirm the updated order before payment.'), { handoff: true });
     }
     const namedModel = modelQuery(newest);
     if (!onlyDetect && /[a-z]/i.test(namedModel) && memory.product &&
@@ -1654,6 +1667,7 @@ async function answer(
       const sameProduct = memory.product?.id === product.id;
       if (!sameProduct) {
         delete memory.issuedProforma;
+        delete memory.supersededProforma;
         if (memory.documentRequest?.order) delete memory.documentRequest;
       }
       const previousQuote = memory.lastQuote;

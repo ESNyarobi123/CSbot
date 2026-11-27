@@ -48,6 +48,7 @@ export interface Conversation {
     documentSummary?: string;
     lastDocument?: string;
     issuedProforma?: { number: string; order: import('./installation-quote.js').OrderPreview; summary: string };
+    supersededProforma?: true;
     posQuotation?: { number: string; productId: string; quantity: number };
     /** Set while the bot waits for "yes" to its installation/cable offer. */
     awaitingService?: boolean;

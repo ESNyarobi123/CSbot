@@ -22,6 +22,7 @@ const modelIdentity = /\b(?:eap|er|rb|rap|wr|cf|ax|h[ae]p)[- ]?\d{1,5}[a-z0-9-]*
 const normalizeModel = (value: string) => value.replace(/[^a-z0-9]/gi, '').toLowerCase();
 const existingInvoice = /\b(?:INV[- ]?\d+|invoice yangu|ankara yangu|my invoice|resend.{0,20}invoice)\b/i;
 const combineItems = /\b(?:pamoja na|and|plus|na)\s+(?:(?:\d+|moja|mbili|tatu)\s+)?(?:router|switch|access point|waya|cable|installation|ufungaji|cudy|mikrotik|omada|tp[ -]?link|comfast|eap\s*\d)\b|\+/i;
+const revisesOrder = /\b(?:ongeza|punguza|ondoa|badilisha|instead of)\b/i;
 
 export type DocumentRequest = {
   kind: 'invoice' | 'quote';
@@ -30,6 +31,11 @@ export type DocumentRequest = {
   order?: OrderPreview;
   resumeAfterPlan?: true;
 };
+
+export function revisesIssuedProforma(text: string, memory: Conversation['memory']) {
+  return Boolean(memory.issuedProforma && memory.installationQuote && revisesOrder.test(text) &&
+    (cableWords.test(text) || [...text.matchAll(unitCount)].length || systemFrom(text)));
+}
 
 const confirmation = /^(?:ndio|ndiyo|naam|sawa|okay|ok|yes|yeah|yep|confirmed|nakubali|nimekubali|nathibitisha|nimethibitisha|hiyo ndiyo|ni hiyo|iko sawa|that'?s right|go ahead)\b/;
 const sendDocument = /^(?:(?:naomba\s+)?(?:uitume|unitumie|nitumie|tuma|endelea|thibitisha|tengeneza|itengeneze|nitengenezee|ufanye|fanya)|(?:send|prepare)(?: me)?)(?:\s+(?:pdf|invoice|ankara|proforma|it|hiyo|ile|tu))?(?:\s+(?:hapa|kwangu|now))?\b/;
@@ -183,6 +189,7 @@ async function proformaTurn(
     memory.documentSummary = memory.lastDocument = `${payload.number}\n${summary}`;
     memory.lastQuote = memory.lastDocument;
     memory.issuedProforma = { number: payload.number, order, summary: memory.lastDocument };
+    delete memory.supersededProforma;
     return { body: say(`Nimekuandalia proforma ${payload.number}. Unaweza kuangalia vipengele na jumla kwenye PDF hii.`,
       `Here is proforma ${payload.number}. The PDF has a breakdown of the items and total.`),
     stage: 'quoted' as const, document: { name: `Proforma-${payload.number}.pdf`, bytes } };
@@ -202,14 +209,15 @@ export async function quotationTurn(
   say: Say, priorPlanChoice?: string, semanticRequest = false,
 ) {
   const explicit = quotationWords.test(text) || semanticRequest;
-  const pending = memory.documentRequest;
+  const pending = memory.documentRequest ?? (revisesIssuedProforma(text, memory) && memory.issuedProforma
+    ? { kind: 'invoice' as const, order: memory.issuedProforma.order } : undefined);
   if (!explicit && !pending) return;
   if (!explicit && pending?.resumeAfterPlan) return;
   let confirmed = false;
   if (pending?.order && !existingInvoice.test(text)) {
     const mentionsOtherModel = [...text.matchAll(modelIdentity)].some(match =>
       !normalizeModel(memory.product?.name ?? '').includes(normalizeModel(match[0])));
-    const addsItems = /\b(?:sku|ongeza|punguza|ondoa|badilisha|instead of)\b/i.test(text) ||
+    const addsItems = revisesOrder.test(text) || /\bsku\b/i.test(text) ||
       (!/[?？]/.test(text) && (combineItems.test(text) || [...text.matchAll(unitCount)].length > 0));
     const intent = mentionsOtherModel || addsItems ? 'change' : await interpretProforma(text, pending.order);
     if (intent === 'hold') {
@@ -228,12 +236,13 @@ export async function quotationTurn(
       const count = [...text.matchAll(unitCount)][0];
       const quantity = count && !asksPlanCapacity(text) ? writtenCounts[(count[1] ?? count[2]).toLowerCase()] ??
         Number(count[1] ?? count[2]) : undefined;
-      const cableChanged = cableWords.test(text) && (Boolean(cableMeters(text)) || /\b(?:bila|sitaki|sihitaji|without)\b/i.test(text));
+      const cableChanged = cableWords.test(text) && (Boolean(cableMeters(text)) || /\b(?:bila|sitaki|sihitaji|ondoa|without|remove)\b/i.test(text));
       const planChanged = quote?.wantsPlan && (Boolean(systemFrom(text)) || Boolean(asksPlanCapacity(text)) ||
         quote.planNames?.some(name => text.toLowerCase().includes(name.toLowerCase())));
       if (!mentionsOtherModel && quote && !/\bsku\b/i.test(text) && (cableChanged || planChanged || quantity)) {
         if (quantity && (!Number.isInteger(quantity) || quantity > 500)) return;
         memory.installationQuote = updateInstallationQuote({ ...quote, quantity: quantity ?? quote.quantity }, text);
+        if (memory.issuedProforma) memory.supersededProforma = true;
         delete memory.issuedProforma;
         return proformaTurn(text, memory, requestKey, say, undefined, 'preview', true);
       }

@@ -60,7 +60,7 @@ export function asksSubscriptionInQuote(text: string) {
 
 export function updateInstallationQuote(context: InstallationQuoteContext, text: string) {
   const length = cableMeters(text);
-  const noCable = /\b(?:bila|sitaki|sihitaji|without|no need for)\s+(?:waya|nyaya|cables?)\b/i.test(text);
+  const noCable = /\b(?:bila|sitaki|sihitaji|ondoa|without|no need for|remove)\s+(?:waya|nyaya|cables?)\b/i.test(text);
   const system = systemFrom(text) || context.system;
   return {
     ...context,

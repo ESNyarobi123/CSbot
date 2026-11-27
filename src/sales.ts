@@ -45,7 +45,7 @@ export async function openSale(client: PoolClient, conversation: Conversation, r
 }
 
 export function withoutQuote(memory: Conversation['memory']): Conversation['memory'] {
-  const { lastQuote, quoteFor, product, productOptions, optionQuery, lastOptionIds, awaitingService, plan, documentRequest, documentSummary, lastDocument, issuedProforma, posQuotation, installationQuote, ...context } = memory;
+  const { lastQuote, quoteFor, product, productOptions, optionQuery, lastOptionIds, awaitingService, plan, documentRequest, documentSummary, lastDocument, issuedProforma, supersededProforma, posQuotation, installationQuote, ...context } = memory;
   return context;
 }
 
@@ -60,7 +60,9 @@ export async function advanceSale(
   const current = stages.indexOf(sale.stage);
   const next = stages.indexOf(stage);
   const memory = conversation.memory;
-  const refreshQuote = (stage === 'quoted' && current <= next) || (stage === 'ready_to_pay' && current < next);
+  const newProforma = stage === 'quoted' && current < stages.indexOf('payment_reported') &&
+    memory.issuedProforma && memory.issuedProforma.number !== sale.quote?.proforma?.number;
+  const refreshQuote = newProforma || (stage === 'quoted' && current <= next) || (stage === 'ready_to_pay' && current < next);
   const quote: Quote | null = memory.lastQuote && refreshQuote
     ? { text: memory.issuedProforma?.summary ?? memory.lastQuote, kind: memory.quoteFor,
       product: memory.quoteFor === 'plan' ? undefined : memory.product, system: memory.system,
