@@ -4,6 +4,7 @@ import { config } from './config.js';
 import { log } from './db.js';
 import { documentJson, isModelReference, modelQuery, money, readProduct, requestedBrand, searchProducts } from './pos.js';
 import { installationQuote, type OrderPreview } from './installation-quote.js';
+import type { ReplyHistoryLine } from './reply-policy.js';
 import type { Conversation } from './store.js';
 
 export const quotationWords = /\b(?:invoice|ankara|pro[ -]?forma|quotation|nukuu ya bei)\b/i;
@@ -28,7 +29,24 @@ export type DocumentRequest = {
   resumeAfterPlan?: true;
 };
 
-const confirmOrder = /^(?:(?:ndio|ndiyo|naam|yes|confirmed|thibitisha)|(?:sawa|ok|okay)(?:[, ]+(?:tuma|nitumie|endelea|send it))?|(?:tuma|nitumie|endelea|send it)(?:\s+(?:invoice|ankara|proforma))?)[.! ]*$/i;
+const confirmation = /^(?:ndio|ndiyo|naam|sawa|okay|ok|yes|yeah|yep|confirmed|nakubali|nimekubali|nathibitisha|nimethibitisha|hiyo ndiyo|ni hiyo|iko sawa|that'?s right|go ahead)\b/;
+const sendDocument = /^(?:(?:naomba\s+)?(?:uitume|unitumie|nitumie|tuma|endelea|thibitisha|tengeneza|itengeneze|nitengenezee|ufanye|fanya)|(?:send|prepare)(?: me)?)(?:\s+(?:pdf|invoice|ankara|proforma|it|hiyo|ile|tu))?(?:\s+(?:hapa|kwangu|now))?\b/;
+const courtesy = /\b(?:mkuu|boss|bro|chief|kaka|dada|ndugu|mzee|asante(?: sana)?|tafadhali|please|thanks|thank you)\b/g;
+const urgency = /^(?:kwa haraka|haraka|alaka|sasa hivi|sasa|quickly|right away|asap)\b/;
+
+export function confirmsProforma(text: string) {
+  if (/[?？]/.test(text)) return false;
+  const normalized = text.normalize('NFKC').toLowerCase().replace(/’/g, "'")
+    .replace(/[^\p{L}\p{N}\s']/gu, ' ').replace(courtesy, ' ').trim().replace(/\s+/g, ' ');
+  if (!confirmation.test(normalized)) return sendDocument.test(normalized) &&
+    !normalized.replace(sendDocument, '').trim().replace(urgency, '').trim();
+  const rest = normalized.replace(confirmation, '').trim().replace(/^(?:basi|tu)\b\s*/, '');
+  if (!rest) return true;
+  const instruction = rest.replace(/^(?:ila|lakini|but|na|and)\s+/, '');
+  return !instruction.replace(sendDocument, '').trim().replace(urgency, '').trim() &&
+    (instruction === rest || sendDocument.test(instruction) || urgency.test(instruction));
+}
+
 type Say = (sw: string, en: string) => string;
 
 function orderSummary(order: OrderPreview, say: Say) {
@@ -51,13 +69,25 @@ function orderSummary(order: OrderPreview, say: Say) {
   return [...list, say(`*Jumla ya kuanza* ${format(total)}`, `*Initial total* ${format(total)}`)].join('\n');
 }
 
+export function recoverProformaConfirmation(memory: Conversation['memory'], history: ReplyHistoryLine[]): DocumentRequest | undefined {
+  const order = memory.installationQuote?.order;
+  if (memory.documentRequest || !order) return;
+  const [preview, reply, fallback] = history.slice(-3);
+  if (preview?.direction !== 'outbound' || reply?.direction !== 'inbound' || fallback?.direction !== 'outbound' ||
+    !confirmsProforma(reply.body) || !/^(?:Karibu\. Niambie unahitaji nini|Welcome\. Tell me what you need)\b/i.test(fallback.body)) return;
+  if (!/^(?:Hii ndiyo oda uliyotaka niweke kwenye proforma\?|Is this the order you want on your proforma\?)/i.test(preview.body)) return;
+  if (!preview.body.includes(orderSummary(order, sw => sw)) &&
+      !preview.body.includes(orderSummary(order, (_sw, en) => en))) return;
+  return { kind: 'invoice', order };
+}
+
 async function proformaTurn(
   text: string, memory: Conversation['memory'], requestKey: string | undefined, say: Say, priorPlanChoice?: string,
 ) {
   const product = memory.product;
   const quote = memory.installationQuote;
   const pending = memory.documentRequest;
-  const confirmed = Boolean(pending?.order && confirmOrder.test(text.trim()));
+  const confirmed = Boolean(pending?.order && confirmsProforma(text));
   const explicit = quotationWords.test(text) && !existingInvoice.test(text);
   if (!product || !quote || quote.productId !== product.id || (!confirmed && !explicit)) return;
   // New items or requests to modify an order must never issue a previous draft.
@@ -103,8 +133,8 @@ async function proformaTurn(
         confirmed ? say('Bei au vipengele vya oda vimebadilika. Hii ndiyo oda ya sasa.',
           'The prices or items have changed. Here is the updated order.')
           : say('Hii ndiyo oda uliyotaka niweke kwenye proforma?', 'Is this the order you want on your proforma?'),
-        summary, say('Ukithibitisha kwa kuandika *Ndiyo*, nitakutumia PDF hapa.',
-          'Reply *Yes* to confirm and I’ll send the PDF here.'),
+        summary, say('Oda ikiwa sawa, niambie nikutumie PDF hapa.',
+          'If the order looks right, let me know and I’ll send the PDF here.'),
       ].join('\n\n') };
     }
     if (!requestKey) {

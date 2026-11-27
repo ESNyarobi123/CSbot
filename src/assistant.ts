@@ -5,7 +5,7 @@ import {
 } from './installation-quote.js';
 export { cableMeters } from './installation-quote.js';
 import { deepseekJson } from './deepseek.js';
-import { quotationTurn, quotationWords } from './quotation.js';
+import { confirmsProforma, quotationTurn, quotationWords, recoverProformaConfirmation } from './quotation.js';
 import { openingGreeting, replyEligible, unrelatedChat, type ReplyHistoryLine } from './reply-policy.js';
 import { photoInquiry, photoReply, printedModel, understoodReply } from './product-photo.js';
 import type { PoolClient } from 'pg';
@@ -792,11 +792,14 @@ async function serviceQuote(
 
 /** Both WhatsApp and Studio use this gate before running the conversational engine. */
 export async function customerTurn(...args: Parameters<typeof respond>): Promise<Outcome> {
-  const [, conversation, newest, , onlyDetect, photo] = args;
+  const [, conversation, newest, history, onlyDetect, photo] = args;
   if (!replyEligible(newest, Boolean(photo))) {
     return { body: '', memory: { ...conversation.memory, replyStatus: 'waiting' }, trace: ['Waiting for a business enquiry'] };
   }
-  if (!photo) {
+  const accepting = !onlyDetect && confirmsProforma(newest);
+  const recovered = accepting ? recoverProformaConfirmation(conversation.memory, history) : undefined;
+  if (recovered) args[1] = { ...conversation, memory: { ...conversation.memory, documentRequest: recovered } };
+  if (!photo && !(accepting && (conversation.memory.documentRequest?.order || recovered))) {
     const language = messageLanguage(newest) ?? conversation.memory.language ?? 'sw';
     const say = (sw: string, en: string) => language === 'en' ? en : sw;
     const greeting = openingGreeting(newest);

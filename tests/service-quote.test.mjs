@@ -65,6 +65,7 @@ delete process.env.LUBFY_PLANS_URL;
 
 const { installationAside, installationOnlyAside, isAffirmation, nearbyModels, resolveDecision, respond, customerTurn, serviceQuestion }
   = await import('../dist/assistant.js');
+const { confirmsProforma } = await import('../dist/quotation.js');
 const client = { query: async () => ({ rows: [] }) };
 
 after(() => server.close());
@@ -194,7 +195,7 @@ test('a two-device LubFy request keeps the order through confirmation and PDF de
     { direction: 'inbound', body: 'nitengenezee invoice nitumie nione' },
   ]);
   assert.match(recovered.body, /LubFy Power — TZS 25,000/);
-  assert.match(recovered.body, /Ndiyo/);
+  assert.match(recovered.body, /niambie nikutumie PDF/);
   const turn = async (message) => {
     const result = await customerTurn(client, chat, message, [], false, undefined, false, 'account:' + message);
     chat.memory = JSON.parse(JSON.stringify(result.memory, (_key, value) => (
@@ -211,15 +212,45 @@ test('a two-device LubFy request keeps the order through confirmation and PDF de
   assert.match(preview.body, /CAT 6 CABLE, mita 30/);
   assert.match(preview.body, /Ufungaji/);
   assert.match(preview.body, /TZS 1,120,000/);
-  assert.match(preview.body, /Ndiyo/);
+  assert.match(preview.body, /niambie nikutumie PDF/);
+  const pending = structuredClone(chat);
+  const changed = await customerTurn(client, structuredClone(pending), 'Ndio ila ongeza waya mita 40', [],
+    false, undefined, false, 'account:change');
+  assert.equal(changed.document, undefined);
   assert.equal(proformas.length, 0);
-  const sent = await turn('Ndiyo');
+  const sent = await turn('Ndio mkuu');
   assert.match(sent.body, /PF-12345678901234567890/);
   assert.match(sent.document.bytes.toString(), /^%PDF-/);
   assert.equal(chat.memory.documentRequest, undefined);
   assert.deepEqual(proformas[0].items.map(({ productId, quantity, role }) => [productId, quantity, role]),
     [['eap650', 2, 'device'], ['cat6', 30, 'cable'], ['ap-a', 1, 'installation']]);
   assert.equal(proformas[0].plan.name, 'LubFy Power');
+
+  const history = [
+    { direction: 'outbound', body: preview.body },
+    { direction: 'inbound', body: 'Ndio mkuu' },
+    { direction: 'outbound', body: 'Karibu. Niambie unahitaji nini — mfumo, kifaa, au msaada wa tatizo lolote?' },
+  ];
+  delete pending.memory.documentRequest;
+  const oldChat = await customerTurn(client, pending, 'Ndio ila ufanye alaka', history,
+    false, undefined, false, 'account:previous-chat');
+  assert.ok(oldChat.document);
+  const afterDelivery = await customerTurn(client, { ...pending, memory: oldChat.memory }, 'Ndio mkuu', [
+    ...history, { direction: 'outbound', body: oldChat.body },
+  ], false, undefined, false, 'account:after-delivery');
+  assert.equal(afterDelivery.document, undefined);
+  assert.equal(proformas.length, 2);
+});
+
+test('proforma confirmation accepts natural assent and leaves changes and questions unconfirmed', () => {
+  for (const phrase of ['Ndiyo', 'Ndio mkuu', 'Mkuu, ndio', 'Ndio ila ufanye alaka', 'Sawa boss, nitumie PDF',
+    'Nimekubali, tafadhali tuma', 'Yes, please send it', 'Tuma PDF sasa hivi']) {
+    assert.ok(confirmsProforma(phrase), phrase);
+  }
+  for (const phrase of ['Mkuu', 'Asante', 'Hapana', 'Ndio?', 'Ndio ila usitume', 'Sawa ila subiri',
+    'Ndio ila ongeza waya mita 40', 'Ndiyo, lakini nipe WoteFy', 'Sawa unamaanisha nini']) {
+    assert.equal(confirmsProforma(phrase), false, phrase);
+  }
 });
 
 test('an Omada buyer asking for advice gets a recommendation before LubFy prices', async () => {
