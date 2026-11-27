@@ -128,3 +128,23 @@ test('a spec question about a new model is not answered with the last device', a
   assert.match(follow.body, /^Cudy AP 3000/);
   assert.doesNotMatch(follow.body, /EAP 610/);
 });
+
+test('an unfinished WoteFy setup thought and a bare 225 Mesh question keep their own context', async () => {
+  const { customerTurn } = await import('../dist/assistant.js');
+  const client = { query: async () => ({ rows: [] }) };
+  const conversation = { id: 'playground', memory: { language: 'sw', facts: { coverage_m: '1000', place: 'outdoor', use: 'home' } } };
+  const text = 'kwenye site yangu natumia 225 nimeiwekea mfumo wa wotefy ila sasa nawaza';
+  const intro = await customerTurn(client, conversation, text, []);
+  assert.match(intro.body, /Unawaza kubadilisha nini/);
+  assert.doesNotMatch(intro.body, /1000|Kigoma|nyumbani/);
+  conversation.memory = intro.memory;
+  const advice = await customerTurn(client, conversation,
+    'nawaza ninunue vifaa kama vi wili nifanye mesh na hii 225 unanishauri je', [
+      { direction: 'inbound', body: text }, { direction: 'outbound', body: intro.body },
+    ]);
+  assert.match(advice.body, /EAP225 V3.*EAP225.*Outdoor/);
+  assert.match(advice.body, /hardware version/);
+  assert.doesNotMatch(advice.body, /1000|POS|EAP110|EAP 650|Kigoma/);
+  const greeting = await customerTurn(client, conversation, 'habari za mda huu', []);
+  assert.doesNotMatch(greeting.body, /mfumo, kifaa/);
+});

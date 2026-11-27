@@ -248,7 +248,8 @@ Rules, in order of importance:
 9. When FACTS say the sheet is unverified, present the figures as the shop's record and offer to confirm with the manufacturer.
 10. Never promise a discount, a delivery date or stock you were not given.
 11. Use EARLIER MESSAGES only to see which device or site the customer means. Never copy a price, range or stock figure from them.
-12. Close with at most one question, and only when one missing fact would change the recommendation.`;
+12. Close with at most one question, and only when one missing fact would change the recommendation.
+13. A remembered distance, location, environment or use case might belong to a different site. If the current customer message does not establish that those details apply to the setup under discussion, leave them out and do not attribute them to the customer.`;
 
   const value = await deepseekJson({ schema: composed, system: systemInstruction, prompt, maxTokens: 650 });
   if (!value) return;

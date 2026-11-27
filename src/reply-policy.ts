@@ -19,7 +19,8 @@ const opening = /^(?:kaka|dada|mkuu|boss|bro|brother|chief|mzee|mambo+|habari|vi
 
 export function openingGreeting(text: string) {
   const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
-  if (!lines.every(line => salutation.test(line) || smallTalkOnly(line))) return;
+  if (!lines.every(line => salutation.test(line) || smallTalkOnly(line) ||
+    /^habari za (?:muda|mda|wakati|saa) hu[ou][.!? ]*$/i.test(line))) return;
   return lines.find(line => opening.test(line));
 }
 

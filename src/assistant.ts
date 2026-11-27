@@ -555,6 +555,11 @@ export function isAffirmation(text: string) {
     .test(text.trim());
 }
 
+function existingEap225(text: string, memory: Conversation['memory']) {
+  return /\beap[ -]?225\b/i.test(text) || (systemFrom(text) === 'wotefy' || memory.system === 'wotefy') &&
+    /\b(?:hii|hiyo|ile|natumia|ninatumia|nina|nayo|using)\s+(?:the\s+)?225\b/i.test(text);
+}
+
 // Only fitted network equipment carries an installation fee; cables and adapters do not.
 const installedEquipment = /\b(access point|gateway|mikrotik|router|hap|hex|eap|omada|ruijie|reyee|unifi|cambium)\b/i;
 
@@ -910,6 +915,33 @@ async function answer(
   if (!onlyDetect) {
     const language = messageLanguage(newest) ?? memory.language ?? 'sw';
     const say = (sw: string, en: string) => language === 'en' ? en : sw;
+    if (/(?:\b(?:ila|lakini|but)(?:\s+(?:sasa|now))?\s+(?:nawaza|nafikiria|nataka|i(?:'m| am) (?:thinking|considering))|^(?:sasa )?(?:nawaza|nafikiria))[\s.…]*$/i.test(newest.trim()) &&
+        !supportQuestion(newest)) {
+      memory.system = systemFrom(newest) || memory.system;
+      const device = existingEap225(newest, memory) ? 'EAP225' : undefined;
+      return { body: device ? say(`Nimekupata. Hiyo ${device} tayari unaitumia. Unawaza kubadilisha nini kwenye setup yako?`,
+        `Got it, you already use an ${device}. What are you thinking about changing in your setup?`)
+        : say('Nimekupata. Unawaza kufanya mabadiliko gani?', 'Got it. What are you thinking about changing?'),
+      memory: { ...memory, language } };
+    }
+    const previousDevice = /\bmesh(?:ing)?\b/i.test(newest) ? [...history].reverse()
+      .find(line => line.direction === 'inbound' && (namesNewDevice(line.body) || existingEap225(line.body, memory))) : undefined;
+    const eap225Mesh = /\bmesh(?:ing)?\b/i.test(newest) && !priceWords.test(newest) &&
+      (existingEap225(newest, memory) || (!namesNewDevice(newest) && previousDevice && existingEap225(previousDevice.body, memory))) &&
+      !supportQuestion(newest);
+    if (eap225Mesh) {
+      memory.system = systemFrom(newest) || memory.system;
+      const variant = newest + ' ' + (previousDevice?.body ?? '');
+      const hasVersion = /\beap[ -]?225[ -]?outdoor\b|\b225\s+(?:outdoor|v3(?:\.\d+)?)\b/i.test(variant);
+      const next = hasVersion ? say('Vifaa vipya vitawekwa umbali gani kutoka kwenye EAP225 yako?',
+        'How far from your existing EAP225 would you place the new units?')
+        : say('Kwenye lebo ya kifaa chako, imeandikwa EAP225 au EAP225‑Outdoor, na hardware version ni ipi?',
+          'Does the label say EAP225 or EAP225-Outdoor, and what hardware version is shown?');
+      return { body: say(
+        'Unaweza kuongeza AP mbili za Omada Mesh kwenye site hiyo ikiwa EAP225 yako na vifaa vipya vinaunga mkono Mesh. TP‑Link inaorodhesha EAP225 V3 na EAP225‑Outdoor zenye firmware inayofaa. Unganisha AP moja kwa waya kama root, kisha weka AP nyingine kwenye site ileile ya Omada na mahali zinapopata signal nzuri.',
+        'You can add two Omada Mesh APs at that site if your EAP225 and the new units support Mesh. TP-Link lists EAP225 V3 and EAP225-Outdoor with compatible firmware. Wire one AP as the root, then add the other APs to the same Omada site where they have a strong signal.',
+      ) + '\n\n' + next, memory: { ...memory, language } };
+    }
     const body = supportProgress(newest, memory, say);
     if (body) return { body, memory: { ...memory, language } };
     if (memory.handoffPending && memory.lastDocument &&
