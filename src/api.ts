@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  BadRequestException, Body, ConflictException, Controller, ForbiddenException, Get, Header, HttpCode, Injectable, Module,
+  BadRequestException, Body, ConflictException, Controller, ForbiddenException, Get, Header, Headers, HttpCode, Injectable, Module,
   NotFoundException, Param, Patch, Post, Put, Query, Res, ServiceUnavailableException, StreamableFile, UnauthorizedException, UseGuards,
   type CanActivate, type ExecutionContext,
 } from '@nestjs/common';
@@ -22,6 +22,7 @@ import { seal, unseal } from './secrets.js';
 import { listSpecs, saveSpec } from './specs.js';
 import { enqueue, ingest, recipient, setMode, type Conversation } from './store.js';
 import { audioAllowed, audioType } from './voice.js';
+import { authorizedDiagnostic, diagnosticReport, recordDiagnostic } from './support-diagnostics.js';
 
 function read<T extends z.ZodType>(schema: T, input: unknown): z.infer<T> {
   const result = schema.safeParse(input);
@@ -795,7 +796,19 @@ function imageMimetype(bytes: Buffer) {
   }
 }
 
-@Module({ controllers: [HealthController, AdminController, DashboardController], providers: [AdminGuard] })
+@Controller('integrations/support-diagnostics')
+class SupportDiagnosticController {
+  @Post()
+  @HttpCode(204)
+  @Header('Cache-Control', 'no-store')
+  async receive(@Body() input: unknown, @Headers('x-csbot-signature') signature?: string) {
+    const report = read(diagnosticReport, input);
+    if (!authorizedDiagnostic(report, signature)) throw new UnauthorizedException();
+    if (!await transaction(client => recordDiagnostic(client, report))) throw new NotFoundException();
+  }
+}
+
+@Module({ controllers: [HealthController, AdminController, DashboardController, SupportDiagnosticController], providers: [AdminGuard] })
 class ApiModule {}
 
 const app = await NestFactory.create<NestExpressApplication>(ApiModule, { logger: ['error', 'warn', 'log'] });

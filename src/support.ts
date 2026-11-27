@@ -118,6 +118,7 @@ export function supportDetails(support: SupportDetails, say: Say) {
     `*${say('Changamoto', 'Reported issue')}* ${problem ? reportedProblem(problem, say) : say('Maelezo bado yanahitajika', 'More details needed')}`,
     `*${say('Email ya akaunti', 'Account email')}* ${email}`,
     checkResult && `*${say('Matokeo ya ukaguzi', 'Check result')}* ${checkResult}`,
+    support.verifiedCheck && `*${say('Hali iliyothibitishwa na mfumo', 'Status confirmed by the platform')}* ${support.verifiedCheck.summary}`,
   ].filter(Boolean).join('\n');
 }
 

@@ -69,7 +69,8 @@ function customerBrief(thread) {
       <ul class="brief-models">${models.map((item) => `<li>${esc(item.name)}</li>`).join('')}</ul></section>` : ''}
     ${caseDetails?.problem ? `<section class="details-section"><h3>${icon('alert', 15)} Support request</h3>
       ${caseStatus ? `<p>${esc(caseStatus)}${supportUpdate?.owner ? ' · Assigned to ' + esc(phoneLabel(supportUpdate.owner)) : ''}</p>` : ''}
-      <p>${esc(caseDetails.problem)}</p>${caseDetails.checkResult ? `<p>${esc(caseDetails.checkResult)}</p>` : ''}</section>` : ''}
+      <p>${esc(caseDetails.problem)}</p>${caseDetails.checkResult ? `<p>${esc(caseDetails.checkResult)}</p>` : ''}
+      ${caseDetails.verifiedCheck ? `<p>${esc(caseDetails.verifiedCheck.summary)} · ${dateLabel(caseDetails.verifiedCheck.checkedAt)}</p>` : ''}</section>` : ''}
     ${lastDocument || posQuotation ? `<section class="details-section"><h3>${icon('bag', 15)} Sales documents</h3>
       <p>${esc(lastDocument || posQuotation.number)}</p></section>` : ''}
     ${trace.length ? `<section class="details-section"><h3>${icon('book', 15)} Last answer, step by step</h3>

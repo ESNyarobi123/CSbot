@@ -13,6 +13,7 @@ let retryAfter = 0;
 
 function redact(text: string) {
   return text
+    .replace(/([?&]ticket=)[A-Za-z0-9_-]{43}\b/g, '$1[diagnostic-ticket]')
     .replace(/[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}/gu, '[email]')
     .replace(/(?<![\w])(?:\+?255[ -]?|0)(?:[ -]?\d){9}\b/g, '[phone]')
     .replace(/\b(?:Bearer\s+|sk-)[a-zA-Z0-9_-]{16,}\b/g, '[credential]');

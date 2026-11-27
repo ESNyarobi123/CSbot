@@ -191,6 +191,27 @@ CSbot inatambua SSDomada kama WoteFy. Kwa portal inayochelewa, Free Trial inayog
 
 Kwenye namba iliyowekwa kwenye **Admin alerts**, tumia **Reply** juu ya arifa ya support. Eleza kilichofanyika, taarifa zinazohitajika, au ujumbe unaotaka timu impe mteja. CSbot husubiri uthibitisho wa mteja baada ya WhatsApp kuripoti kuwa taarifa ya suluhisho imefika, kisha hufunga au hufungua kesi tena kulingana na jibu. Maelezo ambayo mteja anatoa baada ya ombi la taarifa yanarudi kwa timu kwenye arifa mpya. Tumia arifa ya karibuni ya kesi husika kuendelea na mazungumzo.
 
+### Ukaguzi wa vifaa kwa ruhusa ya mteja
+
+Kurasa za idhini zinapatikana kwenye `/api/v1/reseller/support-diagnostics` ya WoteFy na `/v1/support-diagnostics` ya LubFy toleo likishawekwa kwenye kila mfumo. Weka `WOTEFY_DIAGNOSTICS_URL` / `LUBFY_DIAGNOSTICS_URL` kuwa URL ya HTTPS ya ukurasa wa idhini wa mfumo husika, na `WOTEFY_DIAGNOSTICS_KEY` / `LUBFY_DIAGNOSTICS_KEY` kuwa funguo tofauti za hex zenye herufi 64. Kwenye kila provider weka `CSBOT_DIAGNOSTICS_KEY` ilingane na funguo ya upande wake kwenye CSbot, `CSBOT_DIAGNOSTICS_CALLBACK` iwe URL kamili ya callback ya CSbot na `CSBOT_DIAGNOSTICS_PUBLIC_ORIGIN` iwe origin ya HTTPS ya dashboard ya provider. Bila usanidi huo, support inaendelea kupitia timu.
+
+CSbot huongeza `ticket` kwenye URL kwa kesi yenye mfumo na email. Tiketi inaisha baada ya dakika 15. Ukurasa wa mfumo unamwomba mteja aingie na akubali kushiriki idadi ya vifaa vinavyoonekana online, offline au hali isiyojulikana. Mfumo hutumia email kutoka kwa session yake iliyothibitishwa na ruhusa ya mwenye akaunti au workspace inayohusika. Ukurasa wa idhini unatumia `Cache-Control: no-store` na `Referrer-Policy: no-referrer`. GET inaonyesha fomu bila kusoma au kutuma hali ya vifaa.
+
+Baada ya idhini, server ya mfumo hutuma JSON kwenye `POST /integrations/support-diagnostics` ya CSbot. Mwili wa JSON una `ticket`, `system` (`wotefy` au `lubfy`), `accountProof`, `checkedAt` (ISO 8601 UTC), na idadi kamili `online`, `offline`, `unknown`. Hesabu za HMAC-SHA256 zinatumia funguo za hex kama maandishi ya UTF-8 na majibu madogo ya hex. `accountProof` inasaini `account-v1` + LF + email iliyotolewa na session, baada ya trim na lowercase. Header `x-csbot-signature` inasaini vipengele hivi kwa mpangilio ulioonyeshwa, vikitenganishwa kwa LF na bila newline ya mwisho.
+
+```text
+report-v1
+ticket
+system
+accountProof
+checkedAt
+online
+offline
+unknown
+```
+
+Callback ya `204` inamaanisha muhtasari umehifadhiwa kwenye kesi na majibu yamewekwa kwenye foleni. CSbot hukataa tiketi iliyopita muda, iliyotumika, yenye uthibitisho wa akaunti tofauti, au ambayo kesi yake imefungwa. Callback inabeba hesabu tu. Email, taarifa za malipo na nenosiri zinasalia kwenye mfumo wa mteja.
+
 ## Mteja 360 na follow-up
 
 **Rekodi moja kwa kila namba.** `customers` huhifadhi utambulisho na shughuli (`phone`, `name`, `email`, `language`, `segment`, `first_seen`, `last_seen`) kando na `customer_memory.facts` (mambo aliyosema kuhusu eneo lake). Hakuna tena dupisho kati ya `conversations.memory` na `customer_memory`; profile ya zamani (`equipment`/`budget`/`useCase`) imejumuishwa ndani ya `facts` (`equipment`, `budget`, `use`).

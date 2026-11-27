@@ -16,6 +16,7 @@ import {
   markFollowUpSent, recipient, scheduleFollowUp, setCustomerOptedOut, setMode, type Conversation,
 } from './store.js';
 import { audioAllowed, pendingVoice, transcribe } from './voice.js';
+import { offerDiagnostic } from './support-diagnostics.js';
 
 interface Presence { accountId: string; jid: string }
 
@@ -335,6 +336,10 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       const replyStarted = Date.now();
       const outcome = await respond(client, conversation, newest,
         history.map(line => ({ ...line, body: line.body.slice(0, 700) })), !canReply, photo, spoken, `${conversation.account_id}:${firstMessage}`);
+      if (canReply && outcome.handoff && outcome.supportAlert === 'handoff') {
+        const link = await offerDiagnostic(client, { ...conversation, memory: outcome.memory });
+        if (link) outcome.body += '\n\n' + link;
+      }
       const replyMs = Date.now() - replyStarted;
       if (replyMs >= 5000) log.warn({ conversation: conversationId, replyMs, batchSize: pending.length,
         withPhoto: Boolean(photo), withVoice: spoken, canReply }, 'Slow reply generation');

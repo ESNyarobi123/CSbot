@@ -21,6 +21,10 @@ export const config = z.object({
   CSOLUTION_QUOTATION_TOKEN: optional,
   WOTEFY_PLANS_URL: optional,
   LUBFY_PLANS_URL: optional,
+  WOTEFY_DIAGNOSTICS_URL: optional,
+  WOTEFY_DIAGNOSTICS_KEY: optional,
+  LUBFY_DIAGNOSTICS_URL: optional,
+  LUBFY_DIAGNOSTICS_KEY: optional,
   POS_BRANCH_ID: optional,
   PRODUCT_IMAGE_HOSTS: z.string().default('').transform(value =>
     value.split(',').map(host => host.trim().toLowerCase()).filter(Boolean)),

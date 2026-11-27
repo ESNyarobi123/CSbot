@@ -24,6 +24,7 @@ export interface Conversation {
     handoffPending?: true;
     supportUpdate?: { status: 'resolved' | 'details' | 'resolution_queued' | 'awaiting_confirmation' | 'reopened';
       alertAt: string; owner?: string; outboundId?: string };
+    diagnosticRequest?: { id: string; system: 'wotefy' | 'lubfy'; email: string; problem: string; expiresAt: string };
     onboarding?: boolean;
     setup?: import('./installation-guide.js').SetupContext;
     profile?: import('./customer-text.js').CustomerProfile;
@@ -55,7 +56,8 @@ export interface Conversation {
     /** Support intake: the problem, the system, and the login email. */
     support?: { problem?: string; system?: 'wotefy' | 'lubfy'; email?: string; waitingFor?: 'problem' | 'email' | 'system' | 'device' | 'check'; attempts?: number; sameEmail?: boolean };
     /** Last completed support intake, kept for the admin alert and audits. */
-    lastSupport?: { problem?: string; checkResult?: string; system?: 'wotefy' | 'lubfy'; email?: string; sameEmail?: boolean };
+    lastSupport?: { problem?: string; checkResult?: string; system?: 'wotefy' | 'lubfy'; email?: string; sameEmail?: boolean;
+      verifiedCheck?: { summary: string; checkedAt: string } };
     recentTopic?: string;
     /** Chat language, so a bare model name does not flip the reply to English. */
     language?: 'sw' | 'en';
