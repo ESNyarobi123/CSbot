@@ -19,6 +19,7 @@ import {
 import { audioAllowed, pendingVoice, transcribe } from './voice.js';
 import { offerDiagnostic } from './support-diagnostics.js';
 import { acknowledgesCatalogWait, runCommercialRetry } from './commercial-retry.js';
+import { learningSignal, queueKnowledgeReview } from './learning.js';
 
 interface Presence { accountId: string; jid: string }
 
@@ -237,6 +238,8 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         }
       }
       const canReply = awaitingAgent || (mode === 'bot' && pending.some(message => message.auto_reply));
+      const signal = !resume && !platformNotice(newest) && learningSignal(newest);
+      if (signal) await queueKnowledgeReview(client, conversation, firstMessage, signal, newest);
       if (canReply && mode === 'bot' && pending.every(message => message.kind === 'text' && acknowledgesCatalogWait(message.body)) &&
         await row(client, `UPDATE commercial_retries SET last_inbound_id=$2
           WHERE conversation_id=$1 RETURNING conversation_id`, [conversationId, ids[ids.length - 1]])) {
@@ -274,6 +277,12 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
           };
           await client.query('UPDATE conversations SET memory=$2,updated_at=now() WHERE id=$1', [conversationId, memory]);
           await cancelFollowUps(client, conversationId, ['handoff_ping', 'post_support']);
+          if (fixed && update.outboundId) {
+            const resolution = await row<{ body: string }>(client, 'SELECT body FROM outbound WHERE id=$1 AND conversation_id=$2',
+              [update.outboundId, conversationId]);
+            if (resolution) await queueKnowledgeReview(client, { ...conversation, memory }, firstMessage, 'resolved',
+              [memory.lastSupport?.problem, resolution.body].filter(Boolean).join('\n'));
+          }
           if (fixed && awaitingAgent) await setMode(client, conversationId, 'bot');
           if (!fixed) {
             if (!awaitingAgent) await setMode(client, conversationId, 'human', true);
@@ -451,6 +460,8 @@ try {
       await db.query(`DELETE FROM media WHERE created_at < now() - ($1::int * interval '1 day')`,
         [config.MEDIA_RETENTION_DAYS]).catch(error =>
         log.warn({ code: (error as Error).name }, 'Stored media could not be pruned'));
+      await db.query('DELETE FROM knowledge_reply_cache WHERE expires_at<=now()')
+        .catch(error => log.warn({ code: (error as Error).name }, 'Expired knowledge replies could not be pruned'));
     }
     try {
       const { rows } = await db.query<{ id: string; first: string }>(`SELECT c.id, min(m.id) AS first

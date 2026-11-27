@@ -11,7 +11,8 @@ import { photoInquiry, photoReply, printedModel, understoodReply } from './produ
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { adviseOnDevice } from './advisor.js';
-import { chatContext, compose, identifyDevice, loadCustomerMemory, recall, saveCustomerMemory, siteDistance, understandImage } from './brain.js';
+import { changesCustomerSite, chatContext, identifyDevice, loadCustomerMemory, recall, saveCustomerMemory, siteDistance, understandImage, withoutSiteFacts } from './brain.js';
+import { learningSignal, reusableKnowledgeQuestion, writeKnowledgeReply } from './learning.js';
 import { config } from './config.js';
 import {
   accountQuestion, adEnquiry, customerProfile, emailOf, messageLanguage, modelName, namesNewDevice, platformNotice, profitQuestion, regionQuestion, smallTalkOnly, smallTalkReply,
@@ -885,7 +886,7 @@ export async function respond(
     // so it is stored with the site facts rather than only on this conversation.
     const model = outcome.memory.product?.name;
     if (model) outcome.memory.facts = { ...outcome.memory.facts, last_model: model };
-    await saveCustomerMemory(client, conversation.account_id, conversation.customer_jid, outcome.memory.facts);
+    await saveCustomerMemory(client, conversation.account_id, conversation.customer_jid, outcome.memory.facts, changesCustomerSite(newest));
   }
   return outcome;
 }
@@ -902,19 +903,32 @@ async function answer(
   // and the next real question inherits that package as the topic.
   if (platformNotice(newest)) return { body: '', memory: conversation.memory };
   const stored = onlyDetect || conversation.id === 'playground' ? {} : await loadCustomerMemory(client, conversation.account_id, conversation.customer_jid);
+  const newSite = !onlyDetect && changesCustomerSite(newest);
+  const previousFacts = { ...stored, ...conversation.memory.facts };
   const memory = {
     ...conversation.memory,
     // The site facts survive a closed chat and a bot restart, so a returning
     // customer does not have to explain their compound again.
-    facts: recall(newest, { ...stored, ...conversation.memory.facts }),
+    facts: recall(newest, newSite ? withoutSiteFacts(previousFacts) : previousFacts),
     recentTopic: newest.slice(0, 280),
     profile: customerProfile(newest, conversation.memory.profile),
   };
   delete memory.documentSummary;
   delete memory.trace;
+  if (newSite) {
+    delete memory.requirements;
+    delete memory.survey;
+    delete memory.planning;
+    delete memory.system;
+    history = [];
+  }
   if (!onlyDetect) {
     const language = messageLanguage(newest) ?? memory.language ?? 'sw';
     const say = (sw: string, en: string) => language === 'en' ? en : sw;
+    if (learningSignal(newest) === 'suggestion') return { body: say(
+      'Nimepokea pendekezo lako kwa timu ilipitie. Asante kwa kutueleza unachohitaji.',
+      'Thanks for explaining what you need. I’ve recorded your suggestion for the team to review.'),
+    memory: { ...memory, language } };
     if (/(?:\b(?:ila|lakini|but)(?:\s+(?:sasa|now))?\s+(?:nawaza|nafikiria|nataka|i(?:'m| am) (?:thinking|considering))|^(?:sasa )?(?:nawaza|nafikiria))[\s.…]*$/i.test(newest.trim()) &&
         !supportQuestion(newest)) {
       memory.system = systemFrom(newest) || memory.system;
@@ -1897,21 +1911,24 @@ async function answer(
     // from the approved entry plus what this customer already told us, so it
     // answers their situation instead of pasting the whole article.
     const regionQ = regionQuestion(newest);
-    const written = await compose({
+    const reusable = reusableKnowledgeQuestion(newest);
+    const written = await writeKnowledgeReply(client, conversation.id === 'playground' ? undefined : conversation.id, fact.id, {
       question: newest, language: decision.language,
       facts: [
         `APPROVED KNOWLEDGE — ${fact.title}\n${fact.content}`,
         'SHOP: Connect Solution, Sinza Makaburini, Dar es Salaam. Sells network equipment and runs WoteFy and LubFy Wi-Fi billing.',
         regionQ
           ? 'REGION QUESTION: the customer is asking where the system operates — a region, country or currency. Do NOT mention their site size, distance, or access-point count. Answer where the system works and which countries/currencies are supported if the knowledge states them; if the country list is not recorded, say so plainly and ask which country they want to run it in.'
-          : memory.facts && Object.keys(memory.facts).length
+          : !reusable && memory.facts && Object.keys(memory.facts).length
             ? `CUSTOMER SITE FACTS\n${Object.entries(memory.facts).map(([key, value]) => `${key}: ${value}`).join('\n')}`
             : '',
       ].filter(Boolean).join('\n\n'),
       context: chatContext(history),
-    }).catch(() => undefined);
+    });
     if (written) {
-      memory.trace = [`Answered from knowledge: ${fact.title}`, 'Composed from the approved entry and site facts'];
+      memory.trace = [`Answered from knowledge: ${fact.title}`, 'cached' in written
+        ? 'Reused this chat’s answer from the current approved entry'
+        : 'Composed from the approved entry and relevant context'];
       return result(written.answer);
     }
     return result([fact.content, fact.source_url].filter(Boolean).join('\n'));

@@ -547,16 +547,47 @@ class AdminController {
     return (await db.query('SELECT * FROM knowledge ORDER BY updated_at DESC,id LIMIT $1', [limit])).rows;
   }
 
+  @Get('knowledge/review-items')
+  async knowledgeReviewItems() {
+    return (await db.query(`SELECT id,kind,system,sample,created_at FROM knowledge_review_items
+      WHERE reviewed_at IS NULL ORDER BY created_at DESC,id DESC LIMIT 30`)).rows;
+  }
+
+  @Patch('knowledge/review-items/:id')
+  @HttpCode(204)
+  async dismissKnowledgeReview(@Param('id') id: string) {
+    read(recordId, id);
+    await db.query('UPDATE knowledge_review_items SET reviewed_at=now() WHERE id=$1 AND reviewed_at IS NULL', [id]);
+  }
+
   @Put('knowledge/:id')
   async publish(@Param('id') id: string, @Body() body: unknown) {
     read(idSchema, id);
     const input = read(z.object({ title: z.string().trim().min(1).max(160), content: z.string().trim().min(1).max(8000),
       tags: z.string().max(500).default(''), system: z.enum(['general', 'wotefy', 'lubfy']),
-      sourceUrl: z.url({ protocol: /^https$/ }).optional(), published: z.boolean().default(false) }), body);
-    return row(db, `INSERT INTO knowledge (id,system,title,content,tags,source_url,published) VALUES ($1,$2,$3,$4,$5,$6,$7)
-      ON CONFLICT (id) DO UPDATE SET system=EXCLUDED.system,title=EXCLUDED.title,content=EXCLUDED.content,
-      tags=EXCLUDED.tags,source_url=EXCLUDED.source_url,published=EXCLUDED.published,updated_at=now() RETURNING *`,
-    [id, input.system, input.title, input.content, input.tags, input.sourceUrl ?? null, input.published]);
+      sourceUrl: z.url({ protocol: /^https$/ }).optional(), published: z.boolean().default(false),
+      reviewItemId: recordId.optional() }), body);
+    if (input.reviewItemId && (id !== `learn-${input.reviewItemId}` || input.published)) {
+      throw new BadRequestException('Save the reviewed material as a draft first');
+    }
+    return transaction(async client => {
+      if (input.reviewItemId) {
+        const review = await row<{ reviewed_at: string | null }>(client,
+          'SELECT reviewed_at FROM knowledge_review_items WHERE id=$1 FOR UPDATE', [input.reviewItemId]);
+        if (!review) throw new NotFoundException();
+        if (review.reviewed_at) {
+          const existing = await row(client, 'SELECT * FROM knowledge WHERE id=$1', [id]);
+          if (existing) return existing;
+          throw new ConflictException('This suggestion has already been dismissed');
+        }
+      }
+      const saved = await row(client, `INSERT INTO knowledge (id,system,title,content,tags,source_url,published) VALUES ($1,$2,$3,$4,$5,$6,$7)
+        ON CONFLICT (id) DO UPDATE SET system=EXCLUDED.system,title=EXCLUDED.title,content=EXCLUDED.content,
+        tags=EXCLUDED.tags,source_url=EXCLUDED.source_url,published=EXCLUDED.published,updated_at=now() RETURNING *`,
+      [id, input.system, input.title, input.content, input.tags, input.sourceUrl ?? null, input.published]);
+      if (input.reviewItemId) await client.query('UPDATE knowledge_review_items SET reviewed_at=now() WHERE id=$1', [input.reviewItemId]);
+      return saved;
+    });
   }
 
   @Get('device-specs')

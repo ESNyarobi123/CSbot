@@ -143,7 +143,9 @@ export async function collection(container, signal, type) {
 }
 
 async function knowledge(container, signal) {
-  let entries = await api('/knowledge?limit=100', { signal });
+  let [entries, reviewItems] = await Promise.all([
+    api('/knowledge?limit=100', { signal }), api('/knowledge/review-items', { signal }),
+  ]);
   if (signal.aborted) return;
   container.innerHTML = `${heading(
     'Knowledge',
@@ -152,8 +154,11 @@ async function knowledge(container, signal) {
   )}
     <section class="card"><header class="card-head"><div class="card-title"><span class="card-icon">${icon('book', 17)}</span>
       <div><h2>Articles</h2><p>Published articles answer customer questions</p></div></div>
-      <label class="field-search">${icon('search', 16)}<input aria-label="Search knowledge" type="search" placeholder="Search knowledge"></label></header><div id="records-list"></div></section>`;
+      <label class="field-search">${icon('search', 16)}<input aria-label="Search knowledge" type="search" placeholder="Search knowledge"></label></header><div id="records-list"></div></section>
+    <section class="card"><header class="card-head"><div class="card-title"><span class="card-icon">${icon('inbox', 17)}</span>
+      <div><h2>Learning review</h2><p>Suggestions, corrections and fixes confirmed by customers</p></div></div></header><div id="learning-list"></div></section>`;
   const list = container.querySelector('#records-list');
+  const reviewList = container.querySelector('#learning-list');
   const search = container.querySelector('input');
   function draw() {
     const query = search.value.trim().toLowerCase();
@@ -176,12 +181,34 @@ async function knowledge(container, signal) {
       .querySelectorAll('[data-edit]')
       .forEach((button) => (button.onclick = () => edit(entries.find((item) => item.id === button.dataset.edit))));
   }
-  function edit(entry) {
-    const seed = entry ?? {};
+  function drawReview() {
+    const labels = { suggestion: 'Suggestion', correction: 'Correction', resolved: 'Confirmed fix' };
+    reviewList.innerHTML = reviewItems.length ? `<div class="table-wrap"><table>
+      <thead><tr><th>Type</th><th>System</th><th>Customer feedback or fix</th><th><span class="sr-only">Actions</span></th></tr></thead>
+      <tbody>${reviewItems.map(item => `<tr><td>${esc(labels[item.kind])}</td><td>${esc(item.system)}</td><td>${esc(item.sample)}</td>
+        <td>${btn('Draft', 'edit', `data-review="${esc(item.id)}"`, 'small')}
+        ${btn('Dismiss', 'close', `data-dismiss-review="${esc(item.id)}"`, 'small')}</td></tr>`).join('')}</tbody>
+      </table></div>` : empty('Nothing to review', 'New customer feedback will appear here.', 'inbox');
+    reviewList.querySelectorAll('[data-review]').forEach(button => {
+      button.onclick = () => edit(undefined, reviewItems.find(item => item.id === button.dataset.review));
+    });
+    reviewList.querySelectorAll('[data-dismiss-review]').forEach(button => {
+      button.onclick = async () => {
+        try {
+          await api('/knowledge/review-items/' + button.dataset.dismissReview, { method: 'PATCH' });
+          reviewItems = reviewItems.filter(item => item.id !== button.dataset.dismissReview);
+          if (!signal.aborted) drawReview();
+        } catch (error) { notify(error.message); }
+      };
+    });
+  }
+  function edit(entry, review) {
+    const seed = entry ?? { system: review?.system };
     const dialog = showModal(
       (entry ? 'Edit ' : 'Add ') + 'article',
       '',
       `<form class="form-stack">
+         ${review ? `<p>Review any customer-specific details before writing the draft.</p><blockquote>${esc(review.sample)}</blockquote>` : ''}
          <label>Title<input name="title" required maxlength="160" value="${esc(seed.title)}" autofocus></label>
          <label>System<select name="system">${[
            ['general', 'General'],
@@ -193,7 +220,7 @@ async function knowledge(container, signal) {
          <label>Content<textarea name="content" required rows="6" maxlength="8000">${esc(seed.content)}</textarea></label>
          <label>Tags<input name="tags" maxlength="500" value="${esc(seed.tags)}" placeholder="e.g. setup, pricing"></label>
          <label>Source URL<input type="url" name="sourceUrl" value="${esc(seed.source_url)}" placeholder="https://"></label>
-         <label class="checkbox"><input type="checkbox" name="published" ${seed.published ? 'checked' : ''}> Publish for CSbot replies</label>
+         ${review ? '' : `<label class="checkbox"><input type="checkbox" name="published" ${seed.published ? 'checked' : ''}> Publish for CSbot replies</label>`}
       <p class="form-error" role="alert"></p><div class="modal-actions"><button class="btn primary" type="submit">Save article</button></div></form>`,
     );
     const form = dialog.querySelector('form');
@@ -205,12 +232,16 @@ async function knowledge(container, signal) {
         const data = formData(form);
         data.published = data.published === 'on';
         if (!data.sourceUrl) delete data.sourceUrl;
-        const id = seed.id || (slug(data.title).slice(0, 36) || 'article') + '-' + crypto.randomUUID().slice(0, 7);
+        if (review) data.reviewItemId = review.id;
+        const id = review ? 'learn-' + review.id :
+          seed.id || (slug(data.title).slice(0, 36) || 'article') + '-' + crypto.randomUUID().slice(0, 7);
         const result = await api('/knowledge/' + id, { method: 'PUT', data });
         entries = [result, ...entries.filter((item) => item.id !== id)];
+        if (review) reviewItems = reviewItems.filter(item => item.id !== review.id);
         if (!signal.aborted) {
           closeModal();
           draw();
+          drawReview();
           notify('Article saved.');
         }
       } catch (error) {
@@ -223,6 +254,7 @@ async function knowledge(container, signal) {
   container.querySelector('[data-add-record]').onclick = () => edit();
   search.oninput = draw;
   draw();
+  drawReview();
 }
 
 const priceLabel = (item) =>
