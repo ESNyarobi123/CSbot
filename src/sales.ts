@@ -43,7 +43,7 @@ export async function openSale(client: PoolClient, conversation: Conversation, r
 }
 
 export function withoutQuote(memory: Conversation['memory']): Conversation['memory'] {
-  const { lastQuote, quoteFor, product, productOptions, optionQuery, lastOptionIds, awaitingService, plan, documentRequest, documentSummary, lastDocument, posQuotation, ...context } = memory;
+  const { lastQuote, quoteFor, product, productOptions, optionQuery, lastOptionIds, awaitingService, plan, documentRequest, documentSummary, lastDocument, posQuotation, installationQuote, ...context } = memory;
   return context;
 }
 

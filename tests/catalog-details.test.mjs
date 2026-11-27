@@ -159,9 +159,8 @@ test('a question about how far a device reaches is not an installation quote', a
 test('an existing explicit installation offer can still be accepted', async () => {
   const first = await respond(client, conversation({}), 'TP LINK EAP 610', []);
   const outcome = await respond(client, conversation({ ...first.memory, awaitingService: true }), 'Ndio', []);
-  assert.match(outcome.body, /Type A/);
-  assert.match(outcome.body, /installation TZS 120,000/);
-  assert.match(outcome.body, /Jumla kamili na waya/);
+  assert.match(outcome.body, /utavinunua kwetu au tayari unavyo/);
+  assert.doesNotMatch(outcome.body, /Type A|Type B/);
 });
 
 test('a device with no stated range gets an honest answer, never a guessed number', async () => {

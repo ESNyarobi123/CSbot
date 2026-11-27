@@ -23,6 +23,11 @@ const server = createServer((req, res) => {
   const url = new URL(req.url, 'http://fixture');
   const tokens = (url.searchParams.get('search') ?? '').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
   const reply = (body) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body));
+  if (url.pathname === '/service-plans') return reply({ items: [
+    { name: 'Starter', price: { amount: 10000, currency: 'TZS' }, billing_period: 'MONTHLY', features: [] },
+    { name: 'Growth', price: { amount: 25000, currency: 'TZS' }, billing_period: 'MONTHLY',
+      setup_fee: { amount: 5000, currency: 'TZS' }, features: [] },
+  ] });
   if (url.pathname === '/products') {
     return reply({ items: products.filter(item => tokens.every(token =>
       `${item.name} ${item.sku} ${item.brand ?? ''}`.toLowerCase().includes(token))) });
@@ -41,6 +46,8 @@ process.env.POS_BASE_URL = `http://127.0.0.1:${server.address().port}`;
 process.env.DATABASE_URL ??= 'postgres://localhost/csbot';
 delete process.env.DEEPSEEK_API_KEY;
 delete process.env.CSOLUTION_POS_DB_URL;
+delete process.env.WOTEFY_PLANS_URL;
+delete process.env.LUBFY_PLANS_URL;
 
 const { installationAside, installationOnlyAside, isAffirmation, nearbyModels, resolveDecision, respond, serviceQuestion }
   = await import('../dist/assistant.js');
@@ -62,31 +69,24 @@ test('asking only for installation and cable is not a product search', () => {
   assert.equal(isAffirmation('bei ya EAP 650'), false);
 });
 
-test('a fitting quote names both variants, the cable and the full total', async () => {
+test('a fitting quote selects the shop or customer rate from the stated ownership', async () => {
   const product = { name: 'TP LINK EAP 650', category: 'OUTDOOR ACCESS POINT', type: 'Product',
     price: { amount: 450000, currency: 'TZS' } };
-  const quote = await installationAside(product, 'installation na waya meter 15 jumla shingapi', say);
-  assert.match(quote, /Type A ni unaponunua kifaa kwetu, Type B ni ukiwa na kifaa chako/);
-  assert.match(quote, /Kifaa chetu · Type A/);
-  assert.match(quote, /Kifaa chako · Type B/);
-  // Type A carries the device we supply; Type B is fitting only because the
-  // customer brings the hardware.
-  assert.match(quote, /Kifaa chetu · Type A.*TZS 120,000 → jumla na kifaa TZS 570,000/);
-  assert.match(quote, /Kifaa chako · Type B.*TZS 80,000 → jumla \(kifaa ni chako\) TZS 80,000/);
-  assert.doesNotMatch(quote, /Kifaa chako · Type B.*TZS 530,000/);
-  assert.match(quote, /Waya: CAT 6 CABLE — 15 mita = TZS 37,500/);
-  assert.match(quote, /Jumla kamili na waya: .*TZS 607,500.*TZS 117,500/);
+  const supplied = await installationAside(product, 'Nikinunua kwenu installation na waya meter 15', say);
+  assert.match(supplied, /Ufungaji TZS 120,000 kwa kazi/);
+  assert.match(supplied, /Jumla.*TZS 607,500/);
+  assert.doesNotMatch(supplied, /Type A|Type B|TZS 80,000/);
+  const existing = await installationAside(product, 'Tayari nina kifaa, bei ya installation na waya mita 15', say);
+  assert.match(existing, /Ufungaji TZS 80,000 kwa kazi/);
+  assert.match(existing, /Jumla.*TZS 117,500/);
+  assert.doesNotMatch(existing, /Type A|Type B|TZS 450,000/);
 });
 
-test('a fitting question with no device explains every price-list row', async () => {
+test('a fitting question with no model asks one useful question and keeps the stated cable quote', async () => {
   const fees = await installationOnlyAside('bei ya installation na waya meter 15', say);
-  assert.match(fees, /AP INSTALLATION TYPE A \(kifaa chetu\): TZS 120,000/);
-  assert.match(fees, /AP INSTALLATION TYPE B \(kifaa chako\): TZS 80,000/);
-  assert.match(fees, /GM INSTALLATION A \(kifaa chetu\): TZS 150,000/);
-  assert.match(fees, /GM INSTALLATION B \(kifaa chako\): TZS 100,000/);
-  // Each row carries the cable total so "jumla" is answered, not deferred.
-  assert.match(fees, /TZS 157,500/);
-  assert.match(fees, /TZS 187,500/);
+  assert.doesNotMatch(fees, /TYPE [AB]/);
+  assert.match(fees, /Ni modeli gani/);
+  assert.match(fees, /TZS 37,500/);
 });
 
 test('a cable-only question quotes cable instead of installation', async () => {
@@ -101,10 +101,10 @@ test('the bot answers the follow-up instead of dumping service names as models',
     id: '1', account_id: 'a', customer_jid: 'x@s.whatsapp.net', customer_phone: null, customer_name: null,
     mode: 'bot', stage: 'quoted', unread_count: 0, last_body: null, last_at: null,
     memory: { product: { id: 'eap650', name: 'TP LINK EAP 650' }, quoteFor: 'product' },
-  }, 'Je bei ya installation ni shingapi na waya meter 15 jumla shingapi', []);
+  }, 'Je nikichukua vifaa kwenu bei ya installation ni shingapi na waya meter 15 jumla shingapi', []);
   assert.doesNotMatch(outcome.body, /Sijapata bidhaa/);
   assert.doesNotMatch(outcome.body, /Zilizopo karibu/);
-  assert.match(outcome.body, /Jumla kamili na waya/);
+  assert.match(outcome.body, /Jumla/);
   assert.match(outcome.body, /TZS 607,500/);
 });
 
@@ -114,7 +114,7 @@ test('a plain yes answers the installation offer the bot just made', async () =>
     mode: 'bot', stage: 'quoted', unread_count: 0, last_body: null, last_at: null,
     memory: { product: { id: 'eap650', name: 'TP LINK EAP 650' }, quoteFor: 'product', awaitingService: true },
   }, 'Ndio', []);
-  assert.match(outcome.body, /Installation \(AP\) inalipwa kando/);
+  assert.match(outcome.body, /utavinunua kwetu au tayari unavyo/);
   assert.equal(outcome.memory.awaitingService, undefined);
 });
 
@@ -127,11 +127,11 @@ test('a device named inside the question still gets its own price plus the fitti
   const outcome = await respond(client, {
     id: '3', account_id: 'a', customer_jid: 'x@s.whatsapp.net', customer_phone: null, customer_name: null,
     mode: 'bot', stage: 'inquiry', unread_count: 0, last_body: null, last_at: null, memory: {},
-  }, 'bei ya installation ya EAP 650 na waya meter 10', []);
+  }, 'bei ya installation ya EAP 650 na waya meter 10 nikinunua kwenu', []);
   assert.match(outcome.body, /TP LINK EAP 650 — TZS 450,000/);
-  assert.match(outcome.body, /Jumla kamili na waya/);
+  assert.match(outcome.body, /Jumla/);
   // 15 metres must not be assumed when the customer named 10.
-  assert.match(outcome.body, /— 10 mita = TZS 25,000/);
+  assert.match(outcome.body, /mita 10 × TZS 2,500 = TZS 25,000/);
 });
 
 test('a generic word does not send a fitting question to the product catalog', async () => {
@@ -140,5 +140,29 @@ test('a generic word does not send a fitting question to the product catalog', a
     mode: 'bot', stage: 'inquiry', unread_count: 0, last_body: null, last_at: null, memory: {},
   }, 'bei ya installation ya router ni ngapi', []);
   assert.doesNotMatch(outcome.body, /Sijapata bidhaa/);
-  assert.match(outcome.body, /AP INSTALLATION TYPE A \(kifaa chetu\)/);
+  assert.match(outcome.body, /Ni modeli gani/);
+});
+
+test('the screenshot journey remembers two devices and 30 metres and adds the chosen system payment', async () => {
+  const chat = { id: 'playground', stage: 'inquiry', memory: {} };
+  for (const line of ['Bei ya EAP 650', 'nikihitaji mbili inakuwa je', 'na waya meter 30 inakuwa je bei']) {
+    const turn = await respond(client, chat, line, []);
+    chat.memory = turn.memory;
+  }
+  assert.equal(chat.memory.installationQuote.quantity, 2);
+  assert.equal(chat.memory.installationQuote.cableMeters, 30);
+  const bundle = await respond(client, chat, 'sawa sawa kwaiyo nikinunua kwenu vifaa na waya pamoja na installation plus kulipia mfumo kwa mara ya kwanza itakuwa ni bei gani', []);
+  assert.match(bundle.body, /2 × TZS 450,000 = TZS 900,000/);
+  assert.match(bundle.body, /Ufungaji TZS 120,000 kwa kazi/);
+  assert.match(bundle.body, /mita 30 × TZS 2,500 = TZS 75,000/);
+  assert.match(bundle.body, /Jumla kabla ya ada ya mfumo.*TZS 1,095,000/);
+  assert.match(bundle.body, /WoteFy au LubFy/);
+  assert.doesNotMatch(bundle.body, /Type [AB]|mita 15/);
+
+  const plans = await respond(client, { ...chat, memory: bundle.memory }, 'WoteFy', []);
+  assert.match(plans.body, /Starter TZS 10,000.*TZS 1,105,000/);
+  assert.match(plans.body, /Growth TZS 25,000.*TZS 1,125,000/);
+  const selected = await respond(client, { ...chat, memory: plans.memory }, 'Growth', []);
+  assert.match(selected.body, /TZS 1,125,000/);
+  assert.doesNotMatch(selected.body, /Starter/);
 });

@@ -1,4 +1,9 @@
 import { installationGuide } from './installation-guide.js';
+import {
+  cableMeters, cableWords, followsInstallationQuote, installationQuote, installationWords, updateInstallationQuote,
+  type InstallationQuoteContext,
+} from './installation-quote.js';
+export { cableMeters } from './installation-quote.js';
 import { deepseekJson } from './deepseek.js';
 import { quotationTurn, quotationWords } from './quotation.js';
 import { openingGreeting, replyEligible, unrelatedChat, type ReplyHistoryLine } from './reply-policy.js';
@@ -19,8 +24,7 @@ export { customerProfile, emailOf, messageLanguage, smallTalkOnly, supportQuesti
 export { supportIntake, supportSummary } from './support.js';
 import { log, row } from './db.js';
 import { sheetFor, specsFor, specsForMany, specLines } from './specs.js';
-import { cableQuote, catalog, installationOptions, isModelReference, modelQuery, money, planKind, readPlans, readProduct, requestedBrand, searchProducts, serviceCatalog, systemName, variantLetter } from './pos.js';
-import type { InstallationOption } from './pos.js';
+import { cableQuote, catalog, isModelReference, modelQuery, money, planKind, readPlans, readProduct, requestedBrand, searchProducts, systemName } from './pos.js';
 import type { Conversation, Stage } from './store.js';
 
 type IncomingPhoto = { base64: string; mimetype: string } | { count: number };
@@ -262,10 +266,6 @@ export async function nearbyModels(query: string) {
 
 const priceWords = /\b(bei|price|cost|nauli|shilingi|tsh|malipo)\b/i;
 
-// Installation is a separate job, so "bei ya EAP 650 na installation" needs both figures.
-const installationWords = /\b(installation|instalation|installationi|install|kufunga|kufungwa|kufungia|kusanikisha|kusanikua|kusanikwa|kuweka mfumo|kuniwekea|kutuwekea|kukuwekea|setup|kuset|ufungaji)\b/i;
-// Cable is sold by the metre, so a cable question is also a service quote.
-const cableWords = /\b(waya|cable|kebo|nyaya)\b/i;
 const metreWords = /\b(mita|metres?|meters?|mtr)\b/i;
 /**
  * The message is about fitting or cable, not about a new device. Deliberately
@@ -279,7 +279,6 @@ const coverageWords = /\b(coverage|range|umbali|urefu|eneo|enjo|area|radius|kufi
 // The category word a customer uses instead of a model.
 const devicePhrase = /\b(access points?|switches?|routers?|gateways?|repeaters?|antennas?|antena|outdoor cpe|cpe)\b/i;
 // Type B applies when the customer already owns the hardware.
-const ownEquipment = /\b(nina kifaa|kifaa changu|kifaa chetu|vifaa vyangu|vifaa vyetu|nina ap|nina access point|nina router|nina mikrotik|nimeshanunua|nilishanunua|already have|own equipment|kifaa cha mteja|vifaa vya mteja)\b/i;
 
 /**
  * Pick the item the customer actually named. The catalog search is loose — an
@@ -498,18 +497,18 @@ export function siteRequirement(text: string) {
  * number word ("tatu", "nne") carries the quantity.
  */
 const countWords: Record<string, number> = {
-  mbili: 2, viwili: 2, tatu: 3, vitatu: 3, nne: 4, vinne: 4, tano: 5, vitano: 5,
+  moja: 1, kimoja: 1, mbili: 2, viwili: 2, tatu: 3, vitatu: 3, nne: 4, vinne: 4, tano: 5, vitano: 5,
   sita: 6, saba: 7, nane: 8, tisa: 9, kumi: 10,
 };
 export function quantityOf(text: string) {
   const unit = /\b(\d{1,3})\s*(?:pcs?|pieces?|units?|sets?|vifaa|vitengo|vipande)\b|\b(?:pcs?|pieces?|units?|sets?|vifaa|vitengo)\s*(\d{1,3})\b/i.exec(text);
   if (unit) {
     const value = Number(unit[1] ?? unit[2]);
-    return value > 1 && value <= 500 ? value : undefined;
+    return value > 0 && value <= 500 ? value : undefined;
   }
   const words = text.toLowerCase().match(/[\p{L}]+/gu) ?? [];
   const found = words.map(word => countWords[word]).find(value => value !== undefined);
-  return found && found > 1 ? found : undefined;
+  return found;
 }
 
 /** The category word the customer used ("access point"), used as the catalog query. */
@@ -548,75 +547,16 @@ export function isAffirmation(text: string) {
 // Only fitted network equipment carries an installation fee; cables and adapters do not.
 const installedEquipment = /\b(access point|gateway|mikrotik|router|hap|hex|eap|omada|ruijie|reyee|unifi|cambium)\b/i;
 
-/**
- * Type A is a device the shop supplies; Type B is a device the customer already
- * owns. The price list is the source of truth, so an unfamiliar letter is shown
- * as-is instead of guessing who pays for the hardware.
- */
-function optionLabel(option: InstallationOption, say: (sw: string, en: string) => string) {
-  const side = option.withOurEquipment === undefined ? ''
-    : option.withOurEquipment ? say('Kifaa chetu', 'Our device') : say('Kifaa chako', 'Your device');
-  const variant = option.variant ? `Type ${option.variant}` : '';
-  return [side, variant].filter(Boolean).join(' · ') || option.name;
-}
-
-/**
- * Quote the installation options that go with a device, with the combined total.
- * Every variant is shown because the fee depends on whether the shop or the
- * customer supplies the hardware, and the customer is the one who knows that.
- */
 export async function installationAside(
   product: { name: string; category?: string | null; type?: string; price: { amount: number; currency: string } },
-  text: string, say: (sw: string, en: string) => string, quote: { force?: boolean } = {},
+  text: string, say: (sw: string, en: string) => string,
+  quote: { force?: boolean; context?: InstallationQuoteContext } = {},
 ) {
   if (product.type === 'Service' || (!installationWords.test(text) && !quote.force)) return '';
   if (!installedEquipment.test(`${product.name} ${product.category ?? ''}`)) return '';
-  try {
-    const { equipment, options } = await installationOptions(product);
-    if (!options.length) return '';
-    const own = ownEquipment.test(text);
-    // Put the variant that matches what the customer said first; both stay visible.
-    const preferred = !own;
-    const ordered = [...options].sort((a, b) =>
-      Number(b.withOurEquipment === preferred) - Number(a.withOurEquipment === preferred));
-    // Cable is bought by length, so a fitting quote without it surprises the customer.
-    const stated = cableMeters(text);
-    const meters = stated ?? 15;
-    const cable = await cableQuote(meters).catch(() => undefined);
-    const withCable = (option: InstallationOption) => option.total
-      + (cable && cable.currency === option.currency ? cable.amount : 0);
-    const lines = ordered.map(option => `• ${optionLabel(option, say)} (${option.name}): `
-      + `${say('installation', 'fitting')} ${money({ amount: option.fee, currency: option.currency })}`
-      + ` → ${option.withOurEquipment === false
-        ? say('jumla (kifaa ni chako)', 'total (your own device)')
-        : say('jumla na kifaa', 'total with the device')} `
-      + money({ amount: option.total, currency: option.currency }));
-    const cableLine = cable
-      ? `• ${say('Waya', 'Cable')}: ${cable.product.name} — ${meters} ${say('mita', 'metres')} = `
-        + `${money({ amount: cable.amount, currency: cable.currency })}`
-      : '';
-    const full = cable
-      ? '\n' + say('Jumla kamili na waya:', 'Full total including cable:') + ' '
-        + ordered.map(option => `${optionLabel(option, say)} `
-          + money({ amount: withCable(option), currency: option.currency })).join(' · ')
-      : '';
-    return '\n\n' + say(`Installation (${equipment}) inalipwa kando`, `Installation (${equipment}) is charged separately`)
-      + say(': Type A ni unaponunua kifaa kwetu, Type B ni ukiwa na kifaa chako.',
-        ': Type A is when you buy the device from us, Type B is when you bring your own.')
-      + (cable ? say(` Waya ni ${money(cable.product.price)} kwa mita; mita ${meters}${stated ? '' : ' (kawaida)'}:`,
-        ` Cable is ${money(cable.product.price)} per metre; ${meters} metres${stated ? '' : ' (typical)'}:`) : '')
-      + '\n' + [lines.join('\n'), cableLine].filter(Boolean).join('\n') + full;
-  } catch {
-    return '';
-  }
-}
-
-/** A customer who names a length ("mita 20") overrides the usual 15 metres. */
-export function cableMeters(text: string) {
-  const match = /\b(?:mita|mtr|metres?|meters?)\s*(\d{1,3})\b/i.exec(text)
-    ?? /\b(\d{1,3})\s*(?:mita|mtr|metres?|meters?)\b/i.exec(text);
-  const value = match ? Number(match[1]) : NaN;
-  return Number.isFinite(value) && value > 0 && value <= 300 ? value : undefined;
+  const context = quote.context ?? updateInstallationQuote({}, text);
+  const answer = await installationQuote(product, text, say, context);
+  return answer ? '\n\n' + answer : '';
 }
 
 // WoteFy is built around Omada EAP; LubFy covers the other vendor families listed
@@ -651,51 +591,24 @@ export function systemAdvice(
   return '';
 }
 
-/**
- * A question about installation with no device named still deserves the fees.
- * Each row is labelled with what its letter means, because the four price-list
- * entries look identical without it (2026-11-17 KAHAMA chat).
- */
+/** Quote cable on its own or ask for the model when fitting is requested. */
 export async function installationOnlyAside(text: string, say: (sw: string, en: string) => string) {
   const wantsInstall = installationWords.test(text);
-  // A coverage distance ("access point ya mita 300") is not a cable order.
   if (!wantsInstall && !cableWords.test(text) && !(metreWords.test(text) && !deviceTypeWords.test(text))) return '';
-  try {
-    const meters = cableMeters(text) ?? 15;
-    const cable = await cableQuote(meters).catch(() => undefined);
-    if (!wantsInstall) {
-      if (!cable) return '';
-      return [`${say('Waya', 'Cable')}: ${cable.product.name} — ${money(cable.product.price)} ${say('kwa mita', 'per metre')}.`,
-        `${say('Mita', 'Metres')} ${meters} = ${money({ amount: cable.amount, currency: cable.currency })}.`,
-        say('Nikupe jumla kamili ya installation pamoja na kifaa — ni model gani?',
-          'For the full total with installation and the device — which model?')].join('\n');
-    }
-    const services = (await serviceCatalog('installation'))
-      .filter(service => service.price.amount > 0);
-    if (!services.length) {
-      if (!cable) return '';
-      return [`${say('Waya', 'Cable')}: ${cable.product.name} — ${money(cable.product.price)} ${say('kwa mita', 'per metre')}.`,
-        `${say('Mita', 'Metres')} ${meters} = ${money({ amount: cable.amount, currency: cable.currency })}.`].join('\n');
-    }
-    const lines = services.map(service => {
-      const variant = variantLetter(service.name);
-      const side = variant === 'A' ? say('kifaa chetu', 'our device')
-        : variant === 'B' ? say('kifaa chako', 'your device') : '';
-      const withCable = cable && cable.currency === service.price.currency
-        ? ` · + ${say('waya', 'cable')} ${meters}${say('m', 'm')} ${money(cable)} = `
-          + `${money({ amount: service.price.amount + cable.amount, currency: service.price.currency })}`
-        : '';
-      return `• ${service.name}${side ? ` (${side})` : ''}: ${money(service.price)}${withCable}`;
-    });
-    return [say('Installation inalipwa kwa kazi, si kwa kifaa. Type A ni kifaa unachonunua kwetu, Type B ni kifaa chako:',
-      'Installation is charged per job, not per device. Type A is the device you buy from us, Type B is your own device:'),
-    ...lines,
-    say('Bei ya kifaa haimo hapa. Nitaje model (mf. EAP 650 au hAP ax2) nikupe jumla kamili na kifaa.',
-      'The device price is not included. Name a model (e.g. EAP 650 or hAP ax2) for the full total with the device.')]
-      .join('\n');
-  } catch {
-    return '';
-  }
+  const meters = cableMeters(text);
+  const cable = meters ? await cableQuote(meters).catch(() => undefined) : undefined;
+  const cableLine = cable && say(
+    `Waya: ${cable.product.name} — ${money(cable.product.price)} kwa mita.\nMita ${meters} = ${money(cable)}.`,
+    `${cable.product.name} cable is ${money(cable.product.price)} per metre.\n${meters} metres = ${money(cable)}.`,
+  );
+  if (wantsInstall) return [cableLine, say(
+    'Ni modeli gani ya kifaa unachotaka kufunga? Hilo litanisaidia kupata gharama sahihi ya ufungaji.',
+    'Which device model do you want fitted? That will help me check the right fitting fee.',
+  )].filter(Boolean).join('\n\n');
+  if (cableLine) return cableLine;
+  return meters
+    ? say('Bei ya waya haikupatikana kwa sasa. Timu itaihakiki.', 'We couldn’t retrieve the cable price. Our team will check it.')
+    : say('Unahitaji waya wa mita ngapi?', 'How many metres of cable do you need?');
 }
 
 /**
@@ -788,34 +701,38 @@ export function relevantKnowledge(text: string, entries: Knowledge[], support = 
   throw last;
 }
 
-/**
- * Answer a fitting/cable question from the service price list instead of
- * searching the product catalog for the sentence. 2026-11-17: "bei ya
- * installation na waya meter 15 jumla shingapi" was routed as a product query,
- * found nothing, and replied "Sijapata bidhaa hiyo kwenye POS" followed by the
- * four installation rows — no fee, no cable, no total.
- */
 async function serviceQuote(
-  text: string, memory: Conversation['memory'], say: (sw: string, en: string) => string, affirm = false,
+  text: string, memory: Conversation['memory'], say: (sw: string, en: string) => string, history: ChatLine[], fitting: boolean,
 ) {
-  const wantsInstall = installationWords.test(text) || affirm;
-  const meters = cableMeters(text) ?? 15;
-  if (memory.product) {
+  const current = memory.installationQuote;
+  const product = memory.product;
+  const context = current?.productId === product?.id || !current?.productId ? current : undefined;
+  // Earlier versions kept the item count in the quote text and did not save the
+  // cable length. Recover it only from a recent cable enquiry for the same item.
+  const previousQuantity = / × (\d{1,3})$/.exec(memory.lastQuote ?? '')?.[1];
+  const inbound = history.filter(line => line.direction === 'inbound').reverse();
+  const priorCable = fitting && !context?.cableMeters && cableWords.test(text)
+    ? inbound.findIndex(line => cableWords.test(line.body) && cableMeters(line.body)) : -1;
+  const meters = priorCable >= 0 && !inbound.slice(0, priorCable).some(line => namesNewDevice(line.body))
+    ? cableMeters(inbound[priorCable].body) : undefined;
+  const countMentioned = /\b(?:vifaa|vitengo|vipande|pcs?|units?)\s+(?:\d+|kimoja|moja|viwili|mbili|vitatu|tatu|vinne|nne|vitano|tano)\b|\b(?:\d+|kimoja|moja|viwili|mbili|vitatu|tatu|vinne|nne|vitano|tano)\s+(?:vifaa|vitengo|vipande|pcs?|units?)\b/i.test(text);
+  const draft = updateInstallationQuote({ ...context, productId: product?.id,
+    quantity: (countMentioned ? quantityOf(text) : undefined) ?? context?.quantity ?? (previousQuantity ? Number(previousQuantity) : undefined),
+    cableMeters: context?.cableMeters ?? meters,
+  }, text);
+  memory.installationQuote = draft;
+  if (fitting && product) {
     try {
-      const { product } = await readProductRetry(memory.product.id);
-      if (wantsInstall) {
-        const quote = await installationAside(product, text, say, { force: true });
-        if (quote) return quote;
-      }
-      const cable = await cableQuote(meters).catch(() => undefined);
-      if (cable) {
-        return '\n\n' + say(`Waya: ${cable.product.name} — ${money(cable.product.price)} kwa mita. `
-          + `Mita ${meters} = ${money({ amount: cable.amount, currency: cable.currency })}.`,
-        `Cable: ${cable.product.name} — ${money(cable.product.price)} per metre. `
-          + `${meters} metres = ${money({ amount: cable.amount, currency: cable.currency })}.`);
-      }
+      const fresh = await readProductRetry(product.id);
+      const answer = await installationAside(fresh.product, text, say, { force: true, context: draft });
+      const actual = draft.supply === 'shop' && fresh.stock.available_to_sell < (draft.quantity ?? 1);
+      return answer && actual ? answer + '\n\n' + say(
+        `Stock ya sasa ni ${fresh.stock.available_to_sell}. Timu itathibitisha idadi iliyobaki.`,
+        `Current stock is ${fresh.stock.available_to_sell}. Our team will check the remaining units.`,
+      ) : answer;
     } catch {
-      // Fall through to the fee list; a slow catalog must not silence the reply.
+      return say('Sijapata bei ya sasa ya kifaa kutoka POS. Timu itathibitisha jumla ya oda.',
+        'We couldn’t retrieve the current device price from the POS. Our team will verify the order total.');
     }
   }
   return installationOnlyAside(text, say);
@@ -905,6 +822,13 @@ async function answer(
   const knownSymptom = symptomOf(newest) || memory.support?.waitingFor === 'check';
   const knowledge = onlyDetect || knownSymptom ? [] : await retrieveKnowledge(client, newest, systemFrom(newest) || memory.system);
   const decision = knownSymptom ? resolveDecision(newest, memory) : await decide(newest, memory, history, knowledge);
+  if (memory.product && quantityOf(newest) && !namesNewDevice(newest) && !supportQuestion(newest) &&
+      !installationWords.test(newest) && !cableWords.test(newest) &&
+      /\b(?:nikihitaji|nikichukua|nikinunua|i need|i want|if i take|if i buy|naomba|nataka)\b/i.test(newest) &&
+      !['ready_to_pay', 'payment_reported', 'human', 'support'].includes(decision.intent)) {
+    decision.intent = 'product';
+    decision.query = '';
+  }
   decision.sendImage = asksForProductPhoto(newest);
   if (decision.sendImage && decision.intent === 'general') {
     decision.intent = 'product';
@@ -958,7 +882,7 @@ async function answer(
   const awaitingSupport = Boolean(memory.support);
   // "mwez" is how the word is typed on a phone; without it a monthly price
   // question fell through to a product search and asked for a SKU.
-  const monthly = /\b(?:mwez\w*|monthly|per month|a month|kwa mwezi)\b/i.test(newest) && /\b(?:mfumo|system|billing|nalipia|nalipa|ada|bei|subscription|fee|malipo)\b/i.test(newest);
+  const monthly = !installationWords.test(newest) && /\b(?:mwez\w*|monthly|per month|a month|kwa mwezi)\b/i.test(newest) && /\b(?:mfumo|system|billing|nalipia|nalipa|ada|bei|subscription|fee|malipo)\b/i.test(newest);
   const signup = /\b(?:kujiunga|kusajili|register|sign up|signup)\b/i.test(newest);
   const hardwareSystem = /\b(?:micro(?:tick|tik)|mikrotik|routeros)\b/i.test(newest) ? 'lubfy' : /\b(?:omada|eap)\b/i.test(newest) ? 'wotefy' : undefined;
   const siteAdvice = /\b(?:surv(?:ey|aey|ei)|uwekezaji|kuwekeza|invest(?:ment)?)\b/i.test(newest)
@@ -1339,11 +1263,12 @@ async function answer(
   }
   // Fitting and cable are quoted from the service price list. Solving this before
   // the product branch keeps the bot from searching the catalog for the sentence.
-  const serviceTurn = !monthly && !coverageFollowup && !onlyDetect && !packageWords.test(newest) && !namesNewDevice(newest)
-    && (serviceQuestion(newest) || (memory.awaitingService === true && isAffirmation(newest)));
+  const bundleFollowup = followsInstallationQuote(newest, memory.installationQuote);
+  const asksFitting = installationWords.test(newest) || bundleFollowup || (memory.awaitingService === true && isAffirmation(newest));
+  const serviceTurn = !monthly && !coverageFollowup && !onlyDetect
+    && (bundleFollowup || (!namesNewDevice(newest) && (asksFitting || (!packageWords.test(newest) && serviceQuestion(newest)))));
   if (serviceTurn) {
-    const affirm = !serviceQuestion(newest) && isAffirmation(newest);
-    const quote = await serviceQuote(newest, memory, say, affirm);
+    const quote = await serviceQuote(newest, memory, say, history, asksFitting);
     delete memory.awaitingService;
     if (quote) return result(quote.trim(), memory.product ? { stage: 'quoted' } : {});
     return result(say('Nikupe jumla kamili ya installation na waya — ni kifaa gani? (mf. EAP 650 au hAP ax2)',
@@ -1632,6 +1557,9 @@ async function answer(
       const previousQuote = memory.lastQuote;
       const previousQuoteFor = memory.quoteFor;
       memory.product = { id: product.id, name: product.name };
+      const quoteContext = !memory.installationQuote?.productId || sameProduct ? memory.installationQuote : undefined;
+      memory.installationQuote = { ...quoteContext, productId: product.id,
+        quantity: quantity ?? quoteContext?.quantity, system: systemFrom(newest) || quoteContext?.system };
       delete memory.productOptions;
       memory.quoteFor = 'product';
       memory.lastQuote = `${product.name} — ${price}` + (quantity ? ` × ${quantity}` : '');
@@ -1652,8 +1580,11 @@ async function answer(
         || /\b(niambie|nieleze|eleza|maelezo|sifa|specs?|details?|compare|linganisha|explain|describe|why|kwanini|ports?|poe|mesh|warranty|dhamana|inafaa|inatosha|inatumia|inaweza)\b/i.test(newest);
       const wantsSystem = Boolean(systemFrom(newest)) || /\b(?:mfumo|system|billing|compatib\w*|compatible|ulinganifu)\b/i.test(newest);
       const showSpecs = !decision.sendImage && (wantsSpecs || (Boolean(choice) && !priceWords.test(newest)));
-      const fitting = await installationAside(product, newest, say);
-      const planPrices = await planAside(newest, memory, say);
+      if (installationWords.test(newest)) {
+        memory.installationQuote = updateInstallationQuote(memory.installationQuote, newest);
+      }
+      const fitting = await installationAside(product, newest, say, { context: memory.installationQuote });
+      const planPrices = fitting ? '' : await planAside(newest, memory, say);
       delete memory.awaitingService;
       if (decision.sendImage && !priceWords.test(newest) && !wantsSpecs && !wantsSystem && !quantity && !fitting) {
         memory.lastQuote = sameProduct ? previousQuote : undefined;

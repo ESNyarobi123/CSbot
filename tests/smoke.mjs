@@ -214,7 +214,16 @@ const download = await fetch(downloadUrl, { headers: { authorization: 'Bearer ' 
 assert.equal(download.status, 200);
 assert.equal(download.headers.get('content-disposition'), 'attachment; filename="INV-1001.pdf"');
 assert.equal(Buffer.from(await download.arrayBuffer()).toString('base64'), invoicePdf.base64);
-console.log('Passed: invoice PDF reached the mock gateway once and can only be downloaded by an admin.');
+const copyState = await waitFor(path, value => value.outbound.some(item =>
+  item.origin === 'alert' && item.state === 'sent' && /Invoice imetumwa/.test(item.body)));
+const copies = copyState.outbound.filter(item => item.origin === 'alert' && /Invoice imetumwa/.test(item.body));
+const customerInvoice = copyState.outbound.find(item => item.id === invoiceSent.id);
+assert.equal(copies.length, 1);
+assert.equal(copies[0].document_id, customerInvoice.document_id);
+assert.equal(copies[0].document_name, invoicePdf.name);
+assert.ok(new Date(copies[0].created_at) >= new Date(customerInvoice.sent_at));
+assert.equal(invoiceMessages.filter(item => item.kind === 'document').length, 1);
+console.log('Passed: the same invoice PDF went to the customer, then to the configured admin once.');
 
 const adminPhone = '+255700100001';
 const supportPhone = '+255700100045';

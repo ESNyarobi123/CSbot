@@ -10,7 +10,7 @@ import { downloadImage, maxImageBytes } from './media.js';
 import { audioType, maxAudioBytes } from './voice.js';
 import { blockedLinkStates, codeRequestMs, qrLifetimeMs } from './pairing.js';
 import { seal } from './secrets.js';
-import { customerOptedOut, ingest, phoneOf } from './store.js';
+import { copyInvoiceToAdmins, customerOptedOut, ingest, phoneOf } from './store.js';
 import { whatsappAuth } from './whatsapp-auth.js';
 
 interface Account {
@@ -374,7 +374,8 @@ class Session {
     const image = !mock && picked.image_url ? await downloadImage(picked.image_url).catch(() => undefined) : undefined;
     try {
       await transaction(async client => {
-        const conversation = await row(client, 'SELECT mode,customer_jid FROM conversations WHERE id=$1 FOR NO KEY UPDATE',
+        const conversation = await row<{ mode: string; customer_jid: string; customer_name: string | null; customer_phone: string | null }>(
+          client, 'SELECT mode,customer_jid,customer_name,customer_phone FROM conversations WHERE id=$1 FOR NO KEY UPDATE',
           [picked.conversation_id]);
         const sendState = await row(client, 'SELECT state FROM outbound WHERE id=$1', [picked.id]);
         if (sendState?.state !== 'sending') return;
@@ -432,6 +433,13 @@ class Session {
             document ? picked.document_id : null]);
           await client.query('UPDATE conversations SET last_body=left($2,240),last_at=now() WHERE id=$1',
             [picked.conversation_id, body]);
+        }
+        if (picked.origin === 'admin' && picked.document_id && picked.document_hash && document && conversation) {
+          await copyInvoiceToAdmins(client, {
+            accountId: id, conversationId: picked.conversation_id, outboundId: picked.id,
+            customerJid: conversation.customer_jid, customerName: conversation.customer_name, customerPhone: conversation.customer_phone,
+            document: { id: picked.document_id, name: picked.document_name ?? 'Invoice.pdf', hash: picked.document_hash },
+          });
         }
       });
       await this.socket?.sendPresenceUpdate('paused', picked.jid).catch(() => undefined);

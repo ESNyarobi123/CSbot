@@ -29,6 +29,7 @@ export interface Conversation {
     system?: 'wotefy' | 'lubfy';
     product?: { id: string; name: string };
     lastQuote?: string;
+    installationQuote?: import('./installation-quote.js').InstallationQuoteContext;
     plan?: { kind?: 'subscription' | 'wifi' | 'bundle'; site?: string };
     productOptions?: { id: string; name: string; sku?: string; price?: string; coverage?: number }[];
     /** The query behind productOptions, so "model zingine?" can widen the list. */
@@ -272,6 +273,29 @@ async function applyAdminSupportReply(client: PoolClient, message: Incoming, pho
       [conversation.id, { supportUpdate: { status: 'details', alertAt: alert.alert_at } }]);
   }
   await confirm(`Taarifa imewekwa kwenye foleni ya WhatsApp kwa mteja wa chat #${conversation.id}.`);
+}
+
+export async function copyInvoiceToAdmins(
+  client: PoolClient, input: { accountId: string; conversationId: string; outboundId: string;
+    customerJid: string; customerName?: string | null; customerPhone?: string | null;
+    document: { id: string; name: string; hash: string } },
+) {
+  const admins = await client.query<{ phone: string }>('SELECT phone FROM admin_numbers WHERE account_id=$1', [input.accountId]);
+  const customerPhone = input.customerPhone ?? phoneOf(input.customerJid);
+  const customer = input.customerName?.replace(/\s+/g, ' ').trim();
+  const body = [
+    '*CSbot | Invoice imetumwa kwa mteja*',
+    `*Mazungumzo* #${input.conversationId}`,
+    customer && `*Mteja* ${customer}`,
+    `*Invoice* ${input.document.name}`,
+  ].filter(Boolean).join('\n');
+  for (const { phone } of admins.rows) {
+    if (phone === customerPhone || phone + '@s.whatsapp.net' === input.customerJid) continue;
+    await enqueue(client, {
+      accountId: input.accountId, conversationId: input.conversationId, jid: phone + '@s.whatsapp.net',
+      origin: 'alert', body, document: input.document, requestKey: `invoice-copy:${input.outboundId}:${phone}`,
+    });
+  }
 }
 
 export async function alertAdmins(

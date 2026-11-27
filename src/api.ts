@@ -284,7 +284,7 @@ class AdminController {
     const [sale, sales, outbound, media] = await Promise.all([
       currentSale(db, id),
       db.query('SELECT * FROM sales_events WHERE conversation_id=$1 ORDER BY id DESC LIMIT 50', [id]),
-      db.query(`SELECT id,provider_id,origin,state,reason,body,image_url,created_at,attempted_at,sent_at FROM outbound
+      db.query(`SELECT id,provider_id,origin,state,reason,body,image_url,document_id,document_name,created_at,attempted_at,sent_at FROM outbound
         WHERE conversation_id=$1 ORDER BY id DESC LIMIT 50`, [id]),
       db.query(`SELECT id,kind,mimetype,size,created_at FROM media
         WHERE conversation_id=$1 ORDER BY id DESC LIMIT 20`, [id]),

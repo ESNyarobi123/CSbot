@@ -181,7 +181,9 @@ Mteja anaweza kuomba quotation au proforma kwa WhatsApp. Kwa bidhaa moja ya stoc
 
 Weka `CSOLUTION_QUOTATION_URL` kuwa URL kamili ya `/api/csbot/quotations` kwenye CSolution. Weka `CSOLUTION_QUOTATION_TOKEN` kwenye CSbot na thamani hiyohiyo kama `CSBOT_QUOTATION_TOKEN` kwenye CSolution. Token ya quotation iwe tofauti na token ya kusoma katalogi. Kwenye CSolution weka `CSBOT_QUOTATION_STAFF_ID` kuwa UUID ya akaunti hai yenye ruhusa ya mauzo. Bila mipangilio hiyo, CSbot hupeleka ombi kwa timu.
 
-Admin huthibitisha oda na mnunuzi, anatoa invoice kwenye CSolution POS na anapakua PDF. Kwenye CSbot Inbox, chagua chat husika, ambatisha PDF kupitia **Invoice PDF**, andika ujumbe na utume. PDF inaweza kuwa hadi 4 MB. Arifa hutumia namba zilizowekwa kwenye **Admin alerts** za akaunti iliyopokea ombi.
+Admin huthibitisha oda na mnunuzi, anatoa invoice kwenye CSolution POS na anapakua PDF. Kwenye CSbot Inbox, chagua chat husika, ambatisha PDF kupitia **Invoice PDF**, andika ujumbe na utume. PDF inaweza kuwa hadi 4 MB. Baada ya gateway kuthibitisha imetuma invoice, CSbot huweka nakala ya PDF hiyo kwenye foleni ya WhatsApp kwa namba za **Admin alerts** za akaunti iliyotuma invoice.
+
+CSbot hukumbuka idadi ya vifaa na urefu wa waya katika oda inayojadiliwa. Kwa quotation ya ufungaji hutumia bei za POS na gharama ya ufungaji inayolingana na mwenye vifaa. Ada ya mfumo hutegemea mpango uliopatikana kwenye mfumo uliochaguliwa.
 
 CSbot inatambua SSDomada kama WoteFy. Kwa portal inayochelewa, Free Trial inayogoma, au kifaa kilicho offline, inauliza swali la ukaguzi linalolingana na mfumo. Tatizo likiendelea, arifa ya admin huonyesha mfumo, dalili na majibu ya ukaguzi. Oda na support zinafuatiliwa kivyake.
 
