@@ -66,6 +66,7 @@ delete process.env.LUBFY_PLANS_URL;
 const { installationAside, installationOnlyAside, isAffirmation, nearbyModels, resolveDecision, respond, customerTurn, serviceQuestion }
   = await import('../dist/assistant.js');
 const { confirmsProforma } = await import('../dist/quotation.js');
+const { config } = await import('../dist/config.js');
 const client = { query: async () => ({ rows: [] }) };
 
 after(() => server.close());
@@ -251,6 +252,47 @@ test('proforma confirmation accepts natural assent and leaves changes and questi
     'Ndio ila ongeza waya mita 40', 'Ndiyo, lakini nipe WoteFy', 'Sawa unamaanisha nini']) {
     assert.equal(confirmsProforma(phrase), false, phrase);
   }
+});
+
+test('a paraphrased document request and contextual reply go through the same verified PDF flow', async (t) => {
+  const chat = { id: 'contextual-proforma', stage: 'quoted', memory: {
+    language: 'sw', product: { id: 'eap650', name: 'TP LINK EAP 650' }, quoteFor: 'product',
+    installationQuote: { productId: 'eap650', quantity: 2, supply: 'shop', wantsCable: true,
+      cableMeters: 30, wantsPlan: true, system: 'lubfy', awaiting: 'plan' },
+  } };
+  chat.memory = (await customerTurn(client, chat, 'nataka lubfy ya plan ya vifaa 2', [])).memory;
+  const originalFetch = globalThis.fetch;
+  const replies = [
+    { intent: 'document_preview', language: 'sw', query: '' },
+    { intent: 'order_question' },
+    { intent: 'unclear' },
+    { intent: 'approve' },
+  ];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (url !== 'https://api.deepseek.com/chat/completions') return originalFetch(url, options);
+    const answer = replies.shift();
+    assert.ok(answer, 'unexpected model request');
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(answer) } }] });
+  });
+  config.DEEPSEEK_API_KEY = 'test-only';
+  t.after(() => { config.DEEPSEEK_API_KEY = undefined; });
+  const send = async (text) => {
+    const outcome = await customerTurn(client, chat, text, [], false, undefined, false, 'contextual:' + text);
+    chat.memory = outcome.memory;
+    return outcome;
+  };
+  const preview = await send('Nipatie ile karatasi yenye mchanganuo wa gharama zote');
+  assert.match(preview.body, /niambie nikutumie PDF/);
+  assert.equal(preview.document, undefined);
+  const question = await send('Hizo gharama za mwanzo zinajumuisha nini?');
+  assert.match(question.body, /CAT 6 CABLE, mita 30/);
+  assert.ok(chat.memory.documentRequest?.order);
+  assert.equal((await send('Ngoja nione kwanza inakuwaje')).document, undefined);
+  const confirmation = 'Hiyo hesabu imenikaa vizuri, iweke hapa niwe nayo';
+  assert.equal(confirmsProforma(confirmation), false);
+  assert.ok((await send(confirmation)).document);
+  assert.equal(chat.memory.documentRequest, undefined);
+  assert.deepEqual(replies, []);
 });
 
 test('an Omada buyer asking for advice gets a recommendation before LubFy prices', async () => {

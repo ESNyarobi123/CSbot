@@ -32,7 +32,7 @@ type IncomingPhoto = { base64: string; mimetype: string } | { count: number };
 export type ChatLine = ReplyHistoryLine;
 
 const decisionSchema = z.object({
-  intent: z.enum(['general', 'product', 'plan', 'ambiguous_package', 'ready_to_pay', 'payment_reported', 'human', 'support']),
+  intent: z.enum(['general', 'product', 'plan', 'ambiguous_package', 'ready_to_pay', 'payment_reported', 'human', 'support', 'document_preview']),
   language: z.enum(['sw', 'en']),
   query: z.string().max(100),
   system: z.enum([...systemName.options, '']).default(''),
@@ -205,7 +205,8 @@ async function decide(text: string, memory: Conversation['memory'], history: Cha
   const contents = JSON.stringify({ newest: text, memory: { system: memory.system, product: memory.product?.name,
     plan: memory.plan, planning: memory.planning, lastQuote: memory.lastQuote,
     options: memory.productOptions?.slice(-12).map(item => item.name), awaitingService: memory.awaitingService,
-    supportStep: memory.support?.waitingFor, siteFacts: memory.facts, requirements: memory.requirements },
+    supportStep: memory.support?.waitingFor, siteFacts: memory.facts, requirements: memory.requirements,
+    hasCompleteOrder: Boolean(memory.installationQuote?.order) },
     history, approvedKnowledge: knowledge.map(entry => ({ ...entry, content: entry.content.slice(0, 3000) })) });
   const value = await deepseekJson({
     schema: decisionSchema, maxTokens: 650, prompt: contents,
@@ -226,6 +227,7 @@ Return the exact brand/model or SKU as query, with an empty query for a referenc
 plan requires the customer to specify the kind: subscription for operator software, wifi for end-user internet, bundle for equipment + services.
 Use ambiguous_package if kind is unclear. Do not invent a site name. Distinguish asking how payments work from explicitly asking to pay for their purchase.
 Use payment_reported for claims of actual completed payment and ready_to_pay for explicit intent to pay. Use human for requests to speak to staff.
+If memory.hasCompleteOrder is true and the customer clearly requests a printable or shareable document for this same order, use document_preview even if they never name the document type. Asking about price, changing items, or requesting delivery to someone else is not document_preview.
 Not everyone who writes here is buying. A greeting or small talk ("mambo", "vipi", "poa", "hi") is answered in the same friendly register with no pitch and no equipment question; only what they say next decides whether they are a customer.
 Never invent a city, office, opening hours, phone number, price or staff availability. The office is in Sinza Makaburini, Dar es Salaam, Tanzania. If approved knowledge does not state a detail, say the team will confirm it rather than guessing.
 Only write reply for general intent. Ground reply in approved knowledge. Ask one focused question if needed. Answer like a helpful person: short sentences, no bullet lists, no headings.
@@ -899,6 +901,15 @@ async function answer(
   const knownSymptom = symptomOf(newest) || memory.support?.waitingFor === 'check';
   const knowledge = onlyDetect || knownSymptom ? [] : await retrieveKnowledge(client, newest, systemFrom(newest) || memory.system);
   const decision = knownSymptom ? resolveDecision(newest, memory) : await decide(newest, memory, history, knowledge);
+  if (decision.intent === 'document_preview') {
+    const language = messageLanguage(newest) ?? memory.language ?? decision.language;
+    if (!onlyDetect && memory.installationQuote?.order && !supportQuestion(newest) && !namesNewDevice(newest)) {
+      const outcome = await quotationTurn(newest, memory, requestKey,
+        (sw, en) => language === 'en' ? en : sw, undefined, true);
+      if (outcome) return { ...outcome, memory: { ...memory, language } };
+    }
+    decision.intent = 'general';
+  }
   if (memory.product && quantityOf(newest) && !namesNewDevice(newest) && !supportQuestion(newest) &&
       !installationWords.test(newest) && !cableWords.test(newest) &&
       /\b(?:nikihitaji|nikichukua|nikinunua|i need|i want|if i take|if i buy|naomba|nataka)\b/i.test(newest) &&
