@@ -34,7 +34,19 @@ export function asksPlanCapacity(text: string) {
 }
 
 export const installationWords = /\b(installation|instalation|installationi|install|kufunga|kufungwa|kufungia|kusanikisha|kusanikua|kusanikwa|kuweka mfumo|kuniwekea|kutuwekea|kukuwekea|setup|kuset|ufungaji)\b/i;
-export const cableWords = /\b(waya|cable|kebo|nyaya)\b/i;
+export const cableWords = /\b(?:waya|cables?|wires?|kebo|nyaya|cat\s?-?\s?6|ethernet cable)\b/i;
+
+export async function hardwareCableOrder(product: Device, details: InstallationQuoteContext): Promise<OrderPreview | undefined> {
+  if (!product.id || !details.cableMeters) return;
+  const cable = await cableQuote(details.cableMeters);
+  if (!cable || product.price.currency !== cable.currency) return;
+  return { currency: product.price.currency, lines: [
+    { productId: product.id, name: product.name, quantity: details.quantity ?? 1,
+      unitPrice: product.price.amount, role: 'device' },
+    { productId: cable.product.id, name: cable.product.name, quantity: cable.meters,
+      unitPrice: cable.product.price.amount, role: 'cable' },
+  ] };
+}
 
 export function cableMeters(text: string) {
   const match = /\b(?:mita|mtr|metres?|meters?)\s*(\d{1,3})\b/i.exec(text)

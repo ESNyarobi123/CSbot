@@ -4,7 +4,7 @@ import { after, test } from 'node:test';
 
 // The catalog is a real HTTP call in production, so the test uses one too.
 const products = [
-  { id: 'eap650', name: 'TP LINK EAP 650', sku: 'EAP650', type: 'Product', unit: 'pcs',
+  { id: 'eap650', name: 'TP LINK EAP 650', sku: 'EAP650', type: 'Stocked', unit: 'pcs',
     brand: 'TP LINK OMADA', category: 'OUTDOOR ACCESS POINT',
     price: { amount: 450000, currency: 'TZS' }, images: [] },
   { id: 'ap-a', name: 'AP INSTALLATION TYPE A', sku: 'AP-A', type: 'Service', unit: 'Job',
@@ -335,6 +335,34 @@ test('an Omada buyer asking for advice gets a recommendation before LubFy prices
   const reply = await customerTurn(client, { ...chat, memory: advice.memory }, 'Sawa', []);
   assert.match(reply.body, /\*LubFy\*/);
   assert.match(reply.body, /Jumla kabla ya ada ya mfumo.*TZS 1,095,000/);
+});
+
+test('mixed-language wire enquiry keeps device, total, invoice and Wi-Fi range separate', async () => {
+  const chat = { id: 'wire-context', stage: 'inquiry', memory: { language: 'sw' } };
+  const history = [];
+  const turn = async (text) => {
+    const result = await customerTurn(client, chat, text, history);
+    chat.memory = result.memory;
+    history.push({ direction: 'inbound', body: text }, { direction: 'outbound', body: result.body });
+    return result;
+  };
+  assert.match((await turn('Eap 650 unayo?')).body, /450,000/);
+  const included = await turn('Napata na wire na mfumo?');
+  assert.match(included.body, /kwa kifaa/);
+  assert.match(included.body, /Ada ya mfumo/);
+  assert.match((await turn('Nauliza Kama kwa 450,000 napata na wire')).body, /2,500 kwa mita/);
+  const combo = await turn('Lakini Naomba uniambie Nikitaka kuchukua eap 650 na wire mita 15 gharama ni sh ngapi');
+  assert.match(combo.body, /487,500/);
+  assert.match((await turn('Na wire mita 15?')).body, /487,500/);
+  assert.match((await turn('Kwaio Jumla ni bei gani')).body, /487,500/);
+  const invoice = await turn('Nahitaji invoice ya 650 na waya meter 15');
+  assert.match(invoice.body, /487,500/);
+  assert.equal(invoice.memory.documentRequest.order.lines.length, 2);
+  assert.equal(chat.memory.facts.coverage_m, undefined);
+  const range = await turn('Inaenda mita ngapi');
+  assert.match(range.body, /Wi-Fi.*umbali|umbali.*Wi-Fi/);
+  assert.doesNotMatch(range.body, /[Ww]aya wa mita ngapi/);
+  assert.match((await turn('Swahiba mbona huelewi 🤣')).body, /Nimechanganya.*EAP 650/);
 });
 
 test('a recommendation stays grounded when the customer names mixed or unconfirmed hardware', async () => {

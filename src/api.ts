@@ -236,6 +236,7 @@ class AdminController {
       (SELECT count(*) FROM messages WHERE processing='pending')::int AS pending,
       (SELECT count(*) FROM outbound WHERE state='queued')::int AS queued,
       (SELECT count(*) FROM outbound WHERE state='uncertain')::int AS uncertain,
+      (SELECT count(*) FROM commercial_retries)::int AS pending_catalog_checks,
       (SELECT count(DISTINCT m.conversation_id) FROM messages m JOIN conversations c ON c.id=m.conversation_id
         JOIN accounts a ON a.id=c.account_id WHERE a.enabled AND m.processing='pending' AND
         m.received_at < now()-interval '2 minutes')::int AS stalled_chats,
@@ -522,11 +523,14 @@ class AdminController {
   async retryOutbound(@Param('id') id: string) {
     read(recordId, id);
     return transaction(async client => {
-      const item = await row<{ account_id: string; state: string; provider_id: string }>(client,
-        'SELECT account_id,state,provider_id FROM outbound WHERE id=$1 FOR UPDATE', [id]);
+      const item = await row<{ account_id: string; state: string; reason: string | null }>(client,
+        'SELECT account_id,state,reason FROM outbound WHERE id=$1 FOR UPDATE', [id]);
       if (!item) throw new NotFoundException();
       if (item.state !== 'uncertain' && item.state !== 'canceled') {
         throw new ConflictException('Only uncertain or canceled messages can be retried');
+      }
+      if (item.reason === 'request_superseded') {
+        throw new ConflictException('The customer sent a newer message after this check');
       }
       if (!await row(client, 'SELECT 1 FROM accounts WHERE id=$1 AND enabled', [item.account_id])) {
         throw new ConflictException('The sending account is disabled');

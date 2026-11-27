@@ -31,6 +31,23 @@ const stockSchema = z.object({
 });
 type Product = z.infer<typeof productSchema>;
 
+export class SourceHttpError extends Error {
+  constructor(readonly status: number) {
+    super('Upstream HTTP ' + status);
+    this.name = 'SourceHttpError';
+  }
+}
+
+export function retryableSourceFailure(error: unknown) {
+  if (error instanceof SourceHttpError) return [408, 429, 500, 502, 503, 504].includes(error.status);
+  if (!(error instanceof Error)) return false;
+  const code = (error as Error & { code?: string }).code;
+  return ['TimeoutError', 'AbortError'].includes(error.name) ||
+    (error instanceof TypeError && error.message === 'fetch failed') ||
+    Boolean(code && (/^08/.test(code) || ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', '57P01', '57P03', '53300', '57014'].includes(code))) ||
+    /^(?:Connection terminated unexpectedly|timeout exceeded when trying to connect)$/.test(error.message);
+}
+
 // Relative POS paths become an internal reference so no token or host is stored in messages.
 function proxyAssets(product: Product): Product {
   return { ...product, images: product.images.map(image => ({
@@ -50,7 +67,10 @@ const planSchema = z.object({
 });
 
 export async function documentJson(response: Response): Promise<unknown> {
-  if (!response.ok) throw new Error(`Upstream HTTP ${response.status}`);
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new SourceHttpError(response.status);
+  }
   const reader = response.body?.getReader();
   if (!reader) throw new Error('Empty upstream response');
   const chunks: Buffer[] = [];
@@ -192,24 +212,18 @@ export async function serviceCatalog(term: string) {
  * real total. Only per-metre lines are multiplied; a coiled pack would be wrong.
  */
 export async function cableQuote(meters: number) {
-  const seen = new Set<string>();
-  const items: Product[] = [];
+  let temporaryFailure: unknown;
   for (const term of ['cat 6', 'cable', 'waya']) {
     try {
-      for (const item of (await catalog(term, 10)).items) {
-        if (seen.has(item.id)) continue;
-        seen.add(item.id);
-        items.push(item);
-      }
-    } catch {
-      // Try the next term; the quote simply omits the cable when nothing matches.
+      const { items } = await catalog(term, 10);
+      const cable = items.find(item => /\b(cat\s?6|cat6|utp|sftp|cable|kebo|waya)\b/i.test(item.name) &&
+        item.price.amount > 0 && ['meter', 'metre', 'm', 'mita'].includes((item.unit ?? '').toLowerCase()));
+      if (cable) return { meters, product: cable, amount: cable.price.amount * meters, currency: cable.price.currency };
+    } catch (error) {
+      if (retryableSourceFailure(error)) temporaryFailure = error;
     }
   }
-  const cable = items.find(item => /\b(cat\s?6|cat6|utp|sftp|cable|kebo|waya)\b/i.test(item.name)
-    && item.price.amount > 0
-    && ['meter', 'metre', 'm', 'mita'].includes((item.unit ?? '').toLowerCase()));
-  if (!cable) return;
-  return { meters, product: cable, amount: cable.price.amount * meters, currency: cable.price.currency };
+  if (temporaryFailure) throw temporaryFailure;
 }
 
 export type InstallationOption = {

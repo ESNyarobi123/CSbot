@@ -31,6 +31,7 @@ interface Outbound {
   origin: 'bot' | 'handoff' | 'admin' | 'alert';
   body: string;
   image_url: string | null;
+  reply_anchor_id: string | null;
   document_id: string | null;
   document_name: string | null;
   document_hash: string | null;
@@ -399,6 +400,13 @@ class Session {
             WHERE account_id=$1 AND phone=$2`, [id, phoneOf(picked.jid)]));
         if (canceled) {
           await client.query("UPDATE outbound SET state='canceled',reason='settings_changed' WHERE id=$1", [picked.id]);
+          return;
+        }
+        if (picked.reply_anchor_id && conversation && (
+          await customerOptedOut(client, id, conversation.customer_jid) ||
+          await row(client, `SELECT 1 FROM messages WHERE conversation_id=$1 AND direction='inbound'
+            AND kind NOT LIKE 'history:%' AND id>$2 LIMIT 1`, [picked.conversation_id, picked.reply_anchor_id]))) {
+          await client.query("UPDATE outbound SET state='canceled',reason='request_superseded' WHERE id=$1", [picked.id]);
           return;
         }
         if (picked.origin === 'admin' && picked.request_key?.startsWith('whatsapp-support:') &&

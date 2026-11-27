@@ -4,7 +4,7 @@ import { config } from './config.js';
 import { log } from './db.js';
 import { deepseekJson } from './deepseek.js';
 import { documentJson, isModelReference, modelQuery, money, readProduct, requestedBrand, searchProducts } from './pos.js';
-import { asksPlanCapacity, cableMeters, cableWords, installationQuote, updateInstallationQuote, type OrderPreview } from './installation-quote.js';
+import { asksPlanCapacity, cableMeters, cableWords, hardwareCableOrder, installationQuote, installationWords, updateInstallationQuote, type OrderPreview } from './installation-quote.js';
 import { systemFrom } from './customer-text.js';
 import type { ReplyHistoryLine } from './reply-policy.js';
 import type { Conversation } from './store.js';
@@ -23,6 +23,16 @@ const normalizeModel = (value: string) => value.replace(/[^a-z0-9]/gi, '').toLow
 const existingInvoice = /\b(?:INV[- ]?\d+|invoice yangu|ankara yangu|my invoice|resend.{0,20}invoice)\b/i;
 const combineItems = /\b(?:pamoja na|and|plus|na)\s+(?:(?:\d+|moja|mbili|tatu)\s+)?(?:router|switch|access point|waya|cable|installation|ufungaji|cudy|mikrotik|omada|tp[ -]?link|comfast|eap\s*\d)\b|\+/i;
 const revisesOrder = /\b(?:ongeza|punguza|ondoa|badilisha|instead of)\b/i;
+
+function specifiedCableInvoice(text: string, productName: string) {
+  if (!quotationWords.test(text) || !cableWords.test(text) || !cableMeters(text) || installationWords.test(text) ||
+    /\b(?:sku|switch|router|another|nyingine|kingine|subscription|kifurushi|vat|tin|discount|punguzo)\b/i.test(text)) return false;
+  const models = [...text.matchAll(modelIdentity)];
+  if (models.length) return models.length === 1 && normalizeModel(productName).includes(normalizeModel(models[0][0]));
+  const bare = /\b(?:invoice|ankara|proforma)\s+(?:ya|for)\s+(\d{2,5})\b/i.exec(text)?.[1];
+  return Boolean(bare && modelQuery(productName).split(/\D+/).includes(bare)) ||
+    /\b(?:kifaa|device|hiyo|ile)\b.{0,18}\bna\b/i.test(text);
+}
 
 export type DocumentRequest = {
   kind: 'invoice' | 'quote';
@@ -95,7 +105,8 @@ export function orderSummary(order: OrderPreview, say: Say) {
   }
   const total = order.lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0) +
     (plan?.amount ?? 0) + (plan?.setup ?? 0);
-  return [...list, say(`*Jumla ya kuanza* ${format(total)}`, `*Initial total* ${format(total)}`)].join('\n');
+  const label = plan ? say('Jumla ya kuanza', 'Initial total') : say('Jumla', 'Total');
+  return [...list, `*${label}* ${format(total)}`].join('\n');
 }
 
 export function recoverProformaConfirmation(memory: Conversation['memory'], history: ReplyHistoryLine[]): DocumentRequest | undefined {
@@ -120,10 +131,12 @@ async function proformaTurn(
   const confirmed = mode === 'approve';
   const explicit = mode === 'preview';
   if (!product || !quote || quote.productId !== product.id || (!confirmed && !explicit)) return;
+  if (/\b(?:invoice|ankara|proforma)\s+(?:ya|for)\s+(?:waya|wire|cable|kebo|nyaya)\b/i.test(text)) return;
+  const cableRequested = explicit && specifiedCableInvoice(text, product.name);
   // New items or requests to modify an order must never issue a previous draft.
   const mentioned = [...text.matchAll(modelIdentity)].map(item => normalizeModel(item[0]));
   if (mentioned.some(model => !normalizeModel(product.name).includes(model)) || /\bsku\b/i.test(text) ||
-    (!confirmed && !knownRevision && (combineItems.test(text) || [...text.matchAll(unitCount)].length))) return;
+    (!confirmed && !knownRevision && !cableRequested && (combineItems.test(text) || [...text.matchAll(unitCount)].length))) return;
   const kind = pending?.order ? pending.kind : 'invoice';
   const handoff = () => {
     delete memory.documentRequest;
@@ -134,8 +147,9 @@ async function proformaTurn(
   };
   try {
     const { product: fresh, stock } = await readProduct(product.id);
+    if (cableRequested) Object.assign(quote, updateInstallationQuote(quote, text));
     let order: OrderPreview;
-    if (quote.fitting || quote.supply || quote.wantsPlan) {
+    if (quote.fitting || quote.wantsPlan || (quote.fitting !== false && quote.supply)) {
       if (quote.supply === 'shop' && stock.available_to_sell < (quote.quantity ?? 1)) return handoff();
       const answer = await installationQuote(fresh, priorPlanChoice && !quote.planName ? priorPlanChoice : text, say, quote);
       if (!quote.order) {
@@ -147,9 +161,17 @@ async function proformaTurn(
       order = quote.order;
     } else {
       const quantity = quote.quantity ?? 1;
-      if (quote.wantsCable || quote.cableMeters || fresh.type !== 'Stocked' || stock.available_to_sell < quantity) return handoff();
-      order = { currency: fresh.price.currency,
-        lines: [{ productId: fresh.id, name: fresh.name, quantity, unitPrice: fresh.price.amount, role: 'device' }] };
+      if (fresh.type !== 'Stocked' || stock.available_to_sell < quantity) return handoff();
+      if (quote.wantsCable || quote.cableMeters) {
+        if (!quote.cableMeters) return { body: say('Nitahitaji urefu wa waya ili niweke gharama yake kwenye proforma. Ni mita ngapi?',
+          'How many metres of cable should I include on the proforma?') };
+        const bundle = await hardwareCableOrder(fresh, quote);
+        if (!bundle) return handoff();
+        order = bundle;
+      } else {
+        order = { currency: fresh.price.currency,
+          lines: [{ productId: fresh.id, name: fresh.name, quantity, unitPrice: fresh.price.amount, role: 'device' }] };
+      }
     }
     const summary = orderSummary(order, say);
     // PostgreSQL JSONB can reorder object keys when a new turn reads memory.
@@ -219,7 +241,8 @@ export async function quotationTurn(
       !normalizeModel(memory.product?.name ?? '').includes(normalizeModel(match[0])));
     const addsItems = revisesOrder.test(text) || /\bsku\b/i.test(text) ||
       (!/[?？]/.test(text) && (combineItems.test(text) || [...text.matchAll(unitCount)].length > 0));
-    const intent = mentionsOtherModel || addsItems ? 'change' : await interpretProforma(text, pending.order);
+    const intent = mentionsOtherModel || addsItems || specifiedCableInvoice(text, memory.product?.name ?? '')
+      ? 'change' : await interpretProforma(text, pending.order);
     if (intent === 'hold') {
       delete memory.documentRequest;
       return { body: say('Sawa, nimeweka proforma pembeni kwa sasa. Ukihitaji tuiandae, niambie.', 'Okay, I’ll hold off on the proforma for now. Let me know if you want to prepare it later.') };

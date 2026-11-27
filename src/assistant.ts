@@ -1,6 +1,6 @@
 import { installationGuide } from './installation-guide.js';
 import {
-  asksPlanCapacity, cableMeters, cableWords, followsInstallationQuote, installationQuote, installationWords, updateInstallationQuote,
+  asksPlanCapacity, cableMeters, cableWords, followsInstallationQuote, hardwareCableOrder, installationQuote, installationWords, updateInstallationQuote,
   type InstallationQuoteContext,
 } from './installation-quote.js';
 export { cableMeters } from './installation-quote.js';
@@ -17,14 +17,14 @@ import {
   accountQuestion, adEnquiry, customerProfile, emailOf, messageLanguage, modelName, namesNewDevice, platformNotice, profitQuestion, regionQuestion, smallTalkOnly, smallTalkReply,
   supportQuestion, symptomOf, systemFrom, systemLabel,
 } from './customer-text.js';
-import { firstSupportStep, supportDetails, supportIntake, supportReceipt, supportSummary, type SupportAlertStatus } from './support.js';
+import { firstSupportStep, supportDetails, supportIntake, supportProgress, supportReceipt, supportSummary, type SupportAlertStatus } from './support.js';
 // Kept exported here because the tests and the dashboard import them from the
 // conversation module; the definitions now live in customer-text.ts and support.ts.
 export { customerProfile, emailOf, messageLanguage, smallTalkOnly, supportQuestion } from './customer-text.js';
 export { supportIntake, supportSummary } from './support.js';
 import { log, row } from './db.js';
 import { sheetFor, specsFor, specsForMany, specLines } from './specs.js';
-import { cableQuote, catalog, isModelReference, modelQuery, money, planKind, readPlans, readProduct, requestedBrand, searchProducts, systemName } from './pos.js';
+import { cableQuote, catalog, isModelReference, modelQuery, money, planKind, readPlans, readProduct, requestedBrand, retryableSourceFailure, searchProducts, systemName } from './pos.js';
 import type { Conversation, Stage } from './store.js';
 
 type IncomingPhoto = { base64: string; mimetype: string } | { count: number };
@@ -53,6 +53,7 @@ export interface Outcome {
   alertTitle?: string;
   supportAlert?: SupportAlertStatus;
   imageUrl?: string;
+  retryCommercial?: boolean;
   document?: { name: string; bytes: Buffer };
   /** The steps the bot took to answer, shown in the admin playground. */
   trace?: string[];
@@ -110,6 +111,9 @@ function fallback(text: string, memory: Conversation['memory']): Decision {
     // A broken system outranks a price lookup and an open package quote. A LubFy
     // link in a withdrawal alert used to keep the old plan and ask which hotspot.
     answer.intent = 'support';
+  } else if (cableWords.test(text) && namesNewDevice(text) && modelQuery(text) && !installationWords.test(text)) {
+    answer.intent = 'product';
+    answer.query = modelQuery(text);
   } else if (packageWords.test(text) || (memory.plan && answer.system && !purchaseWords.test(text) && !platformNotice(text))) {
     answer.kind = /\b(bundle|pamoja na kifaa|installation package)\b/i.test(text) ? 'bundle'
       : /\b(data|bando|internet|voucher|gb|mbps|site|hotspot pass)\b/i.test(text) ? 'wifi'
@@ -339,14 +343,14 @@ function soldAsDevice(item: { type?: string; unit?: string; category?: string | 
 }
 
 /** The customer asks how far a device reaches, not what it costs. */
-const rangeWords = /\b(umbali|mbali gani|coverage|range|inafikia|kufikia|reach|distance|how far|radius|eneo gani|eneo kubwa)\b/i;
+const rangeWords = /\b(umbali|mbali gani|coverage|range|inafikia|inaenda (?:mita|meters?|metres?)|kufikia|reach|distance|how far|radius|eneo gani|eneo kubwa)\b/i;
 
 /**
  * The customer asks what a device can do — how far it reaches, which band it
  * uses, or its specs. Answered from the catalog description, never with a fee.
  */
 export function coverageQuestion(text: string) {
-  return /\b(umbali|coverage|range|inafikia|mbali gani|eneo gani|eneo kubwa|kufikia|reach|distance|how far|ina uwezo|uwezo gani|uwanja|signal gani|specs?|specification|specifications|details?|maelezo|sifa|band|bands|ports?|ghz|frequency|antenna|poe|speed|mbps|concurrent|wateja wangapi)\b/i
+  return /\b(umbali|coverage|range|inafikia|inaenda (?:mita|meters?|metres?)|mbali gani|eneo gani|eneo kubwa|kufikia|reach|distance|how far|ina uwezo|uwezo gani|uwanja|signal gani|specs?|specification|specifications|details?|maelezo|sifa|band|bands|ports?|ghz|frequency|antenna|poe|speed|mbps|concurrent|wateja wangapi)\b/i
     .test(text);
 }
 
@@ -528,6 +532,7 @@ function deviceQuery(text: string) {
 /** True when the message asks about fitting or cable rather than a device price. */
 export function serviceQuestion(text: string) {
   if (cableWords.test(text) || installationWords.test(text)) return true;
+  if (coverageQuestion(text)) return false;
   if (!metreWords.test(text)) return false;
   // "Nahitaji access point ya mita 300" is coverage, not a cable order. Left
   // unguarded, the bot quoted 300 m of CAT 6 to a customer asking for an AP.
@@ -651,7 +656,7 @@ function billingRecommendation(text: string, memory: Conversation['memory'], say
 /** Quote cable on its own or ask for the model when fitting is requested. */
 export async function installationOnlyAside(text: string, say: (sw: string, en: string) => string) {
   const wantsInstall = installationWords.test(text);
-  if (!wantsInstall && !cableWords.test(text) && !(metreWords.test(text) && !deviceTypeWords.test(text))) return '';
+  if (!wantsInstall && !cableWords.test(text) && !serviceQuestion(text)) return '';
   const meters = cableMeters(text);
   const cable = meters ? await cableQuote(meters).catch(() => undefined) : undefined;
   const cableLine = cable && say(
@@ -663,9 +668,46 @@ export async function installationOnlyAside(text: string, say: (sw: string, en: 
     'Which device model do you want fitted? That will help me check the right fitting fee.',
   )].filter(Boolean).join('\n\n');
   if (cableLine) return cableLine;
+  if (!meters && cableWords.test(text)) {
+    const rate = await cableQuote(1).catch(() => undefined);
+    if (rate) return say(`Waya: ${rate.product.name} — ${money(rate.product.price)} kwa mita. Utahitaji mita ngapi?`,
+      `${rate.product.name} cable is ${money(rate.product.price)} per metre. How many metres do you need?`);
+  }
   return meters
     ? say('Bei ya waya haikupatikana kwa sasa. Timu itaihakiki.', 'We couldn’t retrieve the cable price. Our team will check it.')
     : say('Unahitaji waya wa mita ngapi?', 'How many metres of cable do you need?');
+}
+
+const bundleTotal = /\b(?:jumla|total|gharama zote|pamoja ni bei|all together)\b/i;
+const cableWithDevice = /\b(?:na (?:wire|waya|cable|kebo|nyaya)|pamoja na|napata|inakuja|inajumuisha|does it (?:include|come with)|with (?:the )?(?:wire|cable))\b/i;
+const asksInclusion = /\b(?:napata|inakuja|inajumuisha|inakuwa na|include|come with)\b/i;
+const mentionsBilling = /\b(?:mfumo|system|subscription|billing|wotefy|lubfy)\b/i;
+
+async function cableBundle(
+  product: Awaited<ReturnType<typeof readProduct>>['product'], memory: Conversation['memory'], text: string,
+  say: (sw: string, en: string) => string,
+) {
+  const context = updateInstallationQuote({ ...memory.installationQuote, productId: product.id }, text);
+  if (!context.fitting && !context.wantsPlan) context.fitting = false;
+  memory.installationQuote = context;
+  const separate = say(`Bei ya ${product.name} ni ${money(product.price)} kwa kifaa. Gharama ya waya wa ufungaji inahesabiwa kando.`,
+    `${product.name} is ${money(product.price)} per unit. Installation cable is priced separately.`);
+  const system = mentionsBilling.test(text) ? say('Ada ya mfumo ina bei yake kulingana na mpango unaochagua.',
+    'The system fee depends on the plan you choose.') : '';
+  const order = await hardwareCableOrder(product, context);
+  if (!order) {
+    delete context.order;
+    const rate = !context.cableMeters ? await cableQuote(1) : undefined;
+    return [separate, system, rate && say(`${rate.product.name} ni ${money(rate.product.price)} kwa mita.`,
+      `${rate.product.name} is ${money(rate.product.price)} per metre.`), context.cableMeters
+      ? say('Sijapata bei ya waya yenyewe kwa sasa.', 'The cable price isn’t available right now.')
+      : say('Utahitaji mita ngapi?', 'How many metres do you need?')].filter(Boolean).join(' ');
+  }
+  context.order = order;
+  const total = orderSummary(order, say);
+  memory.quoteFor = 'product';
+  memory.lastQuote = total;
+  return [asksInclusion.test(text) ? separate : '', total, system].filter(Boolean).join('\n\n');
 }
 
 /**
@@ -745,17 +787,15 @@ export function relevantKnowledge(text: string, entries: Knowledge[], support = 
   return best?.entry;
 }
 
-/** Read a product, giving the shared catalog server two more chances before failing. */async function readProductRetry(id: string) {
-  let last: unknown;
-  for (const wait of [0, 400, 900]) {
-    if (wait) await new Promise(resolve => setTimeout(resolve, wait));
-    try {
-      return await readProduct(id);
-    } catch (error) {
-      last = error;
-    }
+/** Failures after a quick read retry can be retried durably outside the customer turn. */
+async function readProductRetry(id: string) {
+  try {
+    return await readProduct(id);
+  } catch (error) {
+    if (!retryableSourceFailure(error) || ['AbortError', 'TimeoutError'].includes((error as Error).name)) throw error;
+    await new Promise(resolve => setTimeout(resolve, 200));
+    return readProduct(id);
   }
-  throw last;
 }
 
 async function serviceQuote(
@@ -845,6 +885,10 @@ export async function respond(
   return outcome;
 }
 
+export function retryCommercialTurn(client: PoolClient, conversation: Conversation, text: string, history: ChatLine[]) {
+  return answer(client, conversation, text, history);
+}
+
 async function answer(
   client: PoolClient, conversation: Conversation, newest: string, history: ChatLine[], onlyDetect = false,
   photo?: IncomingPhoto, voice = false, requestKey?: string,
@@ -863,10 +907,36 @@ async function answer(
   };
   delete memory.documentSummary;
   delete memory.trace;
+  if (!onlyDetect) {
+    const language = messageLanguage(newest) ?? memory.language ?? 'sw';
+    const say = (sw: string, en: string) => language === 'en' ? en : sw;
+    const body = supportProgress(newest, memory, say);
+    if (body) return { body, memory: { ...memory, language } };
+    if (memory.handoffPending && memory.lastDocument &&
+        /^(?:bado )?(?:nasubiri|nasubiria|ninasubiri|nangoja|still waiting|i am waiting|i'm waiting)(?:\s+(?:mkuu|boss|tajiri))?[.! ]*$/i.test(newest.trim())) {
+      return { body: say('Ombi lako la PDF lipo kwa timu ya mauzo. Tutaendelea kwenye chat hii.',
+        'Your PDF request is with sales. We’ll continue in this chat.'), memory: { ...memory, language } };
+    }
+    if (/\b(?:hunielewi|haunielewi|huelewi|hujaelewa|hujanielewa|you(?:’re| are) not understanding|you misunderstood)\b/i.test(newest)) {
+      const product = memory.product?.name;
+      return { body: product ? say(`Nimechanganya maelezo ya ${product}. Unataka tuangalie jumla ya oda, au umbali ambao Wi-Fi ya kifaa inafika?`,
+        `I mixed up the details for ${product}. Are you asking for the order total or how far its Wi-Fi reaches?`)
+        : say('Nimechanganya ulichouliza hapo nyuma. Ni sehemu gani ungependa nirekebishe?', 'I mixed up your earlier question. Which part should I revisit?'),
+      memory: { ...memory, language } };
+    }
+    if (coverageQuestion(newest) && !cableWords.test(newest) && memory.facts.coverage_m &&
+        history.some(line => line.direction === 'inbound' && cableWords.test(line.body) &&
+          cableMeters(line.body) === Number(memory.facts.coverage_m)) &&
+        !history.some(line => line.direction === 'inbound' && siteDistance(line.body) === Number(memory.facts.coverage_m))) {
+      delete memory.facts.coverage_m;
+    }
+  }
   const askingToPayBeforeApproval = memory.documentRequest?.order &&
     fallback(newest, memory).intent === 'ready_to_pay';
+  const asksDeviceCapability = memory.documentRequest?.order && coverageQuestion(newest) &&
+    !quotationWords.test(newest) && !cableWords.test(newest);
   if (!onlyDetect && (quotationWords.test(newest) || memory.documentRequest || revisesIssuedProforma(newest, memory)) &&
-      !supportQuestion(newest) && !askingToPayBeforeApproval) {
+      !supportQuestion(newest) && !askingToPayBeforeApproval && !asksDeviceCapability) {
     const language = messageLanguage(newest) ?? memory.language ?? 'sw';
     // Older chats could retain the bundle while treating the plan capacity as
     // a hardware count. Recover the immediately preceding plan request.
@@ -937,6 +1007,16 @@ async function answer(
   const say = (sw: string, en: string) => decision.language === 'en' ? en : sw;
   const result = (body: string, changes: Partial<Omit<Outcome, 'body' | 'memory'>> = {}): Outcome =>
     ({ body, memory, ...changes });
+  const commercialUnavailable = (error: unknown, sw: string, en: string) => {
+    if (retryableSourceFailure(error)) return result(say(
+      `${sw} Nimeratibu ukaguzi mwingine na nitakujibu hapa.`,
+      `${en} I’ve scheduled another check and will update you here.`,
+    ), { retryCommercial: true });
+    memory.documentSummary = newest.slice(0, 500);
+    return result(say(`${sw} Nimepeleka ombi lako kwa timu ili ithibitishe taarifa.`,
+      `${en} I’ve shared your request with the team so they can verify the details.`),
+    { notify: true, alertTitle: 'Taarifa za mauzo zinahitaji ukaguzi' });
+  };
   if (!onlyDetect && adEnquiry(newest) && !supportQuestion(newest) && !namesNewDevice(newest) &&
       !systemFrom(newest) && !purchaseWords.test(newest)) {
     return result(say('Karibu Connect Solution! Unatafuta mfumo wa kuuza Wi-Fi, ushauri wa vifaa, au msaada wa mfumo unaotumia tayari?',
@@ -1033,7 +1113,8 @@ async function answer(
     const guide = await row<{ content: string; source_url: string | null }>(client, 'SELECT content,source_url FROM knowledge WHERE published AND id=$1', [system + '-onboarding']);
     return result(guide ? [guide.content, guide.source_url].filter(Boolean).join('\n') : say('Timu inaweza kukusaidia kuanza usajili kwenye ' + system + '.', 'Our team can help you register for ' + system + '.'), guide ? {} : { handoff: true });
   }
-  const shoppingNow = (purchaseWords.test(newest) || (deviceQuery(newest) && /\b(?:nahitaji|nataka|need|buy)\b/i.test(newest))) && !supportQuestion(newest)
+  const shoppingNow = (purchaseWords.test(newest) || (memory.product && cableWords.test(newest) && !coverageQuestion(newest)) ||
+    (deviceQuery(newest) && /\b(?:nahitaji|nataka|need|buy)\b/i.test(newest))) && !supportQuestion(newest)
     && !emailOf(newest) && !systemFrom(newest);
   // A bare system name is a question about why the person came. "Wotefy" alone
   // used to be read as an equipment enquiry, so a customer with a broken portal
@@ -1053,7 +1134,7 @@ async function answer(
     // A new turn can arrive after the intake was already handed off. The system
     // and email are still known facts of this chat, so a follow-up about a device
     // must not start the questions over.
-    const carried = memory.support ?? (memory.lastSupport && /vifaa|navifaa|devices/i.test(newest)
+    const carried = memory.support ?? (memory.lastSupport && (memory.handoffPending || Boolean(symptomOf(newest)) || /vifaa|navifaa|devices/i.test(newest))
       ? { system: memory.lastSupport.system, email: memory.lastSupport.email } : undefined);
     const explicitSystem = systemFrom(newest);
     const intakeState = explicitSystem && carried?.system && explicitSystem !== carried.system
@@ -1353,6 +1434,20 @@ async function answer(
       target = undefined;
     }
     if (target) {
+      if (/\binaenda (?:mita ngapi|umbali gani)\b/i.test(newest)) {
+        try {
+          const { product } = await readProduct(target);
+          const sheet = await specsFor(product, client);
+          const recorded = sheet?.verified && sheet.coverage_m;
+          return result(recorded
+            ? say(`${product.name} ina rekodi ya hadi mita ${recorded} kwenye eneo la wazi. Kuta na vizuizi vinaweza kupunguza umbali huo.`,
+              `${product.name} is rated up to ${recorded} metres in an open area. Walls and obstacles can reduce that range.`)
+            : say(`Kwa ${product.name}, sina idadi ya mita iliyothibitishwa. Kuta na mahali kifaa kitakapowekwa huathiri Wi-Fi. Unahitaji Wi-Fi ifike umbali gani kutoka kwenye kifaa?`,
+              `I don’t have a verified range in metres for ${product.name}. Walls and placement affect Wi-Fi. How far from the device do you need coverage?`));
+        } catch {
+          // The general capability path below can still use approved guidance.
+        }
+      }
       // The datasheet plus the customer's own site facts, written as one answer.
       // When the composer is offline or strays from the facts, the recorded
       // lines below answer instead — the customer always gets a reply.
@@ -1376,6 +1471,20 @@ async function answer(
   }
   // Fitting and cable are quoted from the service price list. Solving this before
   // the product branch keeps the bot from searching the catalog for the sentence.
+  const cableWithRememberedDevice = memory.product && !namesNewDevice(newest) && !coverageQuestion(newest) &&
+    !installationWords.test(newest) && !memory.installationQuote?.fitting && !memory.installationQuote?.wantsPlan &&
+    ((cableWords.test(newest) && cableWithDevice.test(newest)) ||
+      (memory.installationQuote?.wantsCable && (bundleTotal.test(newest) || Boolean(cableMeters(newest)))));
+  if (!onlyDetect && cableWithRememberedDevice && memory.product && !supportQuestion(newest)) {
+    try {
+      const { product } = await readProductRetry(memory.product.id);
+      const body = await cableBundle(product, memory, newest, say);
+      return result(body, memory.installationQuote?.order ? { stage: 'quoted' } : {});
+    } catch (error) {
+      return commercialUnavailable(error, 'Bei ya kifaa na waya haijapatikana kwa sasa.',
+        'The current device and cable prices aren’t available right now.');
+    }
+  }
   const bundleFollowup = followsInstallationQuote(newest, memory.installationQuote);
   const asksFitting = installationWords.test(newest) || bundleFollowup || (memory.awaitingService === true && isAffirmation(newest));
   const serviceTurn = !monthly && !coverageFollowup && !onlyDetect
@@ -1414,12 +1523,10 @@ async function answer(
       memory.quoteFor = 'plan';
       return result(say('Packages zinazopatikana kwa sasa', 'Currently available plans') + '\n' + plans.join('\n'),
         { stage: 'quoted' });
-    } catch {
+    } catch (error) {
       log.warn('Current plan prices unavailable');
-      // Asking the customer to resend loses them. Say what happened, commit to a
-      // follow-up, and keep the chat with the bot.
-      return result(say('Bei za packages hazipatikani kwa sasa kwenye mfumo. Nimeona unataka bei ya mfumo kwa mwezi — nitakagua tena, na timu yetu inaweza kukuthibitishia ikiwa unahitaji haraka.',
-        'The plan prices are not loading right now. I have noted that you want the monthly system price — I will check again, and our team can confirm it if you need it quickly.'));
+      return commercialUnavailable(error, 'Bei za mipango hazijapatikana kwa sasa.',
+        'The plan prices aren’t available right now.');
     }
   }
   // A described site is not a catalog row. Sizing needs the area and the
@@ -1681,6 +1788,11 @@ async function answer(
       delete memory.productOptions;
       memory.quoteFor = 'product';
       memory.lastQuote = `${product.name} — ${price}` + (quantity ? ` × ${quantity}` : '');
+      if (cableWords.test(newest) && (cableMeters(newest) || cableWithDevice.test(newest)) &&
+        !installationWords.test(newest) && !memory.installationQuote?.fitting && !memory.installationQuote?.wantsPlan) {
+        const body = await cableBundle(product, memory, newest, say);
+        return result(body, memory.installationQuote?.order ? { stage: 'quoted' } : {});
+      }
       const details = [product.brand && `Brand: ${product.brand}`,
         product.category && `Category: ${product.category}`,
         product.unit && product.unit.toLowerCase() !== 'pcs' && product.unit !== 'Job'
@@ -1741,12 +1853,10 @@ async function answer(
         + (showSpecs && specs ? '\n' + specs : '') + '\n' + availability
         + (quantityLine ? '\n' + quantityLine : '') + missingPhoto + deviceContext + fitting + planPrices,
       { stage: 'quoted', imageUrl });
-    } catch {
+    } catch (error) {
       log.warn('Current product details unavailable');
-      // A catalog timeout is temporary. Handing off here silences the bot for the rest
-      // of the chat, so the customer is told the price is coming while the chat stays on.
-      return result(say('Kuna shida ya muda kufikia bei kwa sasa. Nitajaribu tena — tafadhali tuma ujumbe mmoja au nikupe maelezo zaidi ya kifaa.',
-        'The price lookup is slow right now. Please send one more message and I will try again.'));
+      return commercialUnavailable(error, 'Katalogi haijarudisha taarifa za sasa.',
+        'The catalog hasn’t returned the current details.');
     }
   }
   const fact = relevantKnowledge(newest, knowledge);

@@ -27,7 +27,7 @@ const metres = /\b(?:mita|metres?|meters?|mtr)\s*(\d{1,5})\b|\b(\d{1,5})\s*(?:mi
 // "kilometa"/"km" were read, so a 2 km link request lost its distance.
 const kilometres = /\b(?:kilomit\w*|kilomet\w*|km)\s*(\d+(?:[.,]\d+)?)\b|\b(\d+(?:[.,]\d+)?)\s*(?:kilomit\w*|kilomet\w*|km)\b/i;
 export function siteDistance(text: string) {
-  if (/\b(?:waya|cable|kebo|cat ?6)\b/i.test(text)) return undefined;
+  if (/\b(?:waya|cables?|wires?|kebo|nyaya|cat\s?-?\s?6)\b/i.test(text)) return undefined;
   const km = kilometres.exec(text);
   const match = km || metres.exec(text);
   if (!match) return undefined;

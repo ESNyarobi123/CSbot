@@ -16,6 +16,7 @@ export const modelName = /\b(?:cudy|eap|omada|mikrotik|ruijie|reyee|cambium|unif
  */
 export function namesNewDevice(text: string) {
   const stripped = text
+    .replace(/\b\d{1,3}(?:,\d{3})+\b|\b(?:tzs|tsh|sh)\s*\d+\b/gi, ' ')
     .replace(/\b(?:mita|metres?|meters?|mtr)\s*\d{1,3}\b/gi, ' ')
     .replace(/\b\d{1,3}\s*(?:mita|metres?|meters?|mtr)\b/gi, ' ');
   return Boolean(modelQuery(stripped))

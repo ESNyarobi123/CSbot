@@ -8,9 +8,19 @@ delete process.env.CSOLUTION_POS_DB_URL;
 // Built output, the same module the worker loads.
 const { supportIntake, supportQuestion, supportSummary, emailOf } = await import('../dist/assistant.js');
 const { relevantKnowledge } = await import('../dist/assistant.js');
+const { supportProgress } = await import('../dist/support.js');
 
 const sw = (text) => text;
 const say = (swText, _en) => swText;
+
+test('a support progress question reports the current case without reopening intake', () => {
+  const text = 'Mmefikia wapi na tatizo langu?';
+  const memory = { lastSupport: { problem: 'Wateja hawapati Wi-Fi' }, handoffPending: true };
+  assert.match(supportProgress(text, memory, say), /foleni ya timu/);
+  assert.match(supportProgress(text, { ...memory, supportUpdate: { status: 'awaiting_confirmation' } }, say),
+    /Taarifa ya suluhisho imefika/);
+  assert.equal(supportProgress('Jumla ya oda ni bei gani?', memory, say), undefined);
+});
 
 test('a broken portal is a support question, a device price is not', () => {
   assert.equal(supportQuestion('Portal haifunguki kwenye simu'), true);

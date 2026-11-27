@@ -130,7 +130,8 @@ export async function overview(container, signal) {
     <div class="metrics">
       ${metric('First reply', stats.first_reply_median_seconds == null ? '—' : number(stats.first_reply_median_seconds) + 's',
         'clock', 'blue', 'Median for new chats · last 7 days', '#inbox')}
-      ${metric('Stalled chats', stats.stalled_chats ?? 0, 'inbox', 'amber', 'Incoming work pending over 2 minutes', '#inbox')}
+      ${metric('Stalled chats', stats.stalled_chats ?? 0, 'inbox', 'amber',
+        `${number(stats.pending_catalog_checks ?? 0)} price checks scheduled`, '#inbox')}
       ${metric('Unconfirmed sends', stats.uncertain, 'phone', 'violet', 'Needs WhatsApp delivery review', '#inbox')}
       ${metric('Handoffs awaiting reply', stats.handoffs_waiting ?? 0, 'user', 'amber', 'Customer waiting for the team', '#inbox/human')}
     </div>

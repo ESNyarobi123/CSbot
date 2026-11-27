@@ -137,6 +137,38 @@ export function supportReceipt(support: SupportDetails, say: Say, requestEvidenc
   ].filter(Boolean).join('\n\n');
 }
 
+export function supportProgress(text: string, memory: Conversation['memory'], say: Say) {
+  const support = memory.support ?? memory.lastSupport;
+  if (!support?.problem) return;
+  const asksProgress = /\b(?:kesi|tatizo|shida|ombi la msaada|support (?:case|ticket|request))\b/i.test(text) &&
+    /\b(?:status|update|hatua gani|mmefikia wapi|mmesha|imesha|imefikia wapi|inaendeleaje|iliishia wapi|any news|what(?:'s| is) the status)\b/i.test(text);
+  if (!asksProgress) return;
+  if (memory.support?.waitingFor) return say(
+    'Bado tunakusanya taarifa za tatizo hili. Unaweza kuendelea hapa kwenye chat hii ili nikusaidie.',
+    'We’re still collecting details for this issue. You can continue here in this chat.');
+  switch (memory.supportUpdate?.status) {
+    case 'resolution_queued':
+      return say('Timu imeandika taarifa ya suluhisho. Ujumbe unasubiri kufika kwenye WhatsApp.',
+        'Support has prepared an update. The WhatsApp message is awaiting delivery.');
+    case 'awaiting_confirmation':
+      return say('Taarifa ya suluhisho imefika. Tunaendelea kusubiri jibu lako baada ya kujaribu. Je, sasa inafanya kazi?',
+        'The resolution update was delivered. We’re waiting to hear how your test went. Does it work now?');
+    case 'details':
+      return say('Timu inaomba taarifa za ziada. Unaweza kujibu ombi lao hapa kwenye chat hii.',
+        'Support asked for more details. You can reply to their request in this chat.');
+    case 'resolved':
+      return say('Kesi imefungwa. Kama tatizo limerudi, niambie unachoona sasa.',
+        'The case is closed. If the issue has returned, tell me what you see now.');
+    case 'reopened':
+      return say('Kesi imefunguliwa tena baada ya taarifa yako kuwa tatizo bado lipo.',
+        'The case was reopened after you reported that the issue was still happening.');
+    default:
+      if (memory.handoffPending) return say(
+        'Ombi lako lipo kwenye foleni ya timu. Taarifa mpya ikipatikana, tutaendelea kwenye chat hii.',
+        'Your request is in the support queue. We’ll continue in this chat when there’s an update.');
+  }
+}
+
 export function supportAdminMessage(
   conversation: Conversation, support: SupportDetails, status: SupportAlertStatus, hasAttachment: boolean,
 ) {

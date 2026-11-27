@@ -203,12 +203,14 @@ export async function enqueue(client: PoolClient, item: {
   origin: 'bot' | 'admin' | 'alert' | 'handoff'; imageUrl?: string; requestKey?: string;
   document?: { id: string; name: string; hash: string };
   supportReply?: boolean;
+  replyAnchor?: string;
 }) {
   const providerId = '3EB0' + randomBytes(10).toString('hex').toUpperCase();
-  return row(client, `INSERT INTO outbound (account_id, conversation_id, jid, body, origin, image_url, provider_id, request_key, document_id, document_name, document_hash, support_reply)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (conversation_id,request_key) DO NOTHING RETURNING id,state`,
+  return row(client, `INSERT INTO outbound (account_id, conversation_id, jid, body, origin, image_url, provider_id, request_key, document_id, document_name, document_hash, support_reply, reply_anchor_id)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (conversation_id,request_key) DO NOTHING RETURNING id,state`,
   [item.accountId, item.conversationId, item.jid, item.body, item.origin, item.imageUrl ?? null, providerId,
-    item.requestKey ?? null, item.document?.id ?? null, item.document?.name ?? null, item.document?.hash ?? null, item.supportReply ?? false]);
+    item.requestKey ?? null, item.document?.id ?? null, item.document?.name ?? null, item.document?.hash ?? null,
+    item.supportReply ?? false, item.replyAnchor ?? null]);
 }
 
 export function recipient(conversation: Conversation) {

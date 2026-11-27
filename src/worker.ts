@@ -1,4 +1,5 @@
 import { asksNewCommercialQuestion, supportConfirmation } from './admin-support.js';
+import { supportProgress } from './support.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Queue, Worker } from 'bullmq';
@@ -17,6 +18,7 @@ import {
 } from './store.js';
 import { audioAllowed, pendingVoice, transcribe } from './voice.js';
 import { offerDiagnostic } from './support-diagnostics.js';
+import { acknowledgesCatalogWait, runCommercialRetry } from './commercial-retry.js';
 
 interface Presence { accountId: string; jid: string }
 
@@ -104,7 +106,7 @@ async function planFollowUps(
     await cancelFollowUps(client, conversationId);
     return;
   }
-  if (outcome.memory.support || outcome.memory.documentRequest) {
+  if (outcome.memory.support || outcome.memory.documentRequest || outcome.retryCommercial) {
     await cancelFollowUps(client, conversationId, ['quote_nudge', 'payment_reminder']);
     return;
   }
@@ -206,6 +208,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       const consent = latestConsent(pending);
       const resume = consent === 'resume';
       if (consent === 'stop') {
+        await client.query('DELETE FROM commercial_retries WHERE conversation_id=$1', [conversationId]);
         await setCustomerOptedOut(client, conversation.account_id, conversation.customer_jid, true);
         await cancelFollowUps(client, conversationId);
         await client.query(`UPDATE outbound SET state='canceled',reason='customer_opt_out'
@@ -216,6 +219,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         return;
       }
       if (optedOut && !resume) {
+        await client.query('DELETE FROM commercial_retries WHERE conversation_id=$1', [conversationId]);
         await client.query("UPDATE messages SET processing='done' WHERE id=ANY($1::bigint[])", [ids]);
         return;
       }
@@ -233,6 +237,13 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         }
       }
       const canReply = awaitingAgent || (mode === 'bot' && pending.some(message => message.auto_reply));
+      if (canReply && mode === 'bot' && pending.every(message => message.kind === 'text' && acknowledgesCatalogWait(message.body)) &&
+        await row(client, `UPDATE commercial_retries SET last_inbound_id=$2
+          WHERE conversation_id=$1 RETURNING conversation_id`, [conversationId, ids[ids.length - 1]])) {
+        await client.query("UPDATE messages SET processing='done' WHERE id=ANY($1::bigint[])", [ids]);
+        return;
+      }
+      await client.query('DELETE FROM commercial_retries WHERE conversation_id=$1', [conversationId]);
       if (pending.every(message => message.kind === 'missed_call')) {
         if (canReply && !await row(client, `SELECT 1 FROM outbound
           WHERE conversation_id=$1 AND request_key LIKE 'missed-call:%'
@@ -248,11 +259,12 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         return;
       }
       const update = conversation.memory.supportUpdate;
+      const asksCaseStatus = Boolean(supportProgress(newest, conversation.memory, sw => sw));
       if (update?.status === 'resolution_queued' && update.outboundId &&
         await row(client, 'SELECT 1 FROM outbound WHERE id=$1 AND conversation_id=$2 AND delivered_at IS NOT NULL',
           [update.outboundId, conversationId])) await startSupportConfirmation(client, conversation);
       if (canReply && update?.status === 'awaiting_confirmation' && eligible && !resume &&
-        !smallTalkOnly(newest) && !platformNotice(newest) && !asksNewCommercialQuestion(newest)) {
+        !asksCaseStatus && !smallTalkOnly(newest) && !platformNotice(newest) && !asksNewCommercialQuestion(newest)) {
         const feedback = await supportConfirmation(newest);
         if (feedback === 'confirmed' || feedback === 'still_broken') {
           const fixed = feedback === 'confirmed';
@@ -278,7 +290,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         }
       }
       if (conversation.memory.supportUpdate?.status === 'details' &&
-          eligible && !resume && !smallTalkOnly(newest) && !platformNotice(newest) && !asksNewCommercialQuestion(newest) && !/\?\s*$/.test(newest)) {
+          eligible && !resume && !asksCaseStatus && !smallTalkOnly(newest) && !platformNotice(newest) && !asksNewCommercialQuestion(newest) && !/\?\s*$/.test(newest)) {
         const memory = { ...conversation.memory };
         delete memory.supportUpdate;
         delete memory.documentSummary;
@@ -336,6 +348,19 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       const replyStarted = Date.now();
       const outcome = await respond(client, conversation, newest,
         history.map(line => ({ ...line, body: line.body.slice(0, 700) })), !canReply, photo, spoken, `${conversation.account_id}:${firstMessage}`);
+      if (canReply && outcome.retryCommercial) {
+        if (mode === 'bot' && !['paid', 'completed', 'ready_to_pay', 'payment_reported'].includes(conversation.stage)) {
+          await client.query(`INSERT INTO commercial_retries (conversation_id,last_inbound_id,question)
+            VALUES ($1,$2,$3)`, [conversationId, ids[ids.length - 1], newest]);
+        } else {
+          outcome.memory.documentSummary = newest.slice(0, 500);
+          outcome.notify = true;
+          outcome.alertTitle = 'Taarifa za mauzo zinahitaji ukaguzi';
+          outcome.body = outcome.memory.language === 'en'
+            ? 'I’ve shared your request with the sales team so they can verify the current details.'
+            : 'Nimepeleka ombi lako kwa timu ya mauzo ili ithibitishe taarifa za sasa.';
+        }
+      }
       if (canReply && outcome.handoff && outcome.supportAlert === 'handoff') {
         const link = await offerDiagnostic(client, { ...conversation, memory: outcome.memory });
         if (link) outcome.body += '\n\n' + link;
@@ -400,6 +425,7 @@ worker.on('failed', (job, error) =>
   log.warn({ job: job?.id, code: error.name, attempts: job?.attemptsMade }, 'Reply processing failed'));
 
 let stopping = false;
+let commercialRetryRun: Promise<void> | undefined;
 for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => { stopping = true; });
 try {
   await Promise.all([queue.waitUntilReady(), worker.waitUntilReady()]);
@@ -407,10 +433,17 @@ try {
   let lastBeat = 0;
   let lastSweep = 0;
   let lastFollowUp = 0;
+  let lastCommercialRetry = 0;
   while (!stopping) {
     if (Date.now() - lastBeat > 10000) {
       lastBeat = Date.now();
       await beat('worker', { concurrency: config.WORKER_CONCURRENCY });
+    }
+    if (!commercialRetryRun && Date.now() - lastCommercialRetry > 10000) {
+      lastCommercialRetry = Date.now();
+      commercialRetryRun = runCommercialRetry().catch(error =>
+        log.warn({ code: (error as Error).name }, 'Deferred catalog check failed'))
+        .finally(() => { commercialRetryRun = undefined; });
     }
     // Receipt photos live in PostgreSQL, so old ones are pruned on a schedule to keep the table small.
     if (Date.now() - lastSweep > 3600000) {
@@ -492,6 +525,7 @@ try {
     if (!stopping) await sleep(500);
   }
 } finally {
+  await commercialRetryRun;
   await worker.close();
   await queue.close();
   producer.disconnect();
