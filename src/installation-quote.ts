@@ -61,7 +61,10 @@ export function followsInstallationQuote(text: string, context?: InstallationQuo
   if (!context?.awaiting) return false;
   if (context.awaiting === 'cable') return Boolean(cableMeters(text)) && !/\b(?:coverage|range|umbali wa wifi)\b/i.test(text);
   if (context.awaiting === 'supply') return text.trim().split(/\s+/).length <= 9 && Boolean(quoteSupply(text));
-  if (context.awaiting === 'system') return Boolean(systemFrom(text)) && text.trim().split(/\s+/).length <= 7;
+  if (context.awaiting === 'system') {
+    return Boolean(systemFrom(text)) && text.trim().split(/\s+/).length <= 7
+      || Boolean(context.system) && /^(?:ndio|ndiyo|sawa|naam|yes|endelea|go ahead)[.! ]*$/i.test(text.trim());
+  }
   return context.planNames?.some(name => text.toLowerCase().includes(name.toLowerCase())) ?? false;
 }
 

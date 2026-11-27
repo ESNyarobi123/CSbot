@@ -591,6 +591,57 @@ export function systemAdvice(
   return '';
 }
 
+function billingRecommendation(text: string, memory: Conversation['memory'], say: (sw: string, en: string) => string) {
+  const billing = /\b(?:mfumo|mifumo|platform|system|billing|wotefy|lubfy)\b/i.test(text);
+  const recommendation = /\b(?:unanishauri|unashauri|ushauri|pendekeza|unapendekeza|recommend|bora|best|better|ipi ni nzuri|which (?:system|platform)|upi (?:ni|unafaa))\b/i.test(text);
+  if (!billing || !recommendation || supportQuestion(text) || profitQuestion(text) || regionQuestion(text)) return;
+  if (/\b(?:plan|package|kifurushi|vifurushi)\b/i.test(text) &&
+      !/\b(?:mfumo upi|which (?:system|platform))\b/i.test(text)) return;
+
+  const preferred = systemFrom(text);
+  const named = namesNewDevice(text);
+  const current = named ? undefined : memory.product;
+  const fit = systemFit({ name: named ? text : (current?.name ?? memory.facts?.equipment ?? '') });
+  if (!fit) return say(
+    'Ni modeli gani ya router au access point unayotumia? Nikijua modeli, nitakushauri uchague WoteFy au LubFy.',
+    'What router or access point model are you using? I can then recommend WoteFy or LubFy.');
+
+  const mixed = /\b(?:chapa tofauti|brand tofauti|vifaa vya aina tofauti|mix(?:ed|ing)? brands|multiple brands|different brands)\b/i.test(text)
+    || (omadaFleet.test(text) && multiVendorFleet.test(text));
+  const usingLubFy = preferred === 'lubfy' &&
+    /\b(?:tayari natumia|natumia|ninatumia|tunatumia|already us(?:e|ing)|(?:i|we) use)\b.{0,20}\blubfy\b/i.test(text);
+  const recommend = fit === 'lubfy' || mixed || usingLubFy ? 'lubfy' : 'wotefy';
+  const label = current?.name;
+  const quantity = current && memory.installationQuote?.productId === current.id ? memory.installationQuote.quantity : undefined;
+  const count = quantity && quantity > 1 ? quantity : undefined;
+  const context = label ? say(`Kwa ${label}${count ? ' ' + (count === 2 ? 'mbili' : count) : ''}`,
+    `For the ${label}${count ? ' units you picked' : ' you picked'}`)
+    : say('Kwa vifaa ulivyotaja', 'For the equipment you named');
+  let body: string;
+  if (recommend === 'wotefy') {
+    const alternative = preferred === 'lubfy'
+      ? say('Ukitaka LubFy, unaweza kuendelea nayo kupitia Omada Controller.',
+        'If you prefer LubFy, you can use it via Omada Controller.')
+      : say('LubFy pia inaunganisha Omada kupitia Omada Controller.',
+        'LubFy can also integrate Omada through Omada Controller.');
+    body = say(`${context}, ningependekeza *WoteFy* ikiwa utatumia Omada pekee. Mfumo huo umejengwa kwa Omada.`,
+      `${context}, I’d recommend *WoteFy* for an Omada-only setup because it’s built around Omada.`) + ' ' + alternative;
+  } else {
+    body = say(
+      `${context}, ningependekeza *LubFy*. ${usingLubFy ? 'Unaweza kuendelea na mfumo unaoutumia tayari; Omada inaunganishwa kupitia Omada Controller.' : 'Ina njia za kuunganisha chapa tofauti. Tutathibitisha modeli na firmware kabla ya ufungaji.'}`,
+      `${context}, I’d recommend *LubFy*. ${usingLubFy ? 'You can keep the platform you already use; Omada connects through Omada Controller.' : 'It has setup options for different brands. We’ll confirm the exact model and firmware before installation.'}`,
+    );
+  }
+  const quote = memory.installationQuote;
+  if (quote?.awaiting === 'system' && (!quote.productId || quote.productId === current?.id)) {
+    const option = preferred === 'lubfy' && fit === 'wotefy' ? 'lubfy' : recommend;
+    memory.installationQuote = { ...quote, system: option };
+    body += '\n\n' + say(`Nikukokotolee jumla ya oda pamoja na ${systemLabel(option)}?`,
+      `Shall I check your total with ${systemLabel(option)}?`);
+  }
+  return body;
+}
+
 /** Quote cable on its own or ask for the model when fitting is requested. */
 export async function installationOnlyAside(text: string, say: (sw: string, en: string) => string) {
   const wantsInstall = installationWords.test(text);
@@ -751,7 +802,7 @@ export async function customerTurn(...args: Parameters<typeof respond>): Promise
     const acknowledgement = smallTalkOnly(newest) &&
       (/^(?:asante|shukran|thank you|thanks|thx|poa|safi|nzuri)\b/i.test(newest.trim()) ||
         !conversation.memory.awaitingService && !conversation.memory.support && !conversation.memory.survey &&
-        !conversation.memory.documentRequest);
+        !conversation.memory.documentRequest && !conversation.memory.installationQuote?.awaiting);
     const offTopic = unrelatedChat(newest);
     if (offTopic || greeting || acknowledgement) {
       const body = offTopic
@@ -818,6 +869,8 @@ async function answer(
     const language = messageLanguage(newest) ?? memory.language ?? 'sw';
     const setup = installationGuide(newest, memory, (sw, en) => language === 'en' ? en : sw);
     if (setup) return { body: setup, memory: { ...memory, language } };
+    const recommendation = billingRecommendation(newest, memory, (sw, en) => language === 'en' ? en : sw);
+    if (recommendation) return { body: recommendation, memory: { ...memory, language } };
   }
   const knownSymptom = symptomOf(newest) || memory.support?.waitingFor === 'check';
   const knowledge = onlyDetect || knownSymptom ? [] : await retrieveKnowledge(client, newest, systemFrom(newest) || memory.system);

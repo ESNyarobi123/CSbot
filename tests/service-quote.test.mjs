@@ -49,7 +49,7 @@ delete process.env.CSOLUTION_POS_DB_URL;
 delete process.env.WOTEFY_PLANS_URL;
 delete process.env.LUBFY_PLANS_URL;
 
-const { installationAside, installationOnlyAside, isAffirmation, nearbyModels, resolveDecision, respond, serviceQuestion }
+const { installationAside, installationOnlyAside, isAffirmation, nearbyModels, resolveDecision, respond, customerTurn, serviceQuestion }
   = await import('../dist/assistant.js');
 const client = { query: async () => ({ rows: [] }) };
 
@@ -165,4 +165,36 @@ test('the screenshot journey remembers two devices and 30 metres and adds the ch
   const selected = await respond(client, { ...chat, memory: plans.memory }, 'Growth', []);
   assert.match(selected.body, /TZS 1,125,000/);
   assert.doesNotMatch(selected.body, /Starter/);
+});
+
+test('an Omada buyer asking for advice gets a recommendation before LubFy prices', async () => {
+  const chat = { id: 'playground', stage: 'quoted', memory: {
+    product: { id: 'eap650', name: 'TP LINK EAP 650' }, quoteFor: 'product',
+    installationQuote: { productId: 'eap650', quantity: 2, supply: 'shop', wantsCable: true,
+      cableMeters: 30, wantsPlan: true, awaiting: 'system' },
+  } };
+  const advice = await respond(client, chat,
+    'mimi nahitaji lubfy ila unanishauli je kwa wewe unavyo kati ya vifaa hivi je mfumo upi ni best', []);
+  assert.match(advice.body, /EAP 650.*ningependekeza \*WoteFy\*/);
+  assert.match(advice.body, /LubFy.*Omada Controller/);
+  assert.doesNotMatch(advice.body, /MikroTik|firmware|TZS/);
+  assert.ok(advice.body.length <= 330);
+  assert.equal(advice.stage, undefined);
+  assert.equal(advice.memory.installationQuote.awaiting, 'system');
+  assert.equal(advice.memory.installationQuote.system, 'lubfy');
+  assert.equal(advice.memory.installationQuote.quantity, 2);
+  assert.equal(advice.memory.installationQuote.cableMeters, 30);
+
+  const reply = await customerTurn(client, { ...chat, memory: advice.memory }, 'Sawa', []);
+  assert.match(reply.body, /\*LubFy\*/);
+  assert.match(reply.body, /Jumla kabla ya ada ya mfumo.*TZS 1,095,000/);
+});
+
+test('a recommendation stays grounded when the customer names mixed or unconfirmed hardware', async () => {
+  const existing = { id: 'playground', stage: 'quoted', memory: { product: { id: 'eap650', name: 'TP LINK EAP 650' } } };
+  const mixed = await respond(client, existing, 'Mfumo upi ni best kwa Omada EAP650 na MikroTik?', []);
+  assert.match(mixed.body, /ningependekeza \*LubFy\*/);
+  const other = await respond(client, existing, 'Kwa COMFAST CF-E5 mfumo upi ni best?', []);
+  assert.match(other.body, /modeli gani/);
+  assert.doesNotMatch(other.body, /ningependekeza/);
 });
