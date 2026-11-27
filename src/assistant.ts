@@ -1,6 +1,6 @@
 import { installationGuide } from './installation-guide.js';
 import {
-  cableMeters, cableWords, followsInstallationQuote, installationQuote, installationWords, updateInstallationQuote,
+  asksPlanCapacity, cableMeters, cableWords, followsInstallationQuote, installationQuote, installationWords, updateInstallationQuote,
   type InstallationQuoteContext,
 } from './installation-quote.js';
 export { cableMeters } from './installation-quote.js';
@@ -53,6 +53,7 @@ export interface Outcome {
   alertTitle?: string;
   supportAlert?: SupportAlertStatus;
   imageUrl?: string;
+  document?: { name: string; bytes: Buffer };
   /** The steps the bot took to answer, shown in the admin playground. */
   trace?: string[];
   memory: Conversation['memory'];
@@ -768,7 +769,7 @@ async function serviceQuote(
     ? cableMeters(inbound[priorCable].body) : undefined;
   const countMentioned = /\b(?:vifaa|vitengo|vipande|pcs?|units?)\s+(?:\d+|kimoja|moja|viwili|mbili|vitatu|tatu|vinne|nne|vitano|tano)\b|\b(?:\d+|kimoja|moja|viwili|mbili|vitatu|tatu|vinne|nne|vitano|tano)\s+(?:vifaa|vitengo|vipande|pcs?|units?)\b/i.test(text);
   const draft = updateInstallationQuote({ ...context, productId: product?.id,
-    quantity: (countMentioned ? quantityOf(text) : undefined) ?? context?.quantity ?? (previousQuantity ? Number(previousQuantity) : undefined),
+    quantity: (countMentioned && !asksPlanCapacity(text) ? quantityOf(text) : undefined) ?? context?.quantity ?? (previousQuantity ? Number(previousQuantity) : undefined),
     cableMeters: context?.cableMeters ?? meters,
   }, text);
   memory.installationQuote = draft;
@@ -863,8 +864,20 @@ async function answer(
       memory.language = language;
       return { ...outcome, memory };
     }
-    delete memory.documentRequest;
+    if (!memory.documentRequest?.resumeAfterPlan) delete memory.documentRequest;
   }
+  if (!onlyDetect && !supportQuestion(newest) && !namesNewDevice(newest) && memory.product &&
+    memory.installationQuote?.awaiting === 'plan' && followsInstallationQuote(newest, memory.installationQuote)) {
+    const language = messageLanguage(newest) ?? memory.language ?? 'sw';
+    const say = (sw: string, en: string) => language === 'en' ? en : sw;
+    const body = await serviceQuote(newest, memory, say, history, true);
+    if (memory.documentRequest?.resumeAfterPlan && memory.installationQuote?.order?.plan) {
+      const outcome = await quotationTurn('proforma', memory, requestKey, say);
+      if (outcome) return { ...outcome, memory: { ...memory, language } };
+    }
+    if (body) return { body: body.trim(), memory: { ...memory, language }, stage: 'quoted' };
+  }
+  if (!onlyDetect && memory.documentRequest?.resumeAfterPlan) delete memory.documentRequest;
   if (!onlyDetect) {
     const language = messageLanguage(newest) ?? memory.language ?? 'sw';
     const setup = installationGuide(newest, memory, (sw, en) => language === 'en' ? en : sw);

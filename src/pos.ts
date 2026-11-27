@@ -44,6 +44,8 @@ const planSchema = z.object({
   percentage_basis: z.string().optional(),
   billing_period: z.string().optional(),
   setup_fee: price.optional(),
+  device_limit: z.number().int().nonnegative().optional(),
+  omada_limit: z.number().int().nonnegative().optional(),
   features: z.array(z.string()).default([]),
 });
 
@@ -211,6 +213,7 @@ export async function cableQuote(meters: number) {
 }
 
 export type InstallationOption = {
+  id: string;
   name: string;
   /** A when the shop supplies the device, B when the customer already owns it. */
   variant: string;
@@ -250,6 +253,7 @@ export async function installationOptions(product: {
       const variant = variantLetter(service.name);
       const withOurEquipment = variant === 'A' ? true : variant === 'B' ? false : undefined;
       return {
+        id: service.id,
         name: service.name,
         variant,
         withOurEquipment,
@@ -369,6 +373,7 @@ export function publicSubscriptionPlans(system: z.infer<typeof systemName>, payl
     })) }).parse(payload);
     return data.filter(item => item.isActive).map(item => ({
       name: item.name, price: { amount: item.price, currency: item.currency }, billing_period: item.interval,
+      device_limit: item.maxDevices ?? undefined,
       features: [item.maxSites === null ? '' : `${item.maxSites} site(s)`,
         item.maxDevices === null ? '' : `${item.maxDevices} device(s)`].filter(Boolean),
     }));
@@ -377,11 +382,13 @@ export function publicSubscriptionPlans(system: z.infer<typeof systemName>, payl
     display_name: z.string(), amount_minor: z.number().int().nonnegative(), currency,
     billing_interval: cycle, status: z.string(),
     features: z.object({ sites_limit: z.number().int().nonnegative().optional(),
-      routers_limit: z.number().int().nonnegative().optional() }).optional(),
+      routers_limit: z.number().int().nonnegative().optional(),
+      omada_routers_limit: z.number().int().nonnegative().optional() }).optional(),
   })) }).parse(payload);
   return items.filter(item => item.status === 'ACTIVE').map(item => ({
     name: item.display_name, price: { amount: item.amount_minor / 100, currency: item.currency },
     billing_period: item.billing_interval,
+    omada_limit: item.features?.omada_routers_limit,
     features: [item.features?.sites_limit === undefined ? '' : `${item.features.sites_limit} site(s)`,
       item.features?.routers_limit === undefined ? '' : `${item.features.routers_limit} router(s)`].filter(Boolean),
   }));

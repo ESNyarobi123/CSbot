@@ -1,4 +1,5 @@
 import { asksNewCommercialQuestion } from './admin-support.js';
+import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -281,9 +282,19 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         withPhoto: Boolean(photo), withVoice: spoken, canReply }, 'Slow reply generation');
       await client.query('UPDATE conversations SET memory=$2,updated_at=now() WHERE id=$1', [conversationId, outcome.memory]);
       if (canReply && outcome.handoff && !awaitingAgent) await setMode(client, conversationId, 'human', true);
+      let document;
+      if (canReply && outcome.document) {
+        const { name, bytes } = outcome.document;
+        const attachment = (await row<{ id: string }>(client, `INSERT INTO media
+          (account_id,conversation_id,provider_id,kind,mimetype,bytes,size)
+          VALUES ($1,$2,$3,'document','application/pdf',$4,$5) RETURNING id`,
+        [conversation.account_id, conversationId, randomUUID(), bytes, bytes.length]))!;
+        document = { id: attachment.id, name, hash: createHash('sha256').update(bytes).digest('hex') };
+      }
       if (canReply && outcome.body) await enqueue(client, {
         accountId: conversation.account_id, conversationId, jid: recipient(conversation),
         origin: outcome.handoff || awaitingAgent ? 'handoff' : 'bot', body: outcome.body.slice(0, 3600), imageUrl: outcome.imageUrl,
+        document,
       });
       const updated = { ...conversation, memory: outcome.memory };
       if (outcome.stage) {

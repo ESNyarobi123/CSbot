@@ -19,10 +19,22 @@ const products = [
     price: { amount: 2500, currency: 'TZS' }, images: [] },
 ];
 
-const server = createServer((req, res) => {
+const proformas = [];
+const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://fixture');
   const tokens = (url.searchParams.get('search') ?? '').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
   const reply = (body) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body));
+  if (url.pathname === '/quotations') {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    proformas.push(JSON.parse(Buffer.concat(chunks)));
+    return reply({ number: 'PF-12345678901234567890', pdf: Buffer.from('%PDF-1.7\nfixture').toString('base64') });
+  }
+  if (url.pathname === '/service-plans' && url.searchParams.get('system') === 'lubfy') return reply({ items: [
+    { name: 'LubFy Growth', price: { amount: 15000, currency: 'TZS' }, billing_period: 'MONTHLY', omada_limit: 1 },
+    { name: 'LubFy Power', price: { amount: 25000, currency: 'TZS' }, billing_period: 'MONTHLY', omada_limit: 3 },
+    { name: 'LubFy Ultra', price: { amount: 50000, currency: 'TZS' }, billing_period: 'MONTHLY', omada_limit: 5 },
+  ] });
   if (url.pathname === '/service-plans') return reply({ items: [
     { name: 'Starter', price: { amount: 10000, currency: 'TZS' }, billing_period: 'MONTHLY', features: [] },
     { name: 'Growth', price: { amount: 25000, currency: 'TZS' }, billing_period: 'MONTHLY',
@@ -43,6 +55,8 @@ const server = createServer((req, res) => {
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 process.env.POS_BASE_URL = `http://127.0.0.1:${server.address().port}`;
+process.env.CSOLUTION_QUOTATION_URL = process.env.POS_BASE_URL + '/quotations';
+process.env.CSOLUTION_QUOTATION_TOKEN = 'fixture-quotation-token';
 process.env.DATABASE_URL ??= 'postgres://localhost/csbot';
 delete process.env.DEEPSEEK_API_KEY;
 delete process.env.CSOLUTION_POS_DB_URL;
@@ -165,6 +179,40 @@ test('the screenshot journey remembers two devices and 30 metres and adds the ch
   const selected = await respond(client, { ...chat, memory: plans.memory }, 'Growth', []);
   assert.match(selected.body, /TZS 1,125,000/);
   assert.doesNotMatch(selected.body, /Starter/);
+});
+
+test('a two-device LubFy request keeps the order through confirmation and PDF delivery', async () => {
+  const chat = { id: 'chat-proforma', stage: 'quoted', memory: {
+    language: 'sw', product: { id: 'eap650', name: 'TP LINK EAP 650' }, quoteFor: 'product',
+    installationQuote: { productId: 'eap650', quantity: 2, supply: 'shop', wantsCable: true,
+      cableMeters: 30, wantsPlan: true, system: 'lubfy', awaiting: 'plan',
+      planNames: ['LubFy Growth', 'LubFy Power', 'LubFy Ultra'] },
+  } };
+  const turn = async (message) => {
+    const result = await customerTurn(client, chat, message, [], false, undefined, false, 'account:' + message);
+    chat.memory = JSON.parse(JSON.stringify(result.memory, (_key, value) => (
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value
+    )));
+    return result;
+  };
+  const plan = await turn('nataka lubfy ya plan ya vifaa 2');
+  assert.match(plan.body, /LubFy Power TZS 25,000/);
+  assert.doesNotMatch(plan.body, /LubFy (Growth|Ultra)/);
+  const preview = await turn('nitengenezee invoice nitumie nione');
+  assert.match(preview.body, /TP LINK EAP 650 × 2/);
+  assert.match(preview.body, /CAT 6 CABLE, mita 30/);
+  assert.match(preview.body, /Ufungaji/);
+  assert.match(preview.body, /TZS 1,120,000/);
+  assert.match(preview.body, /Ndiyo/);
+  assert.equal(proformas.length, 0);
+  const sent = await turn('Ndiyo');
+  assert.match(sent.body, /PF-12345678901234567890/);
+  assert.match(sent.document.bytes.toString(), /^%PDF-/);
+  assert.equal(chat.memory.documentRequest, undefined);
+  assert.deepEqual(proformas[0].items.map(({ productId, quantity, role }) => [productId, quantity, role]),
+    [['eap650', 2, 'device'], ['cat6', 30, 'cable'], ['ap-a', 1, 'installation']]);
+  assert.equal(proformas[0].plan.name, 'LubFy Power');
 });
 
 test('an Omada buyer asking for advice gets a recommendation before LubFy prices', async () => {

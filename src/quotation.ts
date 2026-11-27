@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { config } from './config.js';
 import { log } from './db.js';
-import { documentJson, isModelReference, modelQuery, money, requestedBrand, searchProducts } from './pos.js';
+import { documentJson, isModelReference, modelQuery, money, readProduct, requestedBrand, searchProducts } from './pos.js';
+import { installationQuote, type OrderPreview } from './installation-quote.js';
 import type { Conversation } from './store.js';
 
 export const quotationWords = /\b(?:invoice|ankara|pro[ -]?forma|quotation|nukuu ya bei)\b/i;
@@ -23,7 +24,121 @@ export type DocumentRequest = {
   kind: 'invoice' | 'quote';
   product?: NonNullable<Conversation['memory']['product']>;
   quantity?: number;
+  order?: OrderPreview;
+  resumeAfterPlan?: true;
 };
+
+const confirmOrder = /^(?:(?:ndio|ndiyo|naam|yes|confirmed|thibitisha)|(?:sawa|ok|okay)(?:[, ]+(?:tuma|nitumie|endelea|send it))?|(?:tuma|nitumie|endelea|send it)(?:\s+(?:invoice|ankara|proforma))?)[.! ]*$/i;
+type Say = (sw: string, en: string) => string;
+
+function orderSummary(order: OrderPreview, say: Say) {
+  const format = (amount: number) => money({ amount, currency: order.currency });
+  const list = order.lines.map(line => {
+    const label = line.role === 'installation' ? say('Ufungaji', 'Installation') :
+      line.role === 'cable' ? say(`${line.name}, mita ${line.quantity}`, `${line.name}, ${line.quantity} m`)
+        : `${line.name} × ${line.quantity}`;
+    return `• ${label} — ${format(line.unitPrice * line.quantity)}`;
+  });
+  const plan = order.plan;
+  if (plan) {
+    const cycle = /month/i.test(plan.cycle) ? say('/mwezi', '/month') :
+      /year|annual/i.test(plan.cycle) ? say('/mwaka', '/year') : plan.cycle ? ' / ' + plan.cycle : '';
+    list.push(`• ${plan.name} — ${format(plan.amount)}${cycle}`);
+    if (plan.setup) list.push(say(`• Ada ya kuanza — ${format(plan.setup)}`, `• Setup fee — ${format(plan.setup)}`));
+  }
+  const total = order.lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0) +
+    (plan?.amount ?? 0) + (plan?.setup ?? 0);
+  return [...list, say(`*Jumla ya kuanza* ${format(total)}`, `*Initial total* ${format(total)}`)].join('\n');
+}
+
+async function proformaTurn(text: string, memory: Conversation['memory'], requestKey: string | undefined, say: Say) {
+  const product = memory.product;
+  const quote = memory.installationQuote;
+  const pending = memory.documentRequest;
+  const confirmed = Boolean(pending?.order && confirmOrder.test(text.trim()));
+  const explicit = quotationWords.test(text) && !existingInvoice.test(text);
+  if (!product || !quote || quote.productId !== product.id || (!confirmed && !explicit)) return;
+  // New items or requests to modify an order must never issue a previous draft.
+  const mentioned = [...text.matchAll(modelIdentity)].map(item => normalizeModel(item[0]));
+  if (mentioned.some(model => !normalizeModel(product.name).includes(model)) || /\bsku\b/i.test(text) ||
+    (!confirmed && (combineItems.test(text) || [...text.matchAll(unitCount)].length))) return;
+  const kind = pending?.order ? pending.kind : 'invoice';
+  const handoff = () => {
+    delete memory.documentRequest;
+    memory.documentSummary = memory.lastDocument = pending?.order ? orderSummary(pending.order, say) : product.name;
+    return { body: say('Nimepeleka oda kwa timu ya mauzo ithibitishe bei na ikutumie PDF hapa.',
+      'I’ve shared your order with sales so they can confirm the prices and send your PDF here.'),
+    handoff: true, alertTitle: 'Proforma inahitaji ukaguzi' };
+  };
+  try {
+    const { product: fresh, stock } = await readProduct(product.id);
+    let order: OrderPreview;
+    if (quote.fitting || quote.supply || quote.wantsPlan) {
+      if (quote.supply === 'shop' && stock.available_to_sell < (quote.quantity ?? 1)) return handoff();
+      const answer = await installationQuote(fresh, text, say, quote);
+      if (!quote.order) {
+        delete memory.documentRequest;
+        if (!quote.awaiting) return handoff();
+        if (quote.awaiting === 'plan') memory.documentRequest = { kind, resumeAfterPlan: true };
+        return { body: answer };
+      }
+      order = quote.order;
+    } else {
+      const quantity = quote.quantity ?? 1;
+      if (quote.wantsCable || quote.cableMeters || fresh.type !== 'Stocked' || stock.available_to_sell < quantity) return handoff();
+      order = { currency: fresh.price.currency,
+        lines: [{ productId: fresh.id, name: fresh.name, quantity, unitPrice: fresh.price.amount, role: 'device' }] };
+    }
+    const summary = orderSummary(order, say);
+    // PostgreSQL JSONB can reorder object keys when a new turn reads memory.
+    const comparable = ({ currency, lines, plan }: OrderPreview) => JSON.stringify([currency,
+      lines.map(({ productId, name, quantity, unitPrice, role }) =>
+        [productId, role === 'installation' ? '' : name, quantity, unitPrice, role]),
+      plan && [plan.name, plan.cycle, plan.amount, plan.setup]]);
+    if (!confirmed || comparable(pending!.order!) !== comparable(order)) {
+      memory.documentRequest = { kind, order };
+      return { body: [
+        confirmed ? say('Bei au vipengele vya oda vimebadilika. Hii ndiyo oda ya sasa.',
+          'The prices or items have changed. Here is the updated order.')
+          : say('Hii ndiyo oda uliyotaka niweke kwenye proforma?', 'Is this the order you want on your proforma?'),
+        summary, say('Ukithibitisha kwa kuandika *Ndiyo*, nitakutumia PDF hapa.',
+          'Reply *Yes* to confirm and I’ll send the PDF here.'),
+      ].join('\n\n') };
+    }
+    if (!requestKey) {
+      delete memory.documentRequest;
+      return { body: say('Oda imethibitishwa. Kwenye WhatsApp, nitakutumia PDF hapa.',
+        'Order confirmed. In WhatsApp, the PDF will be sent here.') };
+    }
+    const { CSOLUTION_QUOTATION_URL: url, CSOLUTION_QUOTATION_TOKEN: token } = config;
+    if (!url || !token) return handoff();
+    const response = await fetch(url, {
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(6000),
+      headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'proforma', requestId: quotationId(requestKey),
+        items: order.lines.map(({ productId, quantity, unitPrice, role }) => ({ productId, quantity, unitPrice, role })),
+        currency: order.currency, plan: order.plan }),
+    });
+    const payload = z.object({ number: z.string().regex(/^PF-[A-F0-9]{20}$/),
+      pdf: z.string().base64() }).parse(await documentJson(response));
+    const bytes = Buffer.from(payload.pdf, 'base64');
+    if (bytes.length < 10 || bytes.subarray(0, 5).toString() !== '%PDF-') throw new Error('Invalid proforma PDF');
+    delete memory.documentRequest;
+    memory.documentSummary = memory.lastDocument = `${payload.number}\n${summary}`;
+    return { body: say(`Nimekuandalia proforma ${payload.number}. Unaweza kuangalia vipengele na jumla kwenye PDF hii.`,
+      `Here is proforma ${payload.number}. The PDF has a breakdown of the items and total.`),
+    document: { name: `Proforma-${payload.number}.pdf`, bytes } };
+  } catch (error) {
+    log.warn({ code: (error as Error).name }, 'CSolution proforma could not be prepared');
+    return handoff();
+  }
+}
+
+function quotationId(requestKey: string) {
+  const id = createHash('sha256').update('csbot-quotation:' + requestKey).digest('hex');
+  return `${id.slice(0, 8)}-${id.slice(8, 12)}-8${id.slice(13, 16)}-8${id.slice(17, 20)}-${id.slice(20, 32)}`;
+}
+
 export async function quotationTurn(
   text: string, memory: Conversation['memory'], requestKey: string | undefined,
   say: (sw: string, en: string) => string,
@@ -31,6 +146,10 @@ export async function quotationTurn(
   const explicit = quotationWords.test(text);
   const pending = memory.documentRequest;
   if (!explicit && !pending) return;
+  if (!explicit && pending?.resumeAfterPlan) return;
+  const proforma = await proformaTurn(text, memory, requestKey, say);
+  if (proforma) return proforma;
+  if (!explicit && pending?.order) return;
   const counts = [...text.matchAll(unitCount)];
   const bare = pending && quantityOnly.exec(text.trim())?.[1];
   const count = (counts[0]?.[1] ?? counts[0]?.[2] ?? bare ?? '').toLowerCase();
@@ -104,8 +223,7 @@ export async function quotationTurn(
 
   const { CSOLUTION_QUOTATION_URL: url, CSOLUTION_QUOTATION_TOKEN: token } = config;
   if (url && token && requestKey) {
-    const id = createHash('sha256').update('csbot-quotation:' + requestKey).digest('hex');
-    const requestId = `${id.slice(0, 8)}-${id.slice(8, 12)}-8${id.slice(13, 16)}-8${id.slice(17, 20)}-${id.slice(20, 32)}`;
+    const requestId = quotationId(requestKey);
     try {
       const response = await fetch(url, {
         method: 'POST', redirect: 'error', signal: AbortSignal.timeout(4500),

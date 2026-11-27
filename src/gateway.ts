@@ -434,7 +434,7 @@ class Session {
           await client.query('UPDATE conversations SET last_body=left($2,240),last_at=now() WHERE id=$1',
             [picked.conversation_id, body]);
         }
-        if (picked.origin === 'admin' && picked.document_id && picked.document_hash && document && conversation) {
+        if (picked.origin !== 'alert' && picked.document_id && picked.document_hash && document && conversation) {
           await copyInvoiceToAdmins(client, {
             accountId: id, conversationId: picked.conversation_id, outboundId: picked.id,
             customerJid: conversation.customer_jid, customerName: conversation.customer_name, customerPhone: conversation.customer_phone,

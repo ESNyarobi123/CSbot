@@ -283,11 +283,13 @@ export async function copyInvoiceToAdmins(
   const admins = await client.query<{ phone: string }>('SELECT phone FROM admin_numbers WHERE account_id=$1', [input.accountId]);
   const customerPhone = input.customerPhone ?? phoneOf(input.customerJid);
   const customer = input.customerName?.replace(/\s+/g, ' ').trim();
+  const label = /^Proforma-PF-/i.test(input.document.name) ? 'Proforma' : 'Invoice';
   const body = [
-    '*CSbot | Invoice imetumwa kwa mteja*',
+    `*CSbot | ${label} imetumwa kwa mteja*`,
     `*Mazungumzo* #${input.conversationId}`,
     customer && `*Mteja* ${customer}`,
-    `*Invoice* ${input.document.name}`,
+    customerPhone && `*WhatsApp* +${customerPhone}`,
+    `*${label}* ${input.document.name}`,
   ].filter(Boolean).join('\n');
   for (const { phone } of admins.rows) {
     if (phone === customerPhone || phone + '@s.whatsapp.net' === input.customerJid) continue;
