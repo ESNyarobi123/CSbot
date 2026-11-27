@@ -8,7 +8,7 @@ import { shop } from './csolution-pos.js';
 import { db, log, row, transaction } from './db.js';
 import { beat } from './heartbeat.js';
 import { advanceSale, currentSale, withoutQuote } from './sales.js';
-import { latestConsent, platformNotice } from './customer-text.js';
+import { latestConsent, platformNotice, smallTalkOnly } from './customer-text.js';
 import {
   alertAdmins, cancelFollowUps, customerOptedOut, dueFollowUps, enrichCustomer, enqueue,
   markFollowUpSent, recipient, scheduleFollowUp, setCustomerOptedOut, setMode, type Conversation,
@@ -216,6 +216,26 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         }
       }
       const canReply = awaitingAgent || (mode === 'bot' && pending.some(message => message.auto_reply));
+      if (conversation.memory.supportUpdate?.status === 'details' &&
+          eligible && !resume && !smallTalkOnly(newest) && !platformNotice(newest) && !/\?\s*$/.test(newest)) {
+        const memory = { ...conversation.memory };
+        delete memory.supportUpdate;
+        delete memory.documentSummary;
+        const attachment = [...pending].reverse().find(message => message.kind === 'image' && message.media_id)?.media_id;
+        const summary = newest === '[WhatsApp image]' ? 'Mteja ametuma picha' : newest.slice(0, 280);
+        memory.lastSupport = { ...memory.lastSupport, checkResult: summary };
+        await client.query('UPDATE conversations SET memory=$2,updated_at=now() WHERE id=$1', [conversationId, memory]);
+        await alertAdmins(client, { ...conversation, memory }, 'Mteja ametuma taarifa za ziada',
+          attachment ? 'csbot-media:' + attachment : undefined, 'handoff');
+        if (canReply) await enqueue(client, {
+          accountId: conversation.account_id, conversationId, jid: recipient(conversation),
+          origin: awaitingAgent ? 'handoff' : 'bot',
+          body: memory.language === 'en' ? 'Thank you. I’ve shared these details with support.'
+            : 'Asante. Nimewasilisha taarifa hizi kwa timu ya support.',
+        });
+        await client.query("UPDATE messages SET processing='done' WHERE id=ANY($1::bigint[])", [ids]);
+        return;
+      }
       if (voiceUnread && canReply) {
         // Nothing read the words. Dropping the message would be the worst
         // outcome for a customer who spoke instead of typing, so a person gets

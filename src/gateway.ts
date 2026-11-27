@@ -10,7 +10,7 @@ import { downloadImage, maxImageBytes } from './media.js';
 import { audioType, maxAudioBytes } from './voice.js';
 import { blockedLinkStates, codeRequestMs, qrLifetimeMs } from './pairing.js';
 import { seal } from './secrets.js';
-import { ingest, phoneOf } from './store.js';
+import { customerOptedOut, ingest, phoneOf } from './store.js';
 import { whatsappAuth } from './whatsapp-auth.js';
 
 interface Account {
@@ -35,6 +35,7 @@ interface Outbound {
   document_name: string | null;
   document_hash: string | null;
   provider_id: string;
+  request_key: string | null;
 }
 
 class Session {
@@ -129,6 +130,7 @@ class Session {
       body: text?.trim().slice(0, 3500) || `[WhatsApp ${kind}]`, kind,
       occurredAt: timestamp > 0 && timestamp < 4102444800 ? new Date(timestamp * 1000) : new Date(),
       fromMe: Boolean(message.key.fromMe), historical, sessionVersion: this.account.session_version,
+      quotedProviderId: content.extendedTextMessage?.contextInfo?.stanzaId ?? undefined,
     });
     if (!conversationId || historical || message.key.fromMe) return;
     // Blue ticks tell the customer that CSbot has received the message.
@@ -372,7 +374,7 @@ class Session {
     const image = !mock && picked.image_url ? await downloadImage(picked.image_url).catch(() => undefined) : undefined;
     try {
       await transaction(async client => {
-        const conversation = await row(client, 'SELECT mode FROM conversations WHERE id=$1 FOR NO KEY UPDATE',
+        const conversation = await row(client, 'SELECT mode,customer_jid FROM conversations WHERE id=$1 FOR NO KEY UPDATE',
           [picked.conversation_id]);
         const sendState = await row(client, 'SELECT state FROM outbound WHERE id=$1', [picked.id]);
         if (sendState?.state !== 'sending') return;
@@ -383,6 +385,11 @@ class Session {
             WHERE account_id=$1 AND phone=$2`, [id, phoneOf(picked.jid)]));
         if (canceled) {
           await client.query("UPDATE outbound SET state='canceled',reason='settings_changed' WHERE id=$1", [picked.id]);
+          return;
+        }
+        if (picked.origin === 'admin' && picked.request_key?.startsWith('whatsapp-support:') &&
+            conversation?.customer_jid && await customerOptedOut(client, id, conversation.customer_jid)) {
+          await client.query("UPDATE outbound SET state='canceled',reason='customer_opt_out' WHERE id=$1", [picked.id]);
           return;
         }
         if (!this.open || this.stopped || (!mock && !this.socket)) {

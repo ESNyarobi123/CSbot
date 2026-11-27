@@ -59,7 +59,13 @@ const purchaseWords = /\b(bei|price|cost|stock|picha|photo|image|availability|ip
 // "Ofisi yenu inapatikana wapi" uses the same verb as "EAP 650 inapatikana?".
 // Only an explicit price, stock or photo word makes a message a product enquiry.
 const strongPurchaseWords = /\b(bei|price|cost|stock|picha|photo|image|nunua|order|buy|available)\b/i;
-const imageWords = /\b(picha|photo|image)\b/i;
+const imageWords = /\b(picha|photo|image|picture|photos)\b/i;
+function asksForProductPhoto(text: string) {
+  const request = /\b(?:naomba|nahitaji|nataka|nitumie|tuma|nionyeshe|nioneshe|nipe|niletee|nipatie|send|show|share|can i see|may i see)\b[^.!?\n]{0,48}\b(?:picha|photos?|images?|pictures?)\b/i;
+  const bare = /^(?:picha|photos?|images?|pictures?)(?:[ ,]+(?:yake|hiyo|hii|tafadhali|please|ya|[a-z]+[- ]?\d+|[a-z]{2,16}|\d{2,5})){0,4}[.!? ]*$/i;
+  return !/\b(?:usitume|sitaki|bila|no need for|no|without|don.t send)\s+(?:the\s+|a\s+)?(?:picha|photos?|images?|pictures?)\b/i.test(text)
+    && (request.test(text) || bare.test(text.trim()) || /\bpicha (?:yake )?(?:ipo|unayo|mnayo|mnao)\b/i.test(text));
+}
 const followUp = /\b(ile|hiyo|yake|that one|it)\b/i;
 const paymentDenied = /\b(sijalipa|hajalipa|sijakamilisha malipo|haven't paid|have not paid|not paid|didn’t pay|didn't pay)\b/i;
 const paymentQuestion = /\b(je nimelipa|nikisema nimelipa|kama nimelipa|did i pay|have i paid|if i paid)\b/i;
@@ -76,7 +82,7 @@ function fallback(text: string, memory: Conversation['memory']): Decision {
   const language = messageLanguage(text) ?? memory.language ?? 'sw';
   const answer: Decision = {
     intent: 'general', language, system: systemFrom(text), query: '', kind: '', site: '', reply: '',
-    sendImage: imageWords.test(text),
+    sendImage: asksForProductPhoto(text),
   };
   const leadingProduct = memory.productOptions?.find(item =>
     [item.name, item.sku].some(value => value?.toLowerCase() === text.trim().toLowerCase()));
@@ -253,8 +259,7 @@ export async function nearbyModels(query: string) {
 const priceWords = /\b(bei|price|cost|nauli|shilingi|tsh|malipo)\b/i;
 
 // Installation is a separate job, so "bei ya EAP 650 na installation" needs both figures.
-// "jumla" (total) counts here because the combined figure is what the customer wants.
-const installationWords = /\b(installation|instalation|installationi|install|kufunga|kufungwa|kufungia|kusanikisha|kusanikua|kusanikwa|kuweka mfumo|kuniwekea|kutuwekea|kukuwekea|setup|kuset|ufungaji|jumla)\b/i;
+const installationWords = /\b(installation|instalation|installationi|install|kufunga|kufungwa|kufungia|kusanikisha|kusanikua|kusanikwa|kuweka mfumo|kuniwekea|kutuwekea|kukuwekea|setup|kuset|ufungaji)\b/i;
 // Cable is sold by the metre, so a cable question is also a service quote.
 const cableWords = /\b(waya|cable|kebo|nyaya)\b/i;
 const metreWords = /\b(mita|metres?|meters?|mtr)\b/i;
@@ -332,7 +337,7 @@ const rangeWords = /\b(umbali|mbali gani|coverage|range|inafikia|kufikia|reach|d
  * uses, or its specs. Answered from the catalog description, never with a fee.
  */
 export function coverageQuestion(text: string) {
-  return /\b(umbali|coverage|range|inafikia|mbali gani|eneo gani|eneo kubwa|kufikia|reach|distance|how far|ina uwezo|uwezo gani|uwanja|signal gani|specs?|specification|specifications|details?|maelezo|sifa|band|bands|ports?|ghz|frequency|antenna|poe|speed|mbps|concurrent|wateja wangapi|ngapi)\b/i
+  return /\b(umbali|coverage|range|inafikia|mbali gani|eneo gani|eneo kubwa|kufikia|reach|distance|how far|ina uwezo|uwezo gani|uwanja|signal gani|specs?|specification|specifications|details?|maelezo|sifa|band|bands|ports?|ghz|frequency|antenna|poe|speed|mbps|concurrent|wateja wangapi)\b/i
     .test(text);
 }
 
@@ -896,6 +901,11 @@ async function answer(
   const knownSymptom = symptomOf(newest) || memory.support?.waitingFor === 'check';
   const knowledge = onlyDetect || knownSymptom ? [] : await retrieveKnowledge(client, newest, systemFrom(newest) || memory.system);
   const decision = knownSymptom ? resolveDecision(newest, memory) : await decide(newest, memory, history, knowledge);
+  decision.sendImage = asksForProductPhoto(newest);
+  if (decision.sendImage && decision.intent === 'general') {
+    decision.intent = 'product';
+    decision.query = modelQuery(newest);
+  }
   // One chat speaks one language unless the customer clearly switches. Kiswahili
   // is the default: a bare model name carries no signal, and most chats are Swahili.
   const said = messageLanguage(newest);
@@ -1432,6 +1442,7 @@ async function answer(
       return result(say(`Kwa sasa hizo ${memory.productOptions?.length ?? 0} ndizo zilizopo kwenye "${memory.optionQuery}". Nikuunganishe na timu kama unahitaji model maalum?`,
         `Those ${memory.productOptions?.length ?? 0} are all we currently stock for "${memory.optionQuery}". Should I connect you with the team for a specific model?`));
     }
+    if (decision.sendImage && memory.product && !modelQuery(newest) && !requestedBrand(newest)) decision.query = '';
     if (!decision.query && !memory.product) {
       return result(say('Unaulizia bidhaa gani? Tuma jina, model au SKU nikague bei na stock.',
         'Which product? Send its name, model, or SKU so I can check price and stock.'));
@@ -1613,6 +1624,9 @@ async function answer(
             `Only ${stock.available_to_sell} in stock right now. Our team can check availability for the rest.`)
           : '',
       ].filter(Boolean).join('\n') : '';
+      const sameProduct = memory.product?.id === product.id;
+      const previousQuote = memory.lastQuote;
+      const previousQuoteFor = memory.quoteFor;
       memory.product = { id: product.id, name: product.name };
       delete memory.productOptions;
       memory.quoteFor = 'product';
@@ -1629,15 +1643,23 @@ async function answer(
       const inStock = stock.available ?? stock.available_to_sell > 0;
       const availability = inStock ? say('Ipo stock kwa sasa.', 'Currently in stock.')
         : say('Imeisha stock kwa sasa.', 'Currently out of stock.');
-      const imageUrl = (product.images.find(image => image.primary) ?? product.images[0])?.url;
+      const imageUrl = decision.sendImage ? (product.images.find(image => image.primary) ?? product.images[0])?.url : undefined;
+      const wantsSpecs = coverageQuestion(newest)
+        || /\b(niambie|nieleze|eleza|maelezo|sifa|specs?|details?|compare|linganisha|explain|describe|why|kwanini|ports?|poe|mesh|warranty|dhamana|inafaa|inatosha|inatumia|inaweza)\b/i.test(newest);
+      const wantsSystem = Boolean(systemFrom(newest)) || /\b(?:mfumo|system|billing|compatib\w*|compatible|ulinganifu)\b/i.test(newest);
+      const showSpecs = !decision.sendImage && (wantsSpecs || (Boolean(choice) && !priceWords.test(newest)));
       const fitting = await installationAside(product, newest, say);
       const planPrices = await planAside(newest, memory, say);
-      // A question about the model ("ina ports ngapi?", "ni ya nje?", "ina mesh?")
-      // is answered from the sheet in the customer's own language. A bare price
-      // request keeps the short deterministic format.
-      const asking = coverageQuestion(newest) || /\?/.test(newest)
-        || /\b(niambie|nieleze|eleza|maelezo|sifa|details?|compare|linganisha|explain|describe|why|kwanini)\b/i.test(newest);
-      if (asking) {
+      delete memory.awaitingService;
+      if (decision.sendImage && !priceWords.test(newest) && !wantsSpecs && !wantsSystem && !quantity && !fitting) {
+        memory.lastQuote = sameProduct ? previousQuote : undefined;
+        memory.quoteFor = sameProduct ? previousQuoteFor : undefined;
+        return result(imageUrl
+          ? say(`Hii ndiyo picha ya ${product.name}.`, `Here’s the photo of ${product.name}.`)
+          : say(`Picha ya ${product.name} haipatikani kwa sasa.`, `A photo of ${product.name} isn’t available at the moment.`),
+        { imageUrl });
+      }
+      if (wantsSpecs && !decision.sendImage) {
         const topic = knowledge.find(entry => entry.id !== 'csolution');
         const advised = await adviseOnDevice({
           client, product: { id: product.id, name: product.name }, question: newest,
@@ -1658,24 +1680,13 @@ async function answer(
           });
         }
       }
-      // When neither the fitting nor the system came up, one short question keeps the
-      // thread moving without repeating what the customer already asked for.
-      const nextStep = !fitting && !planPrices && installedEquipment.test(`${product.name} ${product.category ?? ''}`)
-        ? say('\n\nJe, unahitaji pia installation na waya, au unajiwekea mwenyewe?',
-          '\n\nDo you also need installation and cable, or will you set it up yourself?')
-        : '';
-      // Remember that the question is open, so a plain "ndio" is answered with the
-      // fitting and cable quote instead of the greeting fallback.
-      if (nextStep) memory.awaitingService = true; else delete memory.awaitingService;
-      return result(`${product.name} — ${price}` + (details ? '\n' + details : '')
-        + (specs ? '\n' + specs : '') + '\n' + availability
-        + (quantityLine ? '\n' + quantityLine : '')
-        + (decision.sendImage && !imageUrl
-          ? '\n' + say('Picha yake haipatikani kwa sasa.', 'The product photo is currently unavailable.') : '')
-        + systemAdvice(product, say)
-        + fitting
-        + planPrices
-        + nextStep,
+      const deviceContext = wantsSystem ? systemAdvice(product, say) : '';
+      const missingPhoto = decision.sendImage && !imageUrl
+        ? '\n' + say('Picha yake haipatikani kwa sasa.', 'The product photo is currently unavailable.') : '';
+      return result(`${product.name} — ${price}`
+        + (showSpecs && details ? '\n' + details : '')
+        + (showSpecs && specs ? '\n' + specs : '') + '\n' + availability
+        + (quantityLine ? '\n' + quantityLine : '') + missingPhoto + deviceContext + fitting + planPrices,
       { stage: 'quoted', imageUrl });
     } catch {
       log.warn('Current product details unavailable');

@@ -22,7 +22,7 @@ const products = [
     price: { amount: 250000, currency: 'TZS' }, images: [] },
   { id: 'ap6', name: 'TP LINK EAP 650', sku: 'EAP650', type: 'Product', unit: 'pcs',
     brand: 'TP LINK', category: 'ACCESS POINT', description: '<p>Outdoor Wi-Fi 6 AP for large yards</p>',
-    price: { amount: 450000, currency: 'TZS' }, images: [] },
+    price: { amount: 450000, currency: 'TZS' }, images: [{ url: 'https://assets.example.test/eap650.jpg' }] },
   { id: 'ap7', name: 'CAMBIUM XV2-21X', sku: 'XV221X', type: 'Product', unit: 'pcs',
     brand: 'CAMBIUM', category: 'ACCESS POINT', description: '<p>Wi-Fi 6 outdoor AP</p>',
     price: { amount: 390000, currency: 'TZS' }, images: [] },
@@ -146,9 +146,7 @@ test('a category request wins over a single model the model picked', async () =>
 
 test('a question about how far a device reaches is not an installation quote', async () => {
   const first = await respond(client, conversation({}), 'TP LINK EAP 610', []);
-  // The bot offered installation at the end of the quote; that offer must not
-  // turn a spec question into a fee message.
-  assert.equal(first.memory.awaitingService, true);
+  assert.equal(first.memory.awaitingService, undefined);
   const outcome = await respond(client, conversation(first.memory), 'Nahitaji kujua ina uwezo wa Kwenda umbali gani', []);
   assert.doesNotMatch(outcome.body, /Installation/);
   assert.doesNotMatch(outcome.body, /TZS 35,000/);
@@ -158,9 +156,9 @@ test('a question about how far a device reaches is not an installation quote', a
   assert.equal(outcome.memory.awaitingService, undefined);
 });
 
-test('a yes still quotes installation after the offer', async () => {
+test('an existing explicit installation offer can still be accepted', async () => {
   const first = await respond(client, conversation({}), 'TP LINK EAP 610', []);
-  const outcome = await respond(client, conversation(first.memory), 'Ndio', []);
+  const outcome = await respond(client, conversation({ ...first.memory, awaitingService: true }), 'Ndio', []);
   assert.match(outcome.body, /Type A/);
   assert.match(outcome.body, /installation TZS 120,000/);
   assert.match(outcome.body, /Jumla kamili na waya/);
@@ -202,4 +200,19 @@ test('a coverage question still shows the price and stock of the device', async 
   assert.match(outcome.body, /TP LINK EAP 610 — TZS 250,000/);
   assert.match(outcome.body, /Ipo stock/);
   assert.match(outcome.body, /hadi mita 200/);
+});
+
+test('an Instagram price enquiry gets current price and stock, with a photo only when requested', async () => {
+  const first = await respond(client, conversation({}),
+    'Nimeona tangazo lenu instagram mnatakangaza eap 650 ndio bei gani manauza', []);
+  assert.match(first.body, /EAP 650 — TZS 450,000/);
+  assert.match(first.body, /Ipo stock/);
+  assert.doesNotMatch(first.body, /installation|waya|Controller|LubFy|Category/i);
+  assert.equal(first.imageUrl, undefined);
+  const seen = await respond(client, conversation(first.memory), 'Nimeona picha ya EAP 650 kwenye tangazo, bei gani?', []);
+  assert.equal(seen.imageUrl, undefined);
+  const requested = await respond(client, conversation(first.memory), 'Naomba picha yake', []);
+  assert.match(requested.body, /EAP 650/);
+  assert.equal(requested.imageUrl, 'https://assets.example.test/eap650.jpg');
+  assert.doesNotMatch(requested.body, /TZS|installation/);
 });

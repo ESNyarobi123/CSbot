@@ -43,7 +43,7 @@ const path = '/v1/conversations/' + conversationId;
 const messagesPath = path + '/messages';
 
 let messages = await waitFor(messagesPath, value => outbound(value).length === 1);
-assert.equal(outbound(messages)[0].kind, 'image');
+assert.equal(outbound(messages)[0].kind, 'text');
 assert.match(digits(outbound(messages)[0].body), /95000/);
 assert.match(outbound(messages)[0].body, /Ipo stock/);
 await simulate(account, 'part-2', 'WR3000');
@@ -215,3 +215,38 @@ assert.equal(download.status, 200);
 assert.equal(download.headers.get('content-disposition'), 'attachment; filename="INV-1001.pdf"');
 assert.equal(Buffer.from(await download.arrayBuffer()).toString('base64'), invoicePdf.base64);
 console.log('Passed: invoice PDF reached the mock gateway once and can only be downloaded by an admin.');
+
+const adminPhone = '+255700100001';
+const supportPhone = '+255700100045';
+const onChannel = (channel, phone, messageId, text, quotedMessageId) =>
+  api(`/v1/accounts/${channel}/simulate`, { method: 'POST', status: 202,
+    data: { phone, messageId, text, quotedMessageId } });
+const supportChat = await onChannel(account, supportPhone, 'support-start',
+  'WoteFy vifaa vyangu vinawaka na kuzima, shida ni mfumo au? mteja@example.test');
+const supportPath = '/v1/conversations/' + supportChat.conversationId;
+const supportState = await waitFor(supportPath, value => value.outbound.some(
+  item => item.origin === 'alert' && item.state === 'sent' && /Msaada wa kiufundi/.test(item.body)));
+const alert = supportState.outbound.find(item => item.origin === 'alert' && /Msaada wa kiufundi/.test(item.body));
+await api(`/v1/accounts/${other}/admin-numbers`, { method: 'PUT', data: { numbers: [adminPhone] } });
+await onChannel(other, adminPhone, 'cross-account', 'Tume fix hili tatizo', alert.provider_id);
+await onChannel(account, adminPhone, 'no-quote', 'Tume fix hili tatizo');
+assert.equal((await api(supportPath)).memory.supportUpdate, undefined);
+
+await onChannel(account, adminPhone, 'request-details', 'Tunahitaji taarifa hizi: modeli na firmware', alert.provider_id);
+await waitFor(supportPath + '/messages', value => value.some(item => item.actor === 'admin' && /modeli na firmware/.test(item.body)));
+await onChannel(account, adminPhone, 'request-details', 'Tunahitaji taarifa hizi: modeli na firmware', alert.provider_id);
+assert.equal((await api(supportPath)).outbound.filter(item => item.origin === 'admin' && /modeli na firmware/.test(item.body)).length, 1);
+await onChannel(account, supportPhone, 'customer-details', 'EAP650 firmware v1.2.0');
+const detailed = await waitFor(supportPath, value => value.outbound.some(
+  item => item.origin === 'alert' && item.state === 'sent' && /Matokeo ya ukaguzi.*EAP650/.test(item.body)));
+const newAlert = detailed.outbound.find(item => item.origin === 'alert' && /Matokeo ya ukaguzi.*EAP650/.test(item.body));
+await onChannel(account, adminPhone, 'stale-update', 'Tume fix: update kutoka arifa ya zamani', alert.provider_id);
+assert.ok(!(await api(supportPath)).outbound.some(item => item.origin === 'admin' && /arifa ya zamani/.test(item.body)));
+await onChannel(account, adminPhone, 'custom-update', 'Mjibu hivi: Tafadhali jaribu tena leo.', newAlert.provider_id);
+await waitFor(supportPath + '/messages', value => value.some(item => item.actor === 'admin' && item.body === 'Tafadhali jaribu tena leo.'));
+await onChannel(account, adminPhone, 'resolve-update', 'Tumesha solve: tuliunganisha kifaa kwenye site sahihi.', newAlert.provider_id);
+await waitFor(supportPath + '/messages', value => value.some(item => item.actor === 'admin' && /tatizo limetatuliwa/.test(item.body)));
+assert.equal((await api(supportPath)).mode, 'bot');
+await onChannel(account, adminPhone, 'resolve-repeat', 'Tume fix: ujumbe mwingine', newAlert.provider_id);
+assert.equal((await api(supportPath)).outbound.filter(item => item.origin === 'admin' && /tatizo limetatuliwa/.test(item.body)).length, 1);
+console.log('Passed: quoted admin support replies route to the right customer, hand details back to the team, and reject stale or duplicate updates.');

@@ -284,7 +284,7 @@ class AdminController {
     const [sale, sales, outbound, media] = await Promise.all([
       currentSale(db, id),
       db.query('SELECT * FROM sales_events WHERE conversation_id=$1 ORDER BY id DESC LIMIT 50', [id]),
-      db.query(`SELECT id,origin,state,reason,body,image_url,created_at,attempted_at,sent_at FROM outbound
+      db.query(`SELECT id,provider_id,origin,state,reason,body,image_url,created_at,attempted_at,sent_at FROM outbound
         WHERE conversation_id=$1 ORDER BY id DESC LIMIT 50`, [id]),
       db.query(`SELECT id,kind,mimetype,size,created_at FROM media
         WHERE conversation_id=$1 ORDER BY id DESC LIMIT 20`, [id]),
@@ -724,6 +724,7 @@ class AdminController {
       imageBase64: z.string().max(12_000_000).regex(/^[A-Za-z0-9+/]+={0,2}$/).optional(),
       audioBase64: z.string().max(24_000_000).regex(/^[A-Za-z0-9+/]+={0,2}$/).optional(),
       audioMime: z.string().max(80).optional(),
+      quotedMessageId: z.string().min(1).max(100).optional(),
     }).refine(value => Boolean(value.text) || Boolean(value.imageBase64) || Boolean(value.audioBase64),
       'Provide text, an image or a voice note'), body);
     const bytes = input.imageBase64 ? Buffer.from(input.imageBase64, 'base64') : undefined;
@@ -739,7 +740,7 @@ class AdminController {
       throw new BadRequestException('Simulated voice notes must be OGG/Opus, MP3, MP4 or WAV and at most 16 MB');
     }
     const conversationId = await ingest({ accountId: id, providerId: input.messageId, jid: input.phone + '@s.whatsapp.net',
-      name: input.name,
+      name: input.name, quotedProviderId: input.quotedMessageId,
       body: input.text || (voice ? '[WhatsApp audio]' : bytes ? '[WhatsApp image]' : ''),
       kind: voice ? 'audio' : bytes ? 'image' : 'text',
       occurredAt: new Date(), image: bytes && mimetype ? { bytes, mimetype } : undefined,

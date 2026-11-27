@@ -1,6 +1,7 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { log, row, transaction } from './db.js';
+import { adminSupportAction } from './admin-support.js';
 import { supportAdminMessage, type SupportAlertStatus } from './support.js';
 
 export type Stage = 'inquiry' | 'quoted' | 'ready_to_pay' | 'payment_reported' | 'paid' | 'completed';
@@ -21,6 +22,7 @@ export interface Conversation {
   memory: {
     replyStatus?: 'waiting' | 'answered';
     handoffPending?: true;
+    supportUpdate?: { status: 'resolved' | 'details'; alertAt: string };
     onboarding?: boolean;
     setup?: import('./installation-guide.js').SetupContext;
     profile?: import('./customer-text.js').CustomerProfile;
@@ -81,6 +83,7 @@ export interface Incoming {
   fromMe?: boolean;
   historical?: boolean;
   sessionVersion?: number;
+  quotedProviderId?: string;
 }
 
 export function phoneOf(jid: string) {
@@ -99,7 +102,12 @@ export async function ingest(message: Incoming) {
     const aliases = [...new Set([jid, message.alternateJid].filter((value): value is string => Boolean(value)))];
     const phone = aliases.map(phoneOf).find(Boolean) ?? null;
     if (!fromMe && phone && await row(client, 'SELECT 1 FROM admin_numbers WHERE account_id=$1 AND phone=$2',
-      [accountId, phone])) return;
+      [accountId, phone])) {
+      if (!historical && message.kind === 'text' && message.quotedProviderId) {
+        await applyAdminSupportReply(client, message, phone);
+      }
+      return;
+    }
     let conversation = await row<Conversation>(client, `SELECT c.* FROM contact_aliases a
       JOIN conversations c ON c.id=a.conversation_id WHERE a.account_id=$1 AND a.jid=ANY($2)
       ORDER BY (a.jid=$3) DESC LIMIT 1`, [accountId, aliases, phone ? `${phone}@s.whatsapp.net` : jid]);
@@ -188,16 +196,82 @@ export async function enqueue(client: PoolClient, item: {
   accountId: string; conversationId: string; jid: string; body: string;
   origin: 'bot' | 'admin' | 'alert' | 'handoff'; imageUrl?: string; requestKey?: string;
   document?: { id: string; name: string; hash: string };
+  supportReply?: boolean;
 }) {
   const providerId = '3EB0' + randomBytes(10).toString('hex').toUpperCase();
-  return row(client, `INSERT INTO outbound (account_id, conversation_id, jid, body, origin, image_url, provider_id, request_key, document_id, document_name, document_hash)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (conversation_id,request_key) DO NOTHING RETURNING id,state`,
+  return row(client, `INSERT INTO outbound (account_id, conversation_id, jid, body, origin, image_url, provider_id, request_key, document_id, document_name, document_hash, support_reply)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (conversation_id,request_key) DO NOTHING RETURNING id,state`,
   [item.accountId, item.conversationId, item.jid, item.body, item.origin, item.imageUrl ?? null, providerId,
-    item.requestKey ?? null, item.document?.id ?? null, item.document?.name ?? null, item.document?.hash ?? null]);
+    item.requestKey ?? null, item.document?.id ?? null, item.document?.name ?? null, item.document?.hash ?? null, item.supportReply ?? false]);
 }
 
 export function recipient(conversation: Conversation) {
   return conversation.customer_jid;
+}
+
+async function applyAdminSupportReply(client: PoolClient, message: Incoming, phone: string) {
+  const alert = await row<{ conversation_id: string; alert_at: string }>(client, `SELECT conversation_id,
+    created_at::text AS alert_at FROM outbound
+    WHERE account_id=$1 AND jid=$2 AND provider_id=$3 AND origin='alert'
+      AND support_reply AND state='sent'`,
+  [message.accountId, phone + '@s.whatsapp.net', message.quotedProviderId]);
+  if (!alert) return;
+
+  const conversation = await row<Conversation>(client, `SELECT * FROM conversations
+    WHERE id=$1 AND account_id=$2 FOR NO KEY UPDATE`, [alert.conversation_id, message.accountId]);
+  if (!conversation) return;
+  const action = adminSupportAction(message.body);
+  const requestKey = 'whatsapp-support:' + createHash('sha256').update(phone + ':' + message.providerId).digest('hex');
+  const to = recipient(conversation);
+  const adminJid = phone + '@s.whatsapp.net';
+  const confirm = (body: string) => enqueue(client, {
+    accountId: message.accountId, conversationId: conversation.id, jid: adminJid,
+    origin: 'alert', body, requestKey: requestKey + ':ack',
+  });
+  if (await row(client, 'SELECT 1 FROM outbound WHERE conversation_id=$1 AND request_key=$2',
+    [conversation.id, requestKey + ':ack'])) return;
+  if (!action) {
+    await confirm('Jibu arifa ya support ukianza na “Tume fix”, “Tunahitaji” au “Mjibu hivi”, kisha andika maelezo.');
+    return;
+  }
+  const newer = await row(client, `SELECT 1 FROM outbound WHERE conversation_id=$1
+    AND support_reply AND state IN ('queued','sending','sent') AND created_at>$2::timestamptz LIMIT 1`,
+  [conversation.id, alert.alert_at]);
+  const previous = conversation.memory.supportUpdate;
+  if (newer || (previous?.alertAt === alert.alert_at && previous.status === 'resolved')) {
+    await confirm('Kesi hii imefungwa au kuna arifa mpya zaidi. Fungua Inbox uangalie mazungumzo ya sasa.');
+    return;
+  }
+  if (await customerOptedOut(client, message.accountId, conversation.customer_jid)) {
+    await confirm('Mteja amesitisha ujumbe wa bot. Taarifa haijatumwa.');
+    return;
+  }
+  const english = conversation.memory.language === 'en';
+  const body = action.kind === 'reply' ? action.text
+    : action.kind === 'details'
+      ? (english ? '*We need a few details to continue*' : '*Taarifa zinazohitajika kwa ombi lako*') + '\n\n' + action.text
+      : [
+        english ? '*Update from support*\nThe team has reported that the issue is resolved.'
+          : '*Taarifa kutoka timu ya support*\nTimu imethibitisha kuwa tatizo limetatuliwa.',
+        action.text,
+        english ? 'Please try it again and let us know if the issue returns.'
+          : 'Tafadhali jaribu tena kisha tuambie kama tatizo litarudi.',
+      ].filter(Boolean).join('\n\n');
+  const queued = await enqueue(client, {
+    accountId: message.accountId, conversationId: conversation.id, jid: to,
+    origin: 'admin', body: body.slice(0, 3500), requestKey,
+  });
+  if (!queued) return;
+  if (action.kind === 'resolved') {
+    await cancelFollowUps(client, conversation.id, ['handoff_ping', 'post_support']);
+    await client.query(`UPDATE conversations SET memory=(memory - 'support') || $2::jsonb,updated_at=now()
+      WHERE id=$1`, [conversation.id, { supportUpdate: { status: 'resolved', alertAt: alert.alert_at } }]);
+    if (conversation.memory.handoffPending) await setMode(client, conversation.id, 'bot');
+  } else if (action.kind === 'details') {
+    await client.query(`UPDATE conversations SET memory=memory || $2::jsonb,updated_at=now() WHERE id=$1`,
+      [conversation.id, { supportUpdate: { status: 'details', alertAt: alert.alert_at } }]);
+  }
+  await confirm(`Taarifa imewekwa kwenye foleni ya WhatsApp kwa mteja wa chat #${conversation.id}.`);
 }
 
 export async function alertAdmins(
@@ -228,7 +302,10 @@ export async function alertAdmins(
     : `CSbot — ${title}\n${customer}\n${subject}${detail ? '\n' + detail : ''}`;
   for (const admin of admins.rows) {
     await enqueue(client, { accountId, conversationId: id, jid: admin.phone + '@s.whatsapp.net',
-      body, origin: 'alert', imageUrl });
+      body: supportStatus && support
+        ? body + '\n\nJibu arifa hii kwa “Tume fix …”, “Tunahitaji …” au “Mjibu hivi …”.'
+        : body,
+      origin: 'alert', imageUrl, supportReply: Boolean(supportStatus && support) });
   }
 }
 

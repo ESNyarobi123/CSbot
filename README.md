@@ -185,6 +185,10 @@ Admin huthibitisha oda na mnunuzi, anatoa invoice kwenye CSolution POS na anapak
 
 CSbot inatambua SSDomada kama WoteFy. Kwa portal inayochelewa, Free Trial inayogoma, au kifaa kilicho offline, inauliza swali la ukaguzi linalolingana na mfumo. Tatizo likiendelea, arifa ya admin huonyesha mfumo, dalili na majibu ya ukaguzi. Oda na support zinafuatiliwa kivyake.
 
+### Kujibu arifa za support kwa WhatsApp
+
+Kwenye namba iliyowekwa kwenye **Admin alerts**, tumia **Reply** juu ya arifa ya support. Anza ujumbe na **Tume fix** ili kumpa mteja taarifa ya suluhisho, **Tunahitaji** ili kuomba taarifa, au **Mjibu hivi** ili kutuma maandishi yako kwa mteja. Maelezo ambayo mteja anatoa baada ya ombi la taarifa yanarudi kwa timu kwenye arifa mpya. Tumia arifa ya karibuni ya kesi husika kuendelea na mazungumzo.
+
 ## Mteja 360 na follow-up
 
 **Rekodi moja kwa kila namba.** `customers` huhifadhi utambulisho na shughuli (`phone`, `name`, `email`, `language`, `segment`, `first_seen`, `last_seen`) kando na `customer_memory.facts` (mambo aliyosema kuhusu eneo lake). Hakuna tena dupisho kati ya `conversations.memory` na `customer_memory`; profile ya zamani (`equipment`/`budget`/`useCase`) imejumuishwa ndani ya `facts` (`equipment`, `budget`, `use`).
