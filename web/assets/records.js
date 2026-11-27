@@ -69,6 +69,7 @@ async function saleDetail(container, signal, conversationId, saleId) {
       ${heading('Order #' + sale.id, name, `<a href="#inbox/${conversationId}" class="btn secondary">${icon('inbox', 16)} Open conversation</a>`)}
       <div class="detail-grid"><section class="card"><header class="card-head"><div class="card-title"><span class="card-icon">${icon('bag', 17)}</span><div><h2>Order details</h2><p>Opened ${dateLabel(sale.opened_at)}</p></div></div>${stagePill(sale.stage)}</header>
         <div class="record-detail"><h3>Quote</h3><p>${esc(sale.quote?.text || 'No quote has been recorded.')}</p>
+          ${sale.quote?.finalInvoice ? `<a class="quiet-link" href="/v1${prefix}/documents/${esc(sale.quote.finalInvoice.mediaId)}" download>Download ${esc(sale.quote.finalInvoice.name)}</a>` : ''}
           ${latest && !sale.closed_at ? btn(sale.stage === 'paid' ? 'Complete order' : 'Confirm payment', 'check', 'data-finish', 'primary') : ''}</div></section>
         <section class="card"><header class="card-head"><div class="card-title"><span class="card-icon">${icon('clock', 17)}</span><div><h2>Order history</h2><p>Updates for this order</p></div></div></header>
           <div class="event-timeline">${events

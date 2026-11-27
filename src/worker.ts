@@ -1,4 +1,4 @@
-import { asksNewCommercialQuestion } from './admin-support.js';
+import { asksNewCommercialQuestion, supportConfirmation } from './admin-support.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Queue, Worker } from 'bullmq';
@@ -18,6 +18,19 @@ import {
 import { audioAllowed, pendingVoice, transcribe } from './voice.js';
 
 interface Presence { accountId: string; jid: string }
+
+async function startSupportConfirmation(client: Parameters<typeof respond>[0], conversation: Conversation) {
+  const update = conversation.memory.supportUpdate;
+  if (update?.status !== 'resolution_queued') return;
+  update.status = 'awaiting_confirmation';
+  await client.query(`UPDATE conversations SET memory=jsonb_set(memory,'{supportUpdate,status}','"awaiting_confirmation"')
+    WHERE id=$1`, [conversation.id]);
+  await scheduleFollowUp(client, { accountId: conversation.account_id, conversationId: conversation.id,
+    jid: recipient(conversation), kind: 'post_support', at: new Date(Date.now() + 2 * 3600_000),
+    body: conversation.memory.language === 'en'
+      ? 'Were you able to try the fix? Let us know whether the issue is resolved.'
+      : 'Ulipata nafasi ya kujaribu? Tuambie kama tatizo limeisha au bado lipo.' });
+}
 
 async function beginPresence(conversationId: string): Promise<Presence | undefined> {
   const target = await row<{ account_id: string; customer_jid: string; mode: string }>(db, `SELECT c.account_id,
@@ -40,12 +53,12 @@ async function endPresence(presence: Presence | undefined) {
  * Read the words out of a stored voice note. Returns undefined when the file is
  * not audio, when it is too large, or when every transcription attempt failed.
  */
-async function heardAudio(client: Parameters<typeof respond>[0], mediaId: string) {
+async function heardAudio(client: Parameters<typeof respond>[0], mediaId: string, language?: 'sw' | 'en') {
   try {
     const stored = await row<{ bytes: Buffer; mimetype: string }>(client,
       'SELECT bytes,mimetype FROM media WHERE id=$1', [mediaId]);
     if (!stored?.bytes?.length || !audioAllowed(stored.mimetype, stored.bytes.length)) return undefined;
-    return await transcribe(stored, 'en');
+    return await transcribe(stored, language);
   } catch {
     return undefined;
   }
@@ -157,7 +170,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       const textConsent = latestConsent(pending);
       const awaitingAgent = conversation.mode === 'human' && conversation.memory.handoffPending === true;
       const canAssist = conversation.mode === 'bot' || awaitingAgent;
-      const mayTranscribe = !optedOut && textConsent !== 'stop' && canAssist && conversation.memory.language === 'en';
+      const mayTranscribe = !optedOut && textConsent !== 'stop' && canAssist;
       // A voice note is the customer's own words, so the words are recovered
       // before anything is classified. A customer who cannot type should not be
       // asked to type their question again.
@@ -169,7 +182,7 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
       for (const message of pending) {
         if (message.kind !== 'audio' || !pendingVoice(message.body)) continue;
         if (!message.media_id || !mayTranscribe) { voiceUnread = true; continue; }
-        const heard = await heardAudio(client, message.media_id);
+        const heard = await heardAudio(client, message.media_id, conversation.memory.language);
         if (heard?.text) {
           message.body = heard.text;
           await client.query('UPDATE messages SET body=$2 WHERE id=$1', [message.id, heard.text]);
@@ -180,7 +193,8 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         FROM messages WHERE conversation_id=$1 AND processing='done'
         AND occurred_at <= $2 ORDER BY occurred_at DESC,id DESC LIMIT 16`,
       [conversationId, new Date(Math.max(...pending.map(message => message.occurred_at.getTime())))])).rows.reverse();
-      const newest = pending.map(message => message.body.slice(0, 1200)).join('\n').slice(-4500);
+      const newest = pending.filter(message => message.kind !== 'missed_call')
+        .map(message => message.body.slice(0, 1200)).join('\n').slice(-4500);
       // A photo is part of the question: "hii ni nini?" with a picture of the
       // box. The bytes go to the model only for identification, never stored in
       // the prompt history.
@@ -218,6 +232,50 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         }
       }
       const canReply = awaitingAgent || (mode === 'bot' && pending.some(message => message.auto_reply));
+      if (pending.every(message => message.kind === 'missed_call')) {
+        if (canReply && !await row(client, `SELECT 1 FROM outbound
+          WHERE conversation_id=$1 AND request_key LIKE 'missed-call:%'
+            AND created_at >= now()-interval '15 minutes' AND state IN ('queued','sending','sent','uncertain') LIMIT 1`, [conversationId])) {
+          await enqueue(client, { accountId: conversation.account_id, conversationId, jid: recipient(conversation),
+            requestKey: `missed-call:${firstMessage}`, origin: awaitingAgent ? 'handoff' : 'bot',
+            body: conversation.memory.language === 'en'
+              ? 'We missed your call. Send us a message or voice note here and we’ll help you.'
+              : 'Tumeona simu yako. Tuandikie hapa au tuma voice note, tukusaidie.',
+          });
+        }
+        await client.query("UPDATE messages SET processing='done' WHERE id=ANY($1::bigint[])", [ids]);
+        return;
+      }
+      const update = conversation.memory.supportUpdate;
+      if (update?.status === 'resolution_queued' && update.outboundId &&
+        await row(client, 'SELECT 1 FROM outbound WHERE id=$1 AND conversation_id=$2 AND delivered_at IS NOT NULL',
+          [update.outboundId, conversationId])) await startSupportConfirmation(client, conversation);
+      if (canReply && update?.status === 'awaiting_confirmation' && eligible && !resume &&
+        !smallTalkOnly(newest) && !platformNotice(newest) && !asksNewCommercialQuestion(newest)) {
+        const feedback = await supportConfirmation(newest);
+        if (feedback === 'confirmed' || feedback === 'still_broken') {
+          const fixed = feedback === 'confirmed';
+          const memory: Conversation['memory'] = { ...conversation.memory,
+            supportUpdate: { ...update, status: fixed ? 'resolved' : 'reopened' },
+            lastSupport: { ...conversation.memory.lastSupport, checkResult: newest.slice(0, 280) },
+          };
+          await client.query('UPDATE conversations SET memory=$2,updated_at=now() WHERE id=$1', [conversationId, memory]);
+          await cancelFollowUps(client, conversationId, ['handoff_ping', 'post_support']);
+          if (fixed && awaitingAgent) await setMode(client, conversationId, 'bot');
+          if (!fixed) {
+            if (!awaitingAgent) await setMode(client, conversationId, 'human', true);
+            await alertAdmins(client, { ...conversation, memory }, 'Mteja ameripoti tatizo bado lipo', undefined, 'reopened');
+          }
+          await enqueue(client, { accountId: conversation.account_id, conversationId, jid: recipient(conversation),
+            origin: fixed ? 'bot' : 'handoff',
+            body: memory.language === 'en'
+              ? fixed ? 'Thanks for testing. I’ve marked the issue resolved.' : 'Thanks for testing. I’ve reopened this issue with the team.'
+              : fixed ? 'Asante kwa kujaribu. Nimefunga kesi baada ya uthibitisho wako.' : 'Asante kwa kujaribu. Nimefungua kesi hii tena kwa timu.',
+          });
+          await client.query("UPDATE messages SET processing='done' WHERE id=ANY($1::bigint[])", [ids]);
+          return;
+        }
+      }
       if (conversation.memory.supportUpdate?.status === 'details' &&
           eligible && !resume && !smallTalkOnly(newest) && !platformNotice(newest) && !asksNewCommercialQuestion(newest) && !/\?\s*$/.test(newest)) {
         const memory = { ...conversation.memory };
@@ -383,6 +441,12 @@ try {
       lastFollowUp = Date.now();
       try {
         await transaction(async client => {
+          const resolutions = await client.query<Conversation>(`SELECT c.* FROM conversations c
+            JOIN outbound o ON o.conversation_id=c.id AND o.id::text=c.memory#>>'{supportUpdate,outboundId}'
+            WHERE c.memory#>>'{supportUpdate,status}'='resolution_queued'
+              AND o.state='sent' AND o.delivered_at IS NOT NULL
+            ORDER BY o.id LIMIT 20 FOR NO KEY UPDATE OF c SKIP LOCKED`);
+          for (const conversation of resolutions.rows) await startSupportConfirmation(client, conversation);
           const due = await dueFollowUps(client, 20);
           for (const fu of due) {
             if (await customerOptedOut(client, fu.account_id, fu.jid)) {
@@ -399,8 +463,8 @@ try {
             }
             const mode = await row<{ mode: string; stage: string }>(client,
               'SELECT mode,stage FROM conversations WHERE id=$1', [fu.conversation_id]);
-            if (!mode || ['paid', 'completed', 'payment_reported'].includes(mode.stage) ||
-                (fu.kind !== 'handoff_ping' && mode.mode !== 'bot')) {
+            if (!mode || (fu.kind !== 'post_support' && ['paid', 'completed', 'payment_reported'].includes(mode.stage)) ||
+                (!['handoff_ping', 'post_support'].includes(fu.kind) && mode.mode !== 'bot')) {
               await cancelFollowUps(client, fu.conversation_id, [fu.kind]);
               continue;
             }

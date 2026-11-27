@@ -189,7 +189,7 @@ CSbot inatambua SSDomada kama WoteFy. Kwa portal inayochelewa, Free Trial inayog
 
 ### Kujibu arifa za support kwa WhatsApp
 
-Kwenye namba iliyowekwa kwenye **Admin alerts**, tumia **Reply** juu ya arifa ya support. Anza ujumbe na **Tume fix** ili kumpa mteja taarifa ya suluhisho, **Tunahitaji** ili kuomba taarifa, au **Mjibu hivi** ili kutuma maandishi yako kwa mteja. Maelezo ambayo mteja anatoa baada ya ombi la taarifa yanarudi kwa timu kwenye arifa mpya. Tumia arifa ya karibuni ya kesi husika kuendelea na mazungumzo.
+Kwenye namba iliyowekwa kwenye **Admin alerts**, tumia **Reply** juu ya arifa ya support. Eleza kilichofanyika, taarifa zinazohitajika, au ujumbe unaotaka timu impe mteja. CSbot husubiri uthibitisho wa mteja baada ya WhatsApp kuripoti kuwa taarifa ya suluhisho imefika, kisha hufunga au hufungua kesi tena kulingana na jibu. Maelezo ambayo mteja anatoa baada ya ombi la taarifa yanarudi kwa timu kwenye arifa mpya. Tumia arifa ya karibuni ya kesi husika kuendelea na mazungumzo.
 
 ## Mteja 360 na follow-up
 
@@ -242,7 +242,7 @@ Mteja anapoomba maelekezo ya kulipa, chat husogea kwenye `ready_to_pay` na admin
 
 Picha ya mteja huhifadhiwa kwenye table ya `media`. Arifa ya malipo huambatanisha risiti iliyowasili pamoja na taarifa ya malipo. Kwa swali la bidhaa, CSbot hujaribu kusoma lebo kwa Tesseract ndani ya container. Ikiwa lebo haisomeki na DeepSeek imewezeshwa, picha inaweza kutumwa kwa DeepSeek kutambua modeli. Bei na stock husomwa kwenye POS. Admin anaweza kuipata kwa `GET /v1/media/:id`. Worker hufuta picha zilizopita siku `MEDIA_RETENTION_DAYS` (default 90).
 
-**Voice note.** CSbot hutuma Ogg au WAV kwenye DeepSeek Speech to Text ikiwa mazungumzo tayari yametambulika kuwa ya Kiingereza. Majibu yaliyosomeka huonekana kwenye Inbox kama maandishi. Kwa Kiswahili, lugha ambayo bado haijajulikana, au sauti ambayo API imeshindwa kusoma, CSbot inapeleka mazungumzo kwa mhudumu. Mhudumu anaweza kusikiliza voice note kwenye Inbox.
+**Voice note.** Weka JSON ya Google Cloud service account kwenye `GOOGLE_SPEECH_CREDENTIALS` ya worker ili kuwasha Google Speech-to-Text kwa Kiswahili cha Tanzania na English kama lugha mbadala. Chat ya Kiingereza inaendelea kutumia DeepSeek. Sauti ambayo huduma imeshindwa kusoma hupelekwa kwa mhudumu kupitia Inbox. CSbot inaweza kujibu missed voice au video call kwa ujumbe maalum mara moja katika dakika 15.
 
 `memory.profile` huhifadhi maelezo mteja aliyosema wazi kuhusu vifaa anavyotumia, bajeti na matumizi ya mtandao. Maelezo hayo yanaendelea kutumika kwenye oda inayofuata ya chat hiyo. CSbot inasasisha maelezo ya profile mteja anapotoa taarifa mpya inayotambulika.
 

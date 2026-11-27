@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { log, row, transaction } from './db.js';
-import { adminSupportAction } from './admin-support.js';
+import { understandAdminSupportReply } from './admin-support.js';
 import { supportAdminMessage, type SupportAlertStatus } from './support.js';
 
 export type Stage = 'inquiry' | 'quoted' | 'ready_to_pay' | 'payment_reported' | 'paid' | 'completed';
@@ -22,7 +22,8 @@ export interface Conversation {
   memory: {
     replyStatus?: 'waiting' | 'answered';
     handoffPending?: true;
-    supportUpdate?: { status: 'resolved' | 'details'; alertAt: string };
+    supportUpdate?: { status: 'resolved' | 'details' | 'resolution_queued' | 'awaiting_confirmation' | 'reopened';
+      alertAt: string; owner?: string; outboundId?: string };
     onboarding?: boolean;
     setup?: import('./installation-guide.js').SetupContext;
     profile?: import('./customer-text.js').CustomerProfile;
@@ -46,6 +47,7 @@ export interface Conversation {
     documentRequest?: import('./quotation.js').DocumentRequest;
     documentSummary?: string;
     lastDocument?: string;
+    issuedProforma?: { number: string; order: import('./installation-quote.js').OrderPreview; summary: string };
     posQuotation?: { number: string; productId: string; quantity: number };
     /** Set while the bot waits for "yes" to its installation/cable offer. */
     awaitingService?: boolean;
@@ -221,7 +223,6 @@ async function applyAdminSupportReply(client: PoolClient, message: Incoming, pho
   const conversation = await row<Conversation>(client, `SELECT * FROM conversations
     WHERE id=$1 AND account_id=$2 FOR NO KEY UPDATE`, [alert.conversation_id, message.accountId]);
   if (!conversation) return;
-  const action = adminSupportAction(message.body);
   const requestKey = 'whatsapp-support:' + createHash('sha256').update(phone + ':' + message.providerId).digest('hex');
   const to = recipient(conversation);
   const adminJid = phone + '@s.whatsapp.net';
@@ -231,20 +232,21 @@ async function applyAdminSupportReply(client: PoolClient, message: Incoming, pho
   });
   if (await row(client, 'SELECT 1 FROM outbound WHERE conversation_id=$1 AND request_key=$2',
     [conversation.id, requestKey + ':ack'])) return;
-  if (!action) {
-    await confirm('Jibu arifa ya support ukianza na “Tume fix”, “Tunahitaji” au “Mjibu hivi”, kisha andika maelezo.');
-    return;
-  }
   const newer = await row(client, `SELECT 1 FROM outbound WHERE conversation_id=$1
     AND support_reply AND state IN ('queued','sending','sent') AND created_at>$2::timestamptz LIMIT 1`,
   [conversation.id, alert.alert_at]);
   const previous = conversation.memory.supportUpdate;
-  if (newer || (previous?.alertAt === alert.alert_at && previous.status === 'resolved')) {
+  if (newer || (previous?.alertAt === alert.alert_at && ['resolved', 'resolution_queued', 'awaiting_confirmation', 'reopened'].includes(previous.status))) {
     await confirm('Kesi hii imefungwa au kuna arifa mpya zaidi. Fungua Inbox uangalie mazungumzo ya sasa.');
     return;
   }
   if (await customerOptedOut(client, message.accountId, conversation.customer_jid)) {
     await confirm('Mteja amesitisha ujumbe wa bot. Taarifa haijatumwa.');
+    return;
+  }
+  const action = await understandAdminSupportReply(message.body);
+  if (!action) {
+    await confirm('Niambie kama suala limetatuliwa, taarifa gani zinahitajika, au ujumbe gani nimfikishie mteja.');
     return;
   }
   const english = conversation.memory.language === 'en';
@@ -255,8 +257,8 @@ async function applyAdminSupportReply(client: PoolClient, message: Incoming, pho
         english ? '*Update from support*\nThe team has reported that the issue is resolved.'
           : '*Taarifa kutoka timu ya support*\nTimu imethibitisha kuwa tatizo limetatuliwa.',
         action.text,
-        english ? 'Please try it again and let us know if the issue returns.'
-          : 'Tafadhali jaribu tena kisha tuambie kama tatizo litarudi.',
+        english ? 'Could you try it again and tell us whether it’s working now?'
+          : 'Unaweza kujaribu tena kisha utuambie kama sasa inafanya kazi?',
       ].filter(Boolean).join('\n\n');
   const queued = await enqueue(client, {
     accountId: message.accountId, conversationId: conversation.id, jid: to,
@@ -266,11 +268,10 @@ async function applyAdminSupportReply(client: PoolClient, message: Incoming, pho
   if (action.kind === 'resolved') {
     await cancelFollowUps(client, conversation.id, ['handoff_ping', 'post_support']);
     await client.query(`UPDATE conversations SET memory=(memory - 'support') || $2::jsonb,updated_at=now()
-      WHERE id=$1`, [conversation.id, { supportUpdate: { status: 'resolved', alertAt: alert.alert_at } }]);
-    if (conversation.memory.handoffPending) await setMode(client, conversation.id, 'bot');
+      WHERE id=$1`, [conversation.id, { supportUpdate: { status: 'resolution_queued', alertAt: alert.alert_at, owner: phone, outboundId: queued.id } }]);
   } else if (action.kind === 'details') {
     await client.query(`UPDATE conversations SET memory=memory || $2::jsonb,updated_at=now() WHERE id=$1`,
-      [conversation.id, { supportUpdate: { status: 'details', alertAt: alert.alert_at } }]);
+      [conversation.id, { supportUpdate: { status: 'details', alertAt: alert.alert_at, owner: phone } }]);
   }
   await confirm(`Taarifa imewekwa kwenye foleni ya WhatsApp kwa mteja wa chat #${conversation.id}.`);
 }
@@ -329,7 +330,7 @@ export async function alertAdmins(
   for (const admin of admins.rows) {
     await enqueue(client, { accountId, conversationId: id, jid: admin.phone + '@s.whatsapp.net',
       body: supportStatus && support
-        ? body + '\n\nJibu arifa hii kwa “Tume fix …”, “Tunahitaji …” au “Mjibu hivi …”.'
+        ? body + '\n\nJibu arifa hii ueleze kilichofanyika au taarifa unazohitaji kutoka kwa mteja.'
         : body,
       origin: 'alert', imageUrl, supportReply: Boolean(supportStatus && support) });
   }

@@ -104,6 +104,19 @@ class Session {
     const rawJid = message.key.remoteJid;
     const id = message.key.id;
     if (!rawJid || !id || isIgnoredJid(rawJid) || (!isPnUser(rawJid) && !isLidUser(rawJid))) return;
+    const stub = message.messageStubType;
+    const missed = stub === proto.WebMessageInfo.StubType.CALL_MISSED_VOICE ||
+      stub === proto.WebMessageInfo.StubType.CALL_MISSED_VIDEO;
+    if (missed) {
+      const occurredAt = new Date(Number(message.messageTimestamp) * 1000);
+      if (historical || message.key.fromMe || !Number.isFinite(occurredAt.getTime()) ||
+        Math.abs(Date.now() - occurredAt.getTime()) > 120_000) return;
+      await ingest({ accountId: this.account.id, providerId: id, jid: jidNormalizedUser(rawJid),
+        alternateJid: message.key.remoteJidAlt ?? undefined, kind: 'missed_call',
+        body: stub === proto.WebMessageInfo.StubType.CALL_MISSED_VIDEO ? '[Missed WhatsApp video call]' : '[Missed WhatsApp voice call]',
+        occurredAt, sessionVersion: this.account.session_version });
+      return;
+    }
     const content = normalizeMessageContent(message.message);
     if (!content || content.protocolMessage || content.reactionMessage || content.senderKeyDistributionMessage) return;
     const jid = jidNormalizedUser(rawJid);
@@ -424,7 +437,9 @@ class Session {
             clearTimeout(deadline);
           }
         }
-        await client.query("UPDATE outbound SET state='sent',body=$2,sent_at=now() WHERE id=$1", [picked.id, body]);
+        await client.query(`UPDATE outbound SET state='sent',body=$2,sent_at=now(),
+          delivered_at=CASE WHEN $3 THEN COALESCE(delivered_at,now()) ELSE delivered_at END WHERE id=$1`,
+        [picked.id, body, mock]);
         if (picked.origin !== 'alert') {
           await client.query(`INSERT INTO messages (conversation_id,provider_id,direction,actor,body,kind,occurred_at,media_id)
             VALUES ($1,$2,'outbound',$3,$4,$5,now(),$6) ON CONFLICT DO NOTHING`,

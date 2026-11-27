@@ -127,6 +127,13 @@ export async function overview(container, signal) {
       ${metric('Open sales', stats.open_sales, 'bag', 'green', 'Active customer orders', '#sales')}
       ${metric('Needs a human', stats.human, 'user', 'amber', 'Conversations in manual mode', '#inbox/human')}
     </div>
+    <div class="metrics">
+      ${metric('First reply', stats.first_reply_median_seconds == null ? '—' : number(stats.first_reply_median_seconds) + 's',
+        'clock', 'blue', 'Median for new chats · last 7 days', '#inbox')}
+      ${metric('Stalled chats', stats.stalled_chats ?? 0, 'inbox', 'amber', 'Incoming work pending over 2 minutes', '#inbox')}
+      ${metric('Unconfirmed sends', stats.uncertain, 'phone', 'violet', 'Needs WhatsApp delivery review', '#inbox')}
+      ${metric('Handoffs awaiting reply', stats.handoffs_waiting ?? 0, 'user', 'amber', 'Customer waiting for the team', '#inbox/human')}
+    </div>
     <div class="dashboard-grid">
       <section class="card chart-card"><header class="card-head"><div class="card-title"><span class="card-icon">${icon('bars', 17)}</span><div><h2>Message activity</h2><p>Incoming and outgoing messages</p></div></div>
         <div class="segmented" aria-label="Activity date range"><button type="button" class="selected" data-days="7" aria-pressed="true">7 days</button><button type="button" data-days="30" aria-pressed="false">30 days</button></div></header>

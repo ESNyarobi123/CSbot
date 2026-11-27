@@ -10,6 +10,7 @@ export const config = z.object({
   SESSION_KEY: optional,
   ALLOW_MOCK: z.enum(['true', 'false']).default('false').transform(value => value === 'true'),
   DEEPSEEK_API_KEY: optional,
+  GOOGLE_SPEECH_CREDENTIALS: optional,
   DEEPSEEK_MODEL: z.literal('deepseek-flash').default('deepseek-flash'),
   SYNC_FULL_HISTORY: z.enum(['true', 'false']).default('true').transform(value => value === 'true'),
   POS_BASE_URL: z.preprocess(value => value === '' ? undefined : value,

@@ -235,6 +235,27 @@ class AdminController {
       (SELECT count(*) FROM messages WHERE processing='pending')::int AS pending,
       (SELECT count(*) FROM outbound WHERE state='queued')::int AS queued,
       (SELECT count(*) FROM outbound WHERE state='uncertain')::int AS uncertain,
+      (SELECT count(DISTINCT m.conversation_id) FROM messages m JOIN conversations c ON c.id=m.conversation_id
+        JOIN accounts a ON a.id=c.account_id WHERE a.enabled AND m.processing='pending' AND
+        m.received_at < now()-interval '2 minutes')::int AS stalled_chats,
+      (SELECT count(*) FROM conversations c JOIN accounts a ON a.id=c.account_id
+        WHERE a.enabled AND c.memory @> '{"handoffPending":true}' AND
+          (SELECT direction FROM messages WHERE conversation_id=c.id AND kind NOT LIKE 'history:%'
+            AND actor <> 'bot' ORDER BY occurred_at DESC,id DESC LIMIT 1) = 'inbound')::int AS handoffs_waiting,
+      (SELECT round(percentile_cont(0.5) WITHIN GROUP (ORDER BY elapsed))::int FROM (
+        SELECT extract(epoch FROM (reply.occurred_at - incoming.occurred_at))::double precision AS elapsed
+        FROM conversations c
+        CROSS JOIN LATERAL (
+          SELECT occurred_at FROM messages WHERE conversation_id=c.id AND direction='inbound'
+            AND auto_reply AND kind NOT LIKE 'history:%' ORDER BY occurred_at,id LIMIT 1
+        ) incoming
+        CROSS JOIN LATERAL (
+          SELECT occurred_at FROM messages WHERE conversation_id=c.id AND direction='outbound'
+            AND occurred_at >= incoming.occurred_at AND kind NOT LIKE 'history:%'
+          ORDER BY occurred_at,id LIMIT 1
+        ) reply
+        WHERE incoming.occurred_at >= now()-interval '7 days'
+      ) first_replies) AS first_reply_median_seconds,
       (SELECT count(*) FROM sales WHERE closed_at IS NULL)::int AS open_sales`);
     const accounts = (await db.query(`SELECT id,status,enabled,
       (SELECT count(*) FROM outbound o WHERE o.account_id=accounts.id AND o.state='queued')::int AS queued
@@ -353,6 +374,7 @@ class AdminController {
   async send(@Param('id') id: string, @Body() body: unknown) {
     read(recordId, id);
     const input = read(z.object({ text: bodyText, requestId: z.string().min(8).max(100),
+      saleId: recordId.optional(),
       imageUrl: z.url({ protocol: /^https$/ }).optional(),
       invoicePdf: z.object({
         name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,110}\.pdf$/i),
@@ -366,6 +388,7 @@ class AdminController {
       throw new BadRequestException('Image host is not listed in PRODUCT_IMAGE_HOSTS');
     }
     const documentBytes = input.invoicePdf && Buffer.from(input.invoicePdf.base64, 'base64');
+    if (input.saleId && !documentBytes) throw new BadRequestException('Attach an invoice to link it to an order');
     if (documentBytes && (input.imageUrl || input.text.length > 1000 ||
         documentBytes.length > 4 * 1024 * 1024 || documentBytes.subarray(0, 5).toString() !== '%PDF-')) {
       throw new BadRequestException('Attach one PDF up to 4 MB with a caption up to 1,000 characters');
@@ -381,8 +404,15 @@ class AdminController {
             existing.document_name !== (input.invoicePdf?.name ?? null) || existing.document_hash !== documentHash) {
           throw new BadRequestException('Request ID was used with different content');
         }
+        if (input.saleId && !await row(client, `SELECT 1 FROM sales WHERE id=$1 AND conversation_id=$2
+          AND quote#>>'{finalInvoice,outboundId}'=$3`, [input.saleId, id, existing.id])) {
+          throw new BadRequestException('Request ID was used for a different order');
+        }
         return { id: existing.id, state: existing.state };
       }
+      const sale = input.saleId ? await currentSale(client, id) : undefined;
+      if (input.saleId && (!sale || sale.id !== input.saleId || !sale.quote?.proforma ||
+          !['paid', 'completed'].includes(sale.stage))) throw new ConflictException('The proforma order is no longer ready for its final invoice');
       let document;
       if (input.invoicePdf && documentBytes && documentHash) {
         const attachment = (await row<{ id: string }>(client, `INSERT INTO media
@@ -392,8 +422,14 @@ class AdminController {
         document = { id: attachment.id, name: input.invoicePdf.name, hash: documentHash };
       }
       if (input.takeover) await setMode(client, id, 'human');
-      return enqueue(client, { accountId: conversation.account_id, conversationId: id, jid: recipient(conversation),
+      const queued = await enqueue(client, { accountId: conversation.account_id, conversationId: id, jid: recipient(conversation),
         origin: 'admin', body: input.text, imageUrl: input.imageUrl, requestKey: input.requestId, document });
+      if (document && queued && sale) {
+        await client.query(`UPDATE sales SET quote=quote || $2::jsonb,updated_at=now() WHERE id=$1`, [
+          sale.id, { finalInvoice: { outboundId: queued.id, mediaId: document.id, name: document.name } },
+        ]);
+      }
+      return queued;
     });
   }
 
@@ -724,9 +760,10 @@ class AdminController {
       imageBase64: z.string().max(12_000_000).regex(/^[A-Za-z0-9+/]+={0,2}$/).optional(),
       audioBase64: z.string().max(24_000_000).regex(/^[A-Za-z0-9+/]+={0,2}$/).optional(),
       audioMime: z.string().max(80).optional(),
+      missedCall: z.enum(['voice', 'video']).optional(),
       quotedMessageId: z.string().min(1).max(100).optional(),
-    }).refine(value => Boolean(value.text) || Boolean(value.imageBase64) || Boolean(value.audioBase64),
-      'Provide text, an image or a voice note'), body);
+    }).refine(value => value.missedCall ? !value.text && !value.imageBase64 && !value.audioBase64
+      : Boolean(value.text || value.imageBase64 || value.audioBase64), 'Provide text, media, or a missed call'), body);
     const bytes = input.imageBase64 ? Buffer.from(input.imageBase64, 'base64') : undefined;
     const mimetype = bytes ? imageMimetype(bytes) : undefined;
     if (bytes && (!mimetype || bytes.length > maxImageBytes)) {
@@ -741,8 +778,9 @@ class AdminController {
     }
     const conversationId = await ingest({ accountId: id, providerId: input.messageId, jid: input.phone + '@s.whatsapp.net',
       name: input.name, quotedProviderId: input.quotedMessageId,
-      body: input.text || (voice ? '[WhatsApp audio]' : bytes ? '[WhatsApp image]' : ''),
-      kind: voice ? 'audio' : bytes ? 'image' : 'text',
+      body: input.missedCall ? `[Missed WhatsApp ${input.missedCall} call]` :
+        input.text || (voice ? '[WhatsApp audio]' : bytes ? '[WhatsApp image]' : ''),
+      kind: input.missedCall ? 'missed_call' : voice ? 'audio' : bytes ? 'image' : 'text',
       occurredAt: new Date(), image: bytes && mimetype ? { bytes, mimetype } : undefined,
       audio: voice ? { bytes: voice, mimetype: voiceMime } : undefined });
     return { conversationId: conversationId ?? null };

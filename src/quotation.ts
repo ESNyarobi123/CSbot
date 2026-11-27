@@ -4,7 +4,8 @@ import { config } from './config.js';
 import { log } from './db.js';
 import { deepseekJson } from './deepseek.js';
 import { documentJson, isModelReference, modelQuery, money, readProduct, requestedBrand, searchProducts } from './pos.js';
-import { installationQuote, type OrderPreview } from './installation-quote.js';
+import { asksPlanCapacity, cableMeters, cableWords, installationQuote, updateInstallationQuote, type OrderPreview } from './installation-quote.js';
+import { systemFrom } from './customer-text.js';
 import type { ReplyHistoryLine } from './reply-policy.js';
 import type { Conversation } from './store.js';
 
@@ -71,7 +72,7 @@ async function interpretProforma(text: string, order: OrderPreview) {
 
 type Say = (sw: string, en: string) => string;
 
-function orderSummary(order: OrderPreview, say: Say) {
+export function orderSummary(order: OrderPreview, say: Say) {
   const format = (amount: number) => money({ amount, currency: order.currency });
   const list = order.lines.map(line => {
     const label = line.role === 'installation' ? say('Ufungaji', 'Installation') :
@@ -105,7 +106,7 @@ export function recoverProformaConfirmation(memory: Conversation['memory'], hist
 
 async function proformaTurn(
   text: string, memory: Conversation['memory'], requestKey: string | undefined, say: Say, priorPlanChoice?: string,
-  mode: 'approve' | 'preview' | undefined = undefined,
+  mode: 'approve' | 'preview' | undefined = undefined, knownRevision = false,
 ) {
   const product = memory.product;
   const quote = memory.installationQuote;
@@ -116,7 +117,7 @@ async function proformaTurn(
   // New items or requests to modify an order must never issue a previous draft.
   const mentioned = [...text.matchAll(modelIdentity)].map(item => normalizeModel(item[0]));
   if (mentioned.some(model => !normalizeModel(product.name).includes(model)) || /\bsku\b/i.test(text) ||
-    (!confirmed && (combineItems.test(text) || [...text.matchAll(unitCount)].length))) return;
+    (!confirmed && !knownRevision && (combineItems.test(text) || [...text.matchAll(unitCount)].length))) return;
   const kind = pending?.order ? pending.kind : 'invoice';
   const handoff = () => {
     delete memory.documentRequest;
@@ -180,9 +181,11 @@ async function proformaTurn(
     if (bytes.length < 10 || bytes.subarray(0, 5).toString() !== '%PDF-') throw new Error('Invalid proforma PDF');
     delete memory.documentRequest;
     memory.documentSummary = memory.lastDocument = `${payload.number}\n${summary}`;
+    memory.lastQuote = memory.lastDocument;
+    memory.issuedProforma = { number: payload.number, order, summary: memory.lastDocument };
     return { body: say(`Nimekuandalia proforma ${payload.number}. Unaweza kuangalia vipengele na jumla kwenye PDF hii.`,
       `Here is proforma ${payload.number}. The PDF has a breakdown of the items and total.`),
-    document: { name: `Proforma-${payload.number}.pdf`, bytes } };
+    stage: 'quoted' as const, document: { name: `Proforma-${payload.number}.pdf`, bytes } };
   } catch (error) {
     log.warn({ code: (error as Error).name }, 'CSolution proforma could not be prepared');
     return handoff();
@@ -206,8 +209,8 @@ export async function quotationTurn(
   if (pending?.order && !existingInvoice.test(text)) {
     const mentionsOtherModel = [...text.matchAll(modelIdentity)].some(match =>
       !normalizeModel(memory.product?.name ?? '').includes(normalizeModel(match[0])));
-    const addsItems = combineItems.test(text) || [...text.matchAll(unitCount)].length > 0 ||
-      /\b(?:sku|ongeza|punguza|ondoa|badilisha|instead of)\b/i.test(text);
+    const addsItems = /\b(?:sku|ongeza|punguza|ondoa|badilisha|instead of)\b/i.test(text) ||
+      (!/[?？]/.test(text) && (combineItems.test(text) || [...text.matchAll(unitCount)].length > 0));
     const intent = mentionsOtherModel || addsItems ? 'change' : await interpretProforma(text, pending.order);
     if (intent === 'hold') {
       delete memory.documentRequest;
@@ -219,14 +222,26 @@ export async function quotationTurn(
     ) };
     if (intent === 'unclear' || (intent === 'unavailable' && !explicit)) return { body: say('Nikutumie PDF ya oda hiyo, au kuna kitu ungependa nibadilishe?',
       'Would you like me to send the PDF for that order, or is there something you’d like to change?') };
-    if (intent === 'change' || intent === 'other') {
+    if (intent === 'change') {
       delete memory.documentRequest;
-      if (!explicit) return;
-      if (intent === 'change') {
-        return { body: say('Niambie kipengele unachotaka kubadilisha ili niandae proforma inayolingana na oda yako.',
-          'Tell me which item you’d like to change so I can prepare the right proforma.') };
+      const quote = memory.installationQuote;
+      const count = [...text.matchAll(unitCount)][0];
+      const quantity = count && !asksPlanCapacity(text) ? writtenCounts[(count[1] ?? count[2]).toLowerCase()] ??
+        Number(count[1] ?? count[2]) : undefined;
+      const cableChanged = cableWords.test(text) && (Boolean(cableMeters(text)) || /\b(?:bila|sitaki|sihitaji|without)\b/i.test(text));
+      const planChanged = quote?.wantsPlan && (Boolean(systemFrom(text)) || Boolean(asksPlanCapacity(text)) ||
+        quote.planNames?.some(name => text.toLowerCase().includes(name.toLowerCase())));
+      if (!mentionsOtherModel && quote && !/\bsku\b/i.test(text) && (cableChanged || planChanged || quantity)) {
+        if (quantity && (!Number.isInteger(quantity) || quantity > 500)) return;
+        memory.installationQuote = updateInstallationQuote({ ...quote, quantity: quantity ?? quote.quantity }, text);
+        delete memory.issuedProforma;
+        return proformaTurn(text, memory, requestKey, say, undefined, 'preview', true);
       }
+      if (!explicit) return;
+      return { body: say('Niambie kipengele unachotaka kubadilisha ili niandae proforma inayolingana na oda yako.',
+        'Tell me which item you’d like to change so I can prepare the right proforma.') };
     }
+    if (intent === 'other' && !explicit) return;
     confirmed = intent === 'approve';
   }
   const mode = confirmed ? 'approve' : explicit && !existingInvoice.test(text) ? 'preview' : undefined;

@@ -26,9 +26,11 @@ const person = (name) => {
 const messageBody = (body) => esc(body).replace(/\*([^*\n]+)\*/g, '<strong>$1</strong>');
 
 function customerBrief(thread) {
-  const { profile = {}, requirements = {}, product, productOptions = [], language, support, lastSupport, lastDocument, posQuotation,
+  const { profile = {}, requirements = {}, product, productOptions = [], language, support, lastSupport, supportUpdate, lastDocument, posQuotation,
     facts: siteFacts = {}, trace = [] } = thread.memory || {};
   const caseDetails = support ?? lastSupport;
+  const caseStatus = { details: 'Awaiting customer details', resolution_queued: 'Resolution message queued',
+    awaiting_confirmation: 'Awaiting customer confirmation', resolved: 'Resolved', reopened: 'Reopened' }[supportUpdate?.status];
   const environments = { indoor: 'Indoors', outdoor: 'Outdoors', mixed: 'Indoors and outdoors' };
   const obstacles = { open: 'Open area', obstructed: 'Obstructions present' };
   // The flexible memory the bot keeps between chats: whatever the customer said
@@ -66,6 +68,7 @@ function customerBrief(thread) {
     ${models.length ? `<section class="details-section"><h3>${icon('box', 15)} Models discussed</h3>
       <ul class="brief-models">${models.map((item) => `<li>${esc(item.name)}</li>`).join('')}</ul></section>` : ''}
     ${caseDetails?.problem ? `<section class="details-section"><h3>${icon('alert', 15)} Support request</h3>
+      ${caseStatus ? `<p>${esc(caseStatus)}${supportUpdate?.owner ? ' · Assigned to ' + esc(phoneLabel(supportUpdate.owner)) : ''}</p>` : ''}
       <p>${esc(caseDetails.problem)}</p>${caseDetails.checkResult ? `<p>${esc(caseDetails.checkResult)}</p>` : ''}</section>` : ''}
     ${lastDocument || posQuotation ? `<section class="details-section"><h3>${icon('bag', 15)} Sales documents</h3>
       <p>${esc(lastDocument || posQuotation.number)}</p></section>` : ''}
@@ -451,6 +454,8 @@ export async function inbox(container, signal, segments, initialSearch = '') {
     const input = form.querySelector('textarea');
     const attachment = form.querySelector('[type=file]');
     const file = attachment.files[0];
+    const saleId = file && thread?.sale?.quote?.proforma && ['paid', 'completed'].includes(thread.sale.stage)
+      ? thread.sale.id : undefined;
     const text = input.value.trim();
     if (form.querySelector('button').disabled) return;
     sending.add(active);
@@ -462,8 +467,8 @@ export async function inbox(container, signal, segments, initialSearch = '') {
       const previous = retryRequests.get(active);
       const sameAttachment = previous?.invoicePdf?.name === invoicePdf?.name &&
         previous?.invoicePdf?.base64 === invoicePdf?.base64;
-      const request = previous?.text === text && sameAttachment ? previous
-        : { text, invoicePdf, requestId: crypto.randomUUID() };
+      const request = previous?.text === text && sameAttachment && previous?.saleId === saleId ? previous
+        : { text, invoicePdf, saleId, requestId: crypto.randomUUID() };
       retryRequests.set(active, request);
       await api('/conversations/' + active + '/messages', { method: 'POST', data: request });
       retryRequests.delete(active);

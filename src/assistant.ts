@@ -103,7 +103,7 @@ function fallback(text: string, memory: Conversation['memory']): Decision {
   } else if (/\b(nimelipa|nimeshalipa|nimeshatuma pesa|i(?:'ve| have) paid|i paid|payment sent)\b/i.test(text) &&
       !paymentDenied.test(text) && !paymentQuestion.test(text)) {
     answer.intent = 'payment_reported';
-  } else if (/\b(namba (?:ya )?(?:kulipia|malipo)|nataka kulipa|niko tayari kulipa|ready to pay|how (?:do|can) i pay|send.{0,12}payment (?:number|details)|i want to pay)\b/i.test(text) ||
+  } else if (/\b(namba (?:ya )?(?:kulipia|malipo)|nataka kulip(?:a|ia)|niko tayari kulip(?:a|ia)|ready to pay|how (?:do|can) i pay|send.{0,12}payment (?:number|details)|i want to pay)\b/i.test(text) ||
       (memory.lastQuote && /\b(nataka kununua|naichukua|(?:ile|hiyo) naitaka|i(?:'ll| will) take it)\b/i.test(text))) {
     answer.intent = 'ready_to_pay';
   } else if (supportQuestion(text) && !purchaseWords.test(text.replace(/\b(sina|hakuna|haipati)\b/gi, ' '))) {
@@ -157,7 +157,10 @@ function fallback(text: string, memory: Conversation['memory']): Decision {
 export function resolveDecision(text: string, memory: Conversation['memory'], generated?: Decision): Decision {
   const detected = fallback(text, memory);
   if (!generated) return detected;
-  if (['payment_reported', 'ready_to_pay', 'human'].includes(generated.intent) && generated.intent !== detected.intent) {
+  const paymentForIssuedOrder = generated.intent === 'ready_to_pay' && Boolean(memory.issuedProforma) &&
+    detected.intent === 'general' && !paymentDenied.test(text);
+  if (['payment_reported', 'ready_to_pay', 'human'].includes(generated.intent) && generated.intent !== detected.intent &&
+      !paymentForIssuedOrder) {
     return { ...detected, language: generated.language };
   }
   if (['ready_to_pay', 'payment_reported', 'human'].includes(detected.intent)) {
@@ -206,7 +209,7 @@ async function decide(text: string, memory: Conversation['memory'], history: Cha
     plan: memory.plan, planning: memory.planning, lastQuote: memory.lastQuote,
     options: memory.productOptions?.slice(-12).map(item => item.name), awaitingService: memory.awaitingService,
     supportStep: memory.support?.waitingFor, siteFacts: memory.facts, requirements: memory.requirements,
-    hasCompleteOrder: Boolean(memory.installationQuote?.order) },
+    hasCompleteOrder: Boolean(memory.installationQuote?.order), proformaNumber: memory.issuedProforma?.number },
     history, approvedKnowledge: knowledge.map(entry => ({ ...entry, content: entry.content.slice(0, 3000) })) });
   const value = await deepseekJson({
     schema: decisionSchema, maxTokens: 650, prompt: contents,
@@ -877,7 +880,7 @@ async function answer(
       memory.language = language;
       return { ...outcome, memory };
     }
-    if (!memory.documentRequest?.resumeAfterPlan) delete memory.documentRequest;
+    if (!memory.documentRequest?.resumeAfterPlan && !memory.documentRequest?.order) delete memory.documentRequest;
   }
   if (!onlyDetect && !supportQuestion(newest) && !namesNewDevice(newest) && memory.product &&
     memory.installationQuote?.awaiting === 'plan' && followsInstallationQuote(newest, memory.installationQuote)) {
@@ -1154,6 +1157,13 @@ async function answer(
       return result(say('Nimepeleka bidhaa uliyoitaja sasa kwa timu ya mauzo ili ithibitishe bei na stock kabla ya malipo.',
         'I’ve passed the item you just named to sales to verify the price and stock before payment.'),
       { handoff: true, alertTitle: 'Mteja anataka kuagiza bidhaa tofauti' });
+    }
+    const proforma = memory.issuedProforma;
+    if (!onlyDetect && proforma && !memory.documentRequest?.order) {
+      memory.documentSummary = memory.lastQuote = proforma.summary;
+      return result(say(`Nimepeleka proforma ${proforma.number} kwa timu ya mauzo. Itathibitisha stock na maelekezo ya kulipia oda hiyo.`,
+        `I’ve shared proforma ${proforma.number} with sales. They’ll confirm stock and payment instructions for that order.`),
+      { stage: 'ready_to_pay', handoff: true });
     }
     let confirmation = '';
     if (memory.product && memory.quoteFor !== 'plan' && !onlyDetect) {
@@ -1642,6 +1652,10 @@ async function answer(
           : '',
       ].filter(Boolean).join('\n') : '';
       const sameProduct = memory.product?.id === product.id;
+      if (!sameProduct) {
+        delete memory.issuedProforma;
+        if (memory.documentRequest?.order) delete memory.documentRequest;
+      }
       const previousQuote = memory.lastQuote;
       const previousQuoteFor = memory.quoteFor;
       memory.product = { id: product.id, name: product.name };

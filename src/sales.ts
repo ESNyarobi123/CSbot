@@ -7,6 +7,8 @@ interface Quote {
   kind?: 'product' | 'plan';
   product?: Conversation['memory']['product'];
   system?: Conversation['memory']['system'];
+  proforma?: Conversation['memory']['issuedProforma'];
+  finalInvoice?: { outboundId: string; mediaId: string; name: string };
 }
 
 export interface Sale {
@@ -43,7 +45,7 @@ export async function openSale(client: PoolClient, conversation: Conversation, r
 }
 
 export function withoutQuote(memory: Conversation['memory']): Conversation['memory'] {
-  const { lastQuote, quoteFor, product, productOptions, optionQuery, lastOptionIds, awaitingService, plan, documentRequest, documentSummary, lastDocument, posQuotation, installationQuote, ...context } = memory;
+  const { lastQuote, quoteFor, product, productOptions, optionQuery, lastOptionIds, awaitingService, plan, documentRequest, documentSummary, lastDocument, issuedProforma, posQuotation, installationQuote, ...context } = memory;
   return context;
 }
 
@@ -60,8 +62,9 @@ export async function advanceSale(
   const memory = conversation.memory;
   const refreshQuote = (stage === 'quoted' && current <= next) || (stage === 'ready_to_pay' && current < next);
   const quote: Quote | null = memory.lastQuote && refreshQuote
-    ? { text: memory.lastQuote, kind: memory.quoteFor,
-      product: memory.quoteFor === 'plan' ? undefined : memory.product, system: memory.system }
+    ? { text: memory.issuedProforma?.summary ?? memory.lastQuote, kind: memory.quoteFor,
+      product: memory.quoteFor === 'plan' ? undefined : memory.product, system: memory.system,
+      proforma: memory.issuedProforma }
     : sale.quote;
   if (next <= current && quote === sale.quote) return sale;
   const effectiveStage = next > current ? stage : sale.stage;

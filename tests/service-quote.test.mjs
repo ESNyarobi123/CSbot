@@ -218,6 +218,9 @@ test('a two-device LubFy request keeps the order through confirmation and PDF de
   const changed = await customerTurn(client, structuredClone(pending), 'Ndio ila ongeza waya mita 40', [],
     false, undefined, false, 'account:change');
   assert.equal(changed.document, undefined);
+  assert.match(changed.body, /CAT 6 CABLE, mita 40/);
+  assert.match(changed.body, /Ufungaji/);
+  assert.match(changed.body, /LubFy Power/);
   assert.equal(proformas.length, 0);
   const sent = await turn('Ndio mkuu');
   assert.match(sent.body, /PF-12345678901234567890/);
@@ -226,6 +229,11 @@ test('a two-device LubFy request keeps the order through confirmation and PDF de
   assert.deepEqual(proformas[0].items.map(({ productId, quantity, role }) => [productId, quantity, role]),
     [['eap650', 2, 'device'], ['cat6', 30, 'cable'], ['ap-a', 1, 'installation']]);
   assert.equal(proformas[0].plan.name, 'LubFy Power');
+  assert.equal(chat.memory.issuedProforma.number, 'PF-12345678901234567890');
+  const pay = await turn('Nataka kulipia hiyo');
+  assert.equal(pay.stage, 'ready_to_pay');
+  assert.match(pay.body, /PF-12345678901234567890/);
+  assert.match(pay.memory.documentSummary, /CAT 6 CABLE, mita 30/);
 
   const history = [
     { direction: 'outbound', body: preview.body },

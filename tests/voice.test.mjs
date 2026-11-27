@@ -6,6 +6,8 @@ process.env.DEEPSEEK_API_KEY = 'local-test-key';
 
 const { audioAllowed, audioType, maxAudioBytes, pendingVoice, transcribe } = await import('../dist/voice.js');
 const { replyEligible } = await import('../dist/reply-policy.js');
+const { config } = await import('../dist/config.js');
+const { JWT } = await import('google-auth-library');
 
 const audio = { mimetype: 'audio/ogg; codecs=opus', bytes: Buffer.from('OggS voice') };
 
@@ -34,11 +36,30 @@ test('English audio uses the speech endpoint with an Ogg file', async (t) => {
   assert.equal(await request.body.get('file').text(), 'OggS voice');
 });
 
-test('Kiswahili and unclassified voice notes go to staff without calling ASR', async (t) => {
+test('Kiswahili and unclassified voice notes go to staff without Google credentials', async (t) => {
   const call = t.mock.method(globalThis, 'fetch', async () => { throw new Error('unexpected'); });
   assert.equal(await transcribe(audio, 'sw'), undefined);
   assert.equal(await transcribe(audio), undefined);
   assert.equal(call.mock.callCount(), 0);
+});
+
+test('configured Tanzanian Swahili voice uses Google Speech with an English alternative', async (t) => {
+  config.GOOGLE_SPEECH_CREDENTIALS = JSON.stringify({ type: 'service_account',
+    client_email: 'fixture@example.test', private_key: 'fixture' });
+  t.after(() => { config.GOOGLE_SPEECH_CREDENTIALS = undefined; });
+  t.mock.method(JWT.prototype, 'getAccessToken', async () => ({ token: 'test-google-token' }));
+  const call = t.mock.method(globalThis, 'fetch', async () => Response.json({ results: [
+    { alternatives: [{ transcript: 'Nahitaji access point' }] },
+    { alternatives: [{ transcript: 'ya nje' }] },
+  ] }));
+  assert.deepEqual(await transcribe(audio), { text: 'Nahitaji access point ya nje' });
+  const [url, request] = call.mock.calls[0].arguments;
+  assert.equal(url, 'https://speech.googleapis.com/v1/speech:recognize');
+  assert.equal(request.headers.authorization, 'Bearer test-google-token');
+  const parsed = JSON.parse(request.body);
+  assert.equal(parsed.config.languageCode, 'sw-TZ');
+  assert.deepEqual(parsed.config.alternativeLanguageCodes, ['en-US']);
+  assert.equal(parsed.config.encoding, 'OGG_OPUS');
 });
 
 test('blank or unavailable ASR results go to staff', async (t) => {

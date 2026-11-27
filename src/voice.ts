@@ -2,6 +2,7 @@ import { config } from './config.js';
 import { documentJson } from './pos.js';
 import { z } from 'zod';
 import { log } from './db.js';
+import { JWT } from 'google-auth-library';
 
 /**
  * A voice note is a first-class customer message in this market. WhatsApp sends
@@ -31,15 +32,54 @@ export function pendingVoice(body: string) {
 
 const heard = z.object({ text: z.string() });
 let retryAfter = 0;
+let googleAuth: JWT | undefined;
 
-// The ASR supported language list includes English. A chat that primarily
-// uses Swahili or has no language history stays with human transcription.
+async function transcribeSwahili(audio: { mimetype: string; bytes: Buffer }) {
+  const raw = config.GOOGLE_SPEECH_CREDENTIALS;
+  const type = audioType(audio.mimetype);
+  if (!raw || !['audio/ogg', 'audio/wav'].includes(type) || audio.bytes.length > 7 * 1024 * 1024) return;
+  try {
+    if (!googleAuth) {
+      const account = z.object({ type: z.literal('service_account'), client_email: z.email(),
+        private_key: z.string().min(1) }).parse(JSON.parse(raw));
+      googleAuth = new JWT({ email: account.client_email, key: account.private_key,
+        scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
+    }
+    const token = (await googleAuth.getAccessToken()).token;
+    if (!token) return;
+    const response = await fetch('https://speech.googleapis.com/v1/speech:recognize', {
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(12000),
+      headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        config: { languageCode: 'sw-TZ', alternativeLanguageCodes: ['en-US'], model: 'command_and_search',
+          ...(type === 'audio/ogg' ? { encoding: 'OGG_OPUS', sampleRateHertz: 48000 } : {}) },
+        audio: { content: audio.bytes.toString('base64') },
+      }),
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      log.warn({ status: response.status }, 'Google Speech could not transcribe a voice note');
+      return;
+    }
+    const result = z.object({ results: z.array(z.object({
+      alternatives: z.array(z.object({ transcript: z.string() })),
+    })).default([]) }).parse(await documentJson(response));
+    const text = result.results.map(item => item.alternatives[0]?.transcript ?? '')
+      .join(' ').replace(/\s+/g, ' ').trim().slice(0, 1200);
+    return text ? { text } : undefined;
+  } catch (error) {
+    log.warn({ code: (error as Error).name }, 'Google Speech transcription was unavailable');
+  }
+}
+
 export async function transcribe(
   audio: { mimetype: string; bytes: Buffer }, language?: 'sw' | 'en',
 ): Promise<{ text: string } | undefined> {
+  if (!audioAllowed(audio.mimetype, audio.bytes.length)) return;
+  if (language !== 'en') return transcribeSwahili(audio);
   const key = config.DEEPSEEK_API_KEY;
   const type = audioType(audio.mimetype);
-  if (!key || language !== 'en' || Date.now() < retryAfter ||
+  if (!key || Date.now() < retryAfter ||
       !['audio/ogg', 'audio/wav'].includes(type) || !audio.bytes.length || audio.bytes.length > 8 * 1024 * 1024) return;
 
   try {

@@ -262,7 +262,9 @@ await onChannel(account, adminPhone, 'custom-update', 'Mjibu hivi: Tafadhali jar
 await waitFor(supportPath + '/messages', value => value.some(item => item.actor === 'admin' && item.body === 'Tafadhali jaribu tena leo.'));
 await onChannel(account, adminPhone, 'resolve-update', 'Tumesha solve: tuliunganisha kifaa kwenye site sahihi.', newAlert.provider_id);
 await waitFor(supportPath + '/messages', value => value.some(item => item.actor === 'admin' && /tatizo limetatuliwa/.test(item.body)));
-assert.equal((await api(supportPath)).mode, 'bot');
+assert.ok(['resolution_queued', 'awaiting_confirmation'].includes((await api(supportPath)).memory.supportUpdate?.status));
+await onChannel(account, supportPhone, 'customer-confirmed', 'Imefanya kazi');
+await waitFor(supportPath, value => value.memory.supportUpdate?.status === 'resolved');
 await onChannel(account, adminPhone, 'resolve-repeat', 'Tume fix: ujumbe mwingine', newAlert.provider_id);
 assert.equal((await api(supportPath)).outbound.filter(item => item.origin === 'admin' && /tatizo limetatuliwa/.test(item.body)).length, 1);
 console.log('Passed: quoted admin support replies route to the right customer, hand details back to the team, and reject stale or duplicate updates.');

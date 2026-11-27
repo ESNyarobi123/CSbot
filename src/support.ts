@@ -94,7 +94,7 @@ export function supportSummary(support: NonNullable<Conversation['memory']['supp
 
 type SupportDetails = NonNullable<Conversation['memory']['lastSupport']>;
 type Say = (sw: string, en: string) => string;
-export type SupportAlertStatus = 'handoff' | 'guidance';
+export type SupportAlertStatus = 'handoff' | 'guidance' | 'reopened';
 
 function singleLine(value?: string | null) {
   return value?.replace(/\s+/g, ' ').trim();
@@ -152,7 +152,8 @@ export function supportAdminMessage(
   return [
     '*CSbot | Msaada wa kiufundi*',
     [
-      `*Hali* ${status === 'guidance' ? 'Mteja amepewa hatua za ukaguzi' : 'Inasubiri mhudumu'}`,
+      `*Hali* ${status === 'guidance' ? 'Mteja amepewa hatua za ukaguzi' :
+        status === 'reopened' ? 'Mteja amesema tatizo bado lipo' : 'Inasubiri mhudumu'}`,
       `*Mazungumzo* #${conversation.id}`,
       `*Mteja* ${customer}`,
       conversation.customer_phone && `*WhatsApp* +${conversation.customer_phone.replace(/^\+/, '')}`,

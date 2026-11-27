@@ -101,6 +101,7 @@ services:
       <<: *database-url
       REDIS_URL: redis://redis:6379
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      GOOGLE_SPEECH_CREDENTIALS: ${GOOGLE_SPEECH_CREDENTIALS:-}
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
       POS_BASE_URL: ${POS_BASE_URL:-}
       POS_API_TOKEN: ${POS_API_TOKEN:-}
