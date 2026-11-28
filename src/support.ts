@@ -21,7 +21,8 @@ export function supportIntake(text: string, support: Intake, say: Say): { suppor
     .replace(/[\s.,!?;:]+/g, ' ').trim();
   const repeatsEmail = sameAccountEmail.test(text.trim());
   if (repeatsEmail) next.sameEmail = true;
-  const vague = (input: string) => vagueReport.test(input.trim().replace(/\s+(?:kwenye|katika|with|on|in|wa)$/i, ''));
+  const vague = (input: string) => vagueReport.test(input.trim()
+    .replace(/\s+(?:kwenye|katika|kwa|with|on|in|wa|ya)(?=(?:\s+(?:mkuu|kaka|boss|bro|dada|tafadhali))*$)/i, ''));
   if (next.problem && (vague(next.problem) || /^(?:[mn]ipo|niko)\s+\S+/i.test(next.problem))) delete next.problem;
   const contextOnly = !rest || vague(rest) || smallTalkOnly(rest) || repeatsEmail || (rest.length < 40 && noSystemName.test(rest) && !symptomOf(rest)) ||
     /^(?:ndio|ndiyo|sawa|ok|okay|yes|no|hapana|ndo|[mn]ipo .+|niko .+|(?:email|imeli|barua pepe)(?:\s+ya(?:ngu|ko|\s+akaunti))?)$/i.test(rest);

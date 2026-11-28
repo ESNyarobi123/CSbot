@@ -37,6 +37,12 @@ test('asks for the problem when the report has no details yet', () => {
   assert.match(first.reply, /kinachotokea|shida/i);
   assert.equal(first.support.system, 'wotefy');
   assert.equal(first.support.problem, undefined);
+  for (const text of ['Nina shida kwa WoteFy', 'Nina shida kwa WoteFy mkuu', 'Nina shida ya mfumo wa WoteFy']) {
+    const intake = supportIntake(text, {}, say);
+    assert.equal(intake.ready, false, text);
+    assert.equal(intake.support.problem, undefined, text);
+    assert.match(intake.reply, /WoteFy.*Ni nini hasa kinachotokea/i, text);
+  }
 });
 
 test('a stated problem moves straight to the system question', () => {
