@@ -1,12 +1,12 @@
 import { createServer } from 'node:http';
 
-const product = { id: 'wr3000', name: 'Cudy WR3000', sku: 'WR3000', price: { amount: 95000, currency: 'TZS' } };
+const product = { id: 'wr3000', name: 'Cudy WR3000', sku: 'WR3000', type: 'Stocked', price: { amount: 95000, currency: 'TZS' } };
 let reads = 0;
 createServer((req, res) => {
   const url = new URL(req.url, 'http://fixture');
   const result = (() => {
     switch (url.pathname) {
-      case '/products': return { items: /^(?:cudy\s+)?wr3000$/i.test(url.searchParams.get('search') ?? '') ? [product] : [] };
+      case '/products': return { items: /^(?:cudy\s+)?wr\s*3000$/i.test(url.searchParams.get('search') ?? '') ? [product] : [] };
       case '/products/wr3000': return { ...product, price: { amount: reads++ ? 99000 : 95000, currency: 'TZS' },
         images: [{ url: 'https://assets.example.test/wr3000.jpg', primary: true }] };
       case '/products/wr3000/availability': return { available_to_sell: 8 };

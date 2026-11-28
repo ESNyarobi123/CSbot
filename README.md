@@ -267,7 +267,9 @@ Picha ya mteja huhifadhiwa kwenye table ya `media`. Arifa ya malipo huambatanish
 
 `memory.profile` huhifadhi maelezo mteja aliyosema wazi kuhusu vifaa anavyotumia, bajeti na matumizi ya mtandao. Maelezo hayo yanaendelea kutumika kwenye oda inayofuata ya chat hiyo. CSbot inasasisha maelezo ya profile mteja anapotoa taarifa mpya inayotambulika.
 
-CSbot husoma ujumbe kwanza kabla ya kujibu. Mteja mpya anayesalimu hupata karibu moja inayomuuliza anahitaji nini, kisha CSbot huendelea kulingana na jibu lake — kifaa, usajili au msaada. Salamu zinazorudiwa, eneo lililotumwa peke yake na mada zisizohusiana na biashara huachwa kwenye inbox bila jibu, ili mhudumu azione. **Customer brief** huonyesha hali hiyo na taarifa za mazungumzo. Chat ya **Take over** inabaki kwa mhudumu, lakini baada ya dakika `HANDOFF_IDLE_MINUTES` (default 180, yaani saa tatu) bila mhudumu kuandika, CSbot inarudi na kuendelea kumjibu mteja. Weka `0` kuzima kurudi huku kabisa.
+CSbot hujibu salamu na huendelea kulingana na ombi la mteja. Inaweza kutumia jina la kwanza au jina la mtumiaji la WhatsApp kwenye salamu au ombi la kwanza la msaada, hadi mara moja ndani ya saa 24. Mteja anaweza pia kusema “Niite Asha”. Kwa msaada wa kiufundi, CSbot huanza na dalili, hutoa hatua ya kujaribu inapowezekana, na humkabidhi mhudumu tatizo pamoja na matokeo. Email inasaidia pale timu inapohitaji kutambua akaunti, na inaweza kutumwa baada ya ombi kufika kwa timu. Kwa kifaa kisichojulikana, mteja anaweza kutuma picha ya lebo au kueleza matumizi yake.
+
+**Customer brief** huonyesha hali na taarifa za mazungumzo. Chat ya **Take over** inabaki kwa mhudumu. Baada ya dakika `HANDOFF_IDLE_MINUTES` (default 180, yaani saa tatu) bila mhudumu kuandika, CSbot inaendelea kumjibu mteja. Weka `0` kuzima kurudi huku kabisa.
 
 ## Majaribio
 

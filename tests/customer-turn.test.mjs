@@ -24,22 +24,66 @@ test('a greeting receives a welcome on a new or active chat', async () => {
   }
 });
 
-test('support asks about the affected device when the customer has several, and accepts a previously supplied email', async () => {
-  const one = await say('LubFy portal haifunguki');
-  assert.match(one.body, /email/i);
-  const two = await say('imeli yang ndo ile ile kaka', one.memory);
-  assert.doesNotMatch(two.body, /Nipe email/);
-  const three = await say('Lkn mi navifaa vitatu asa ushaelewa kifaa cheny shida', two.memory);
-  assert.match(three.body, /kipi kati ya hivyo/);
-  // "I have three devices" stays out of the problem field; only the answer does.
-  assert.equal(three.memory.support?.problem, undefined);
-  const four = await say('kifaa cha tatu hakifunguki', three.memory);
-  assert.match(four.memory.lastSupport?.problem ?? four.memory.support?.problem ?? '', /kifaa cha tatu/);
-  assert.doesNotMatch(four.memory.lastSupport?.problem ?? '', /navifaa vitatu/);
-  const saved = await say('imeli yangu ile ile', one.memory, [{direction:'inbound',body:'customer@example.test'}]);
+test('a safe WhatsApp name or handle gives a personal greeting once in a day', async () => {
+  const named = { ...chat(), customer_name: 'Asha Juma 🌿' };
+  const first = await customerTurn(client, named, 'Habari', []);
+  assert.match(first.body, /^Habari, Asha!/);
+  assert.doesNotMatch((await customerTurn(client, { ...named, memory: first.memory }, 'Habari', [])).body, /Asha/);
+  assert.match((await customerTurn(client, { ...chat(), customer_name: '@asha_net' }, 'Hello', [])).body, /@asha_net/);
+  assert.doesNotMatch((await customerTurn(client, { ...chat(), customer_name: 'asha@example.test' }, 'Hi', [])).body, /asha/);
+  const introduction = await customerTurn(client, named, 'Niite Zuri', []);
+  assert.match(introduction.body, /Zuri/);
+  assert.equal(introduction.memory.preferredName, 'Zuri');
+});
+
+test('a model or product code is optional when asking for help choosing a device', async () => {
+  const quote = await say('Nahitaji proforma');
+  assert.match(quote.body, /picha ya kifaa au lebo/);
+  assert.doesNotMatch(quote.body, /SKU/);
+  const noModel = await say('Sijui modeli yake', quote.memory);
+  assert.match(noModel.body, /unataka kifaa kifanye nini/);
+  assert.equal(noModel.memory.documentRequest?.kind, 'quote');
+  assert.match((await say('SKU ndio nini?', noModel.memory)).body, /namba ya kumbukumbu/);
+});
+
+test('a vague complaint collects symptoms first and an account email can arrive after handoff', async () => {
+  const first = await say('Nina shida ya mfumo wa WoteFy');
+  assert.equal(first.memory.support?.problem, undefined);
+  assert.doesNotMatch(first.body, /email/i);
+  const detail = await say('Siwezi kuingia kwenye dashboard', first.memory);
+  assert.match(detail.body, /ujumbe unaoonekana/);
+  const waiting = await say('Sawa ngoja nijaribu', detail.memory);
+  assert.equal(waiting.memory.support?.waitingFor, 'check');
+  assert.equal(waiting.handoff, undefined);
+  const handoff = await say('Inaandika invalid credentials', waiting.memory);
+  assert.equal(handoff.handoff, true);
+  assert.match(handoff.memory.lastSupport.checkResult, /invalid credentials/);
+  assert.match(handoff.body, /Ukiweza, tuma email/);
+  const email = await say('Email yangu ni Asha@Example.Test', { ...handoff.memory, handoffPending: true });
+  assert.equal(email.memory.lastSupport.email, 'asha@example.test');
+  assert.match(email.body, /Nimeongeza email/);
+});
+
+test('a direct request for a human routes to staff with the support issue intact', async () => {
+  const previous = { support: { system: 'lubfy', problem: 'Login inagoma', waitingFor: 'check' } };
+  const reply = await say('Naomba mhudumu', previous);
+  assert.equal(reply.handoff, true);
+  assert.equal(reply.memory.lastSupport?.problem, 'Login inagoma');
+});
+
+test('support distinguishes multiple devices and accepts an email already provided in the chat', async () => {
+  const one = await say('Nina tatizo kwenye LubFy');
+  assert.doesNotMatch(one.body, /email/i);
+  const two = await say('Nina vifaa vitatu', one.memory);
+  assert.match(two.body, /kipi kati ya hivyo/i);
+  assert.equal(two.memory.support?.problem, undefined);
+  const three = await say('Kile cha nje kinajizima', two.memory);
+  assert.match(three.memory.lastSupport?.problem ?? three.memory.support?.problem ?? '', /kile cha nje/i);
+  assert.doesNotMatch(three.memory.lastSupport?.problem ?? '', /vifaa vitatu/);
+
+  const known = { support: { problem: 'LubFy imegoma ku-sync', system: 'lubfy', waitingFor: 'email' } };
+  const saved = await say('imeli yangu ile ile', known, [{direction:'inbound',body:'customer@example.test'}]);
   assert.equal(saved.memory.lastSupport?.email, 'customer@example.test');
-  const noise = await say('Hr fgrgd', one.memory);
-  assert.ok(noise.body);
 });
 
 test('a kilometre planning request and its follow-up keep the distance and clarify the network layout', async () => {

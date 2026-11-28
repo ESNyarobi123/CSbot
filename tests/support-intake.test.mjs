@@ -46,14 +46,14 @@ test('a stated problem moves straight to the system question', () => {
   assert.match(first.support.problem, /umesimama/);
 });
 
-test('problem then system then email, each asked once', () => {
+test('the problem and system are enough to continue without an email', () => {
   const one = supportIntake('Portal haifunguki kwenye simu', {}, say);
   assert.equal(one.ready, false);
   assert.match(one.reply, /WoteFy au LubFy/);
 
   const two = supportIntake('WoteFy', one.support, say);
-  assert.equal(two.ready, false);
-  assert.match(two.reply, /email/i);
+  assert.equal(two.ready, true);
+  assert.equal(two.reply, undefined);
   assert.equal(two.support.system, 'wotefy');
 
   const three = supportIntake('asanileo@gmail.com', two.support, say);
@@ -126,11 +126,8 @@ test('respond asks for the system before diagnosing, then uses the knowledge', a
   assert.equal(first.notify, undefined);
 
   const second = await respond(client, { ...conversation, memory: first.memory }, 'WoteFy', []);
-  assert.match(second.body, /email/i);
-
-  const third = await respond(client, { ...conversation, memory: second.memory }, 'asanileo@gmail.com', []);
-  assert.match(third.body, /SSID ni open/);
-  assert.equal(third.notify, true);
-  assert.equal(third.handoff, undefined);
-  assert.equal(third.memory.lastSupport.email, 'asanileo@gmail.com');
+  assert.match(second.body, /SSID ni open/);
+  assert.equal(second.notify, true);
+  assert.equal(second.handoff, undefined);
+  assert.equal(second.memory.lastSupport.email, undefined);
 });

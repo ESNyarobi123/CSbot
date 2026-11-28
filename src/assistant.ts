@@ -15,7 +15,7 @@ import { changesCustomerSite, chatContext, compose, identifyDevice, loadCustomer
 import { learningSignal, reusableKnowledgeQuestion, writeKnowledgeReply } from './learning.js';
 import { config } from './config.js';
 import {
-  accountQuestion, adEnquiry, customerProfile, emailOf, messageLanguage, modelName, namesNewDevice, platformNotice, profitQuestion, regionQuestion, smallTalkOnly, smallTalkReply,
+  accountQuestion, adEnquiry, customerAddress, customerProfile, deviceIdentificationPrompt, emailOf, emailPattern, introducedName, messageLanguage, modelName, namesNewDevice, platformNotice, profitQuestion, regionQuestion, smallTalkOnly, smallTalkReply,
   supportQuestion, symptomOf, systemFrom, systemLabel,
 } from './customer-text.js';
 import { firstSupportStep, supportDetails, supportIntake, supportProgress, supportReceipt, supportSummary, type SupportAlertStatus } from './support.js';
@@ -98,7 +98,7 @@ function fallback(text: string, memory: Conversation['memory']): Decision {
   const leadingProduct = memory.productOptions?.find(item =>
     [item.name, item.sku].some(value => value?.toLowerCase() === text.trim().toLowerCase()));
   if (leadingProduct) return { ...answer, intent: 'product', query: leadingProduct.name };
-  if (/\b(on(gea|gelesha)|zungumza|unganisha|talk|speak|connect|human|agent|mhudumu)\b.{0,28}\b(admin|human|agent|mhudumu|mtu|meneja|support)\b|^(admin|agent|mhudumu|human)$/i.test(text.trim())) {
+  if (/\b(on(gea|gelesha)|zungumza|unganisha|talk|speak|connect|human|agent|mhudumu)\b.{0,28}\b(admin|human|agent|mhudumu|mtu|meneja|support)\b|\b(?:nataka|nahitaji|naomba|need|want)\s+(?:a |an )?(?:mhudumu|human|agent)\b|^(admin|agent|mhudumu|human)[.!? ]*$/i.test(text.trim())) {
     answer.intent = 'human';
   } else if (symptomOf(text) === 'access_payment') {
     answer.intent = 'support';
@@ -225,13 +225,13 @@ siteFacts are what this customer already told us about their own site (distance,
 Work through this order before choosing an intent:
 1. Which device or system is the newest message naming? Read the model wherever it sits in the sentence, not just at the end.
 2. Did this chat already quote it? memory.product and memory.lastQuote carry the answer; a short reference like "ile" or "hiyo" means that item.
-3. If the message names a device, note in your reply that WoteFy suits Omada EAP and LubFy suits MikroTik, Cudy, Ruijie/Reyee, Cambium and UniFi. Suggest the match instead of asking the customer to choose.
-4. Installation is quoted per job and cable per metre; 15 metres is the usual length. Type A is the device we supply, Type B is the customer's own device. A question about fitting or cable is not a product search, and both variants plus the total are the answer.
+3. When asked about compatibility, choose the verified model and platform from approved knowledge. A price question only needs the item and its current price.
+4. Keep fitting, cable and equipment distinct. Use the cable length and supply choice that the customer stated. Leave missing selections open for the pricing workflow.
    A length next to a device is coverage, not cable: "access point ya mita 300" asks for an AP that covers 300 m. Only a cable word (waya/cable) or a fitting word makes metres a cable order.
 5. When the customer names a device category with no model ("access point", "router", "switch"), set product and return just the category as query ("access point") — never the whole sentence. When they ask for other models after a list ("hauna model zingine", "others?", "more"), set product with an empty query so the catalog list widens.
 Classify based on the newest customer messages. product covers purchase, price, stock or photo of hardware. A bare model such as "EAP 650" is a product price request, never small talk.
-support is any report that a system or device stopped working: portal not opening, payment not unlocking internet, device offline, voucher rejected, login failing, an error message. A support report is never product, plan or payment_reported. For support the bot must not guess a diagnosis: the code collects enough detail to give a safe check or hand off to staff. Use approved troubleshooting knowledge only for systems and models that appear in it.
-Return the exact brand/model or SKU as query, with an empty query for a reference to the remembered product.
+Use support when the customer says their system or device has a problem, even if the first report is vague. While supportStep is active, an observation or error message usually answers the pending support question. Clearly stated new sales questions and requests for a person can change the topic.
+Return the device identity as query only when the customer supplied it. For a reference to the remembered product, leave the query empty.
 plan requires the customer to specify the kind: subscription for operator software, wifi for end-user internet, bundle for equipment + services.
 Use ambiguous_package if kind is unclear. Do not invent a site name. Distinguish asking how payments work from explicitly asking to pay for their purchase.
 Use payment_reported for claims of actual completed payment and ready_to_pay for explicit intent to pay. Use human for requests to speak to staff.
@@ -328,8 +328,7 @@ async function missingProduct(
         + (voice
           ? '\n' + say('Andika model unayotaka ili nihakikishe bei.', 'Type the model you want so I confirm the price.')
           : '')
-      : '\n' + say('Unaweza kuandika model au SKU iliyo kwenye kifaa?',
-        'Could you type the exact model or SKU from the device?'))
+      : '\n' + deviceIdentificationPrompt(say))
     + await planAside(newest, memory, say);
 }
 
@@ -868,19 +867,40 @@ export async function customerTurn(...args: Parameters<typeof respond>): Promise
         !conversation.memory.awaitingService && !conversation.memory.support && !conversation.memory.survey &&
         !conversation.memory.documentRequest && !conversation.memory.installationQuote?.awaiting);
     const offTopic = unrelatedChat(newest);
+    const preferredName = !onlyDetect && !offTopic ? introducedName(newest) : undefined;
+    if (preferredName) return { body: say(`Karibu, ${preferredName}! Nikusaidie nini?`, `Welcome, ${preferredName}! How can I help?`),
+      memory: { ...conversation.memory, preferredName, language, replyStatus: 'answered', nameAddressedAt: Date.now() } };
     if (offTopic || greeting || acknowledgement) {
       const body = offTopic
         ? say('Nipo hapa kukusaidia kuhusu vifaa vya mtandao, WoteFy au LubFy. Ungependa tuangalie nini?',
           'I can help with networking equipment, WoteFy or LubFy. What would you like to look at?')
         : smallTalkReply(greeting || newest, say);
-      return { body: onlyDetect ? '' : body, memory: {
+      const outcome: Outcome = { body: onlyDetect ? '' : body, memory: {
         ...conversation.memory, language, ...(onlyDetect ? {} : { replyStatus: 'answered' }),
       } };
+      if (!offTopic && greeting) addressCustomer(outcome, conversation, true);
+      return outcome;
     }
   }
   const outcome = await respond(...args);
-  if (outcome.body && !args[4]) outcome.memory.replyStatus = 'answered';
+  if (outcome.body && !args[4]) {
+    outcome.memory.replyStatus = 'answered';
+    if (!conversation.memory.support && !conversation.memory.handoffPending && outcome.memory.support) {
+      addressCustomer(outcome, conversation, false);
+    }
+  }
   return outcome;
+}
+
+function addressCustomer(outcome: Outcome, conversation: Conversation, greeting: boolean) {
+  if (!outcome.body) return;
+  const name = customerAddress(conversation.memory.preferredName ?? conversation.customer_name);
+  const now = Date.now();
+  if (!name || now - (conversation.memory.nameAddressedAt ?? 0) < 24 * 60 * 60 * 1000) return;
+  outcome.body = greeting && /^[^.!?\n]+!/.test(outcome.body)
+    ? outcome.body.replace(/^[^.!?\n]+!/, opening => opening.slice(0, -1) + ', ' + name + '!')
+    : name + ', ' + outcome.body;
+  outcome.memory.nameAddressedAt = now;
 }
 
 export async function respond(
@@ -934,6 +954,21 @@ async function answer(
   if (!onlyDetect) {
     const language = messageLanguage(newest) ?? memory.language ?? 'sw';
     const say = (sw: string, en: string) => language === 'en' ? en : sw;
+    if (!photo && /^(?:(?:acha|ngoja|je)\s+)?(?:nikutumie|nitakutumia|naweza (?:ku)?kutuma|naweza kutuma|can i send|i.ll send)\s+(?:(?:a|the)\s+)?(?:picha|screenshot|photo|picture)\b/i.test(newest.trim())) {
+      const body = memory.support || (memory.handoffPending && memory.lastSupport)
+        ? say('Ndiyo, tuma picha ya ujumbe unaoona. Tafadhali ficha nenosiri au OTP kwenye picha.',
+          'Yes, send a screenshot of what you see. Please hide any password or one-time code.')
+        : say('Ndiyo, tuma picha hapa. Ikiwa ni kifaa, picha inayoonyesha lebo yake itanisaidia kukitambua.',
+          'Yes, send the photo here. If it’s a device, a clear photo of its label will help me identify it.');
+      return { body, memory: { ...memory, language } };
+    }
+    if (!photo && /^(?:sku (?:ni nini|ndio nini|ndo nini|maana yake nini)|what (?:is|does) (?:an? )?sku(?: mean)?)\b/i.test(newest.trim())) {
+      return { body: say('SKU ni namba ya kumbukumbu ya bidhaa dukani. Huhitaji kuijua. ', 'An SKU is a shop’s product code. You don’t need to know it. ')
+        + deviceIdentificationPrompt(say), memory: { ...memory, language } };
+    }
+    if (!photo && !memory.support && /^(?:si(?:jui|fahamu|kumbuki)|i don.t know|i.m not sure(?: of)?)\s+(?:(?:the|exact)\s+)?(?:modeli?|model|sku|jina la kifaa)(?:\s+(?:yake|mkuu|kaka))?[.!? ]*$/i.test(newest.trim())) {
+      return { body: deviceIdentificationPrompt(say), memory: { ...memory, language } };
+    }
     if (learningSignal(newest) === 'suggestion') return { body: say(
       'Nimepokea pendekezo lako kwa timu ilipitie. Asante kwa kutueleza unachohitaji.',
       'Thanks for explaining what you need. I’ve recorded your suggestion for the team to review.'),
@@ -988,10 +1023,13 @@ async function answer(
   }
   const askingToPayBeforeApproval = memory.documentRequest?.order &&
     fallback(newest, memory).intent === 'ready_to_pay';
+  const asksHuman = fallback(newest, memory).intent === 'human';
   const asksDeviceCapability = memory.documentRequest?.order && coverageQuestion(newest) &&
     !quotationWords.test(newest) && !cableWords.test(newest);
+  const choosingDevice = memory.documentRequest && !memory.documentRequest.product && !memory.documentRequest.order &&
+    !photo && !quotationWords.test(newest) && !namesNewDevice(newest) && (deviceQuery(newest) || siteRequirement(newest).hotspot);
   if (!onlyDetect && (quotationWords.test(newest) || memory.documentRequest || revisesIssuedProforma(newest, memory)) &&
-      !supportQuestion(newest) && !askingToPayBeforeApproval && !asksDeviceCapability) {
+      !supportQuestion(newest) && !asksHuman && !askingToPayBeforeApproval && !asksDeviceCapability && !choosingDevice) {
     const language = messageLanguage(newest) ?? memory.language ?? 'sw';
     // Older chats could retain the bundle while treating the plan capacity as
     // a hardware count. Recover the immediately preceding plan request.
@@ -1001,7 +1039,10 @@ async function answer(
     const priorSystem = prior && systemFrom(prior);
     const planChoice = prior && asksPlanCapacity(prior) && (!priorSystem || priorSystem === bundle?.system) &&
       !namesNewDevice(prior) ? prior : undefined;
-    const outcome = await quotationTurn(newest, memory, requestKey,
+    const label = photo && !('count' in photo) && !memory.documentRequest?.order && !memory.documentRequest?.product &&
+      !namesNewDevice(newest) && photoInquiry(newest, conversation.stage) ? await readPhotoModel(photo) : undefined;
+    const quoteText = label ? newest.replace('[WhatsApp image]', '').trim() + '\n' + label : newest;
+    const outcome = await quotationTurn(quoteText, memory, requestKey,
       (sw, en) => language === 'en' ? en : sw, planChoice);
     if (outcome) {
       delete memory.support;
@@ -1047,7 +1088,9 @@ async function answer(
         memory: { ...memory, language } };
     }
   }
-  const decision = knownSymptom ? resolveDecision(newest, memory) : await decide(newest, memory, history, knowledge);
+  const detected = fallback(newest, memory);
+  const decision = knownSymptom || detected.intent === 'human' || detected.intent === 'support'
+    ? detected : await decide(newest, memory, history, knowledge);
   if (decision.intent === 'document_preview') {
     const language = messageLanguage(newest) ?? memory.language ?? decision.language;
     if (!onlyDetect && memory.installationQuote?.order && !supportQuestion(newest) && !namesNewDevice(newest)) {
@@ -1186,7 +1229,7 @@ async function answer(
   }
   const shoppingNow = (purchaseWords.test(newest) || (memory.product && cableWords.test(newest) && !coverageQuestion(newest)) ||
     (deviceQuery(newest) && /\b(?:nahitaji|nataka|need|buy)\b/i.test(newest))) && !supportQuestion(newest)
-    && !emailOf(newest) && !systemFrom(newest);
+    && !emailOf(newest) && (!systemFrom(newest) || namesNewDevice(newest) || Boolean(deviceQuery(newest)));
   // A bare system name is a question about why the person came. "Wotefy" alone
   // used to be read as an equipment enquiry, so a customer with a broken portal
   // was sold an access point instead of being listened to.
@@ -1198,6 +1241,14 @@ async function answer(
       `Welcome to ${label}. Do you want to sign up for ${label}, or are you already using it and need help with a problem?`));
   }
   if (shoppingNow && memory.support) delete memory.support;
+  const lateEmail = emailOf(newest);
+  if (!onlyDetect && lateEmail && memory.handoffPending && memory.lastSupport?.problem && !memory.lastSupport.email &&
+      memory.supportUpdate?.status !== 'resolved' &&
+      /^(?:(?:email|imeli|barua pepe)(?:\s+(?:yangu|ya akaunti))?\s*(?:ni|[:=])?)?[.! ]*$/i.test(newest.replace(emailPattern, '').trim())) {
+    memory.lastSupport = { ...memory.lastSupport, email: lateEmail };
+    return result(say('Nimeongeza email kwenye ombi lako la msaada. Timu tayari ina maelezo ya tatizo.',
+      'I added the email to your support request. The team already has the issue details.'), { handoff: true, supportAlert: 'handoff' });
+  }
   const supportActive = (!monthly || symptomOf(newest) === 'access_payment') && !shoppingNow && !['human', 'payment_reported', 'ready_to_pay'].includes(decision.intent) && (decision.intent !== 'plan' || Boolean(symptomOf(newest)) || (awaitingSupport && Boolean(systemFrom(newest))))
     && (decision.intent === 'support' || supportQuestion(newest) || awaitingSupport);
   if (monthly && symptomOf(newest) !== 'access_payment') delete memory.support;
@@ -1205,18 +1256,15 @@ async function answer(
     // A new turn can arrive after the intake was already handed off. The system
     // and email are still known facts of this chat, so a follow-up about a device
     // must not start the questions over.
-    const carried = memory.support ?? (memory.lastSupport && (memory.handoffPending || Boolean(symptomOf(newest)) || /vifaa|navifaa|devices/i.test(newest))
+    const carried = memory.support ?? (memory.lastSupport && memory.handoffPending && !newSite &&
+        memory.supportUpdate?.status !== 'resolved'
       ? { system: memory.lastSupport.system, email: memory.lastSupport.email } : undefined);
     const explicitSystem = systemFrom(newest);
     const intakeState = explicitSystem && carried?.system && explicitSystem !== carried.system
       ? { problem: carried.problem, waitingFor: carried.waitingFor === 'system' ? 'system' as const : undefined }
       : { ...carried };
-    if (!intakeState.system && !explicitSystem && symptomOf(newest) &&
-        !/\b(?:wote[ -]?fy|ss[ -]?domada|lub[ -]?fy)\b/i.test(newest)) {
-      intakeState.system = memory.lastSupport?.system ?? conversation.memory.system;
-    }
     const sameCheck = intakeState.waitingFor === 'check' &&
-      (!explicitSystem || explicitSystem === intakeState.system) &&
+      (!explicitSystem || !intakeState.system || explicitSystem === intakeState.system) &&
       (!symptomOf(newest) || symptomOf(newest) === symptomOf(intakeState.problem ?? ''));
     if (sameCheck) {
       const resolved = /^(?:imefanya kazi|imefunguka|imekubali|iko sawa|sasa iko sawa|tatizo limeisha|it works|fixed|it opened)[.! ]*$/i.test(newest.trim());
@@ -1225,19 +1273,22 @@ async function answer(
         return result(say('Vizuri, asante kwa kunijulisha. Ukihitaji msaada tena, niandikie hapa.',
           'Glad it’s working. If you need help again, message us here.'));
       }
-      memory.lastSupport = { ...intakeState, email: emailOf(newest) ?? intakeState.email,
-        checkResult: newest.slice(0, 280) };
+      if (/^(?:sawa|ok|okay|ngojea|ngo ja|ngoja|nitaangalia|nitajaribu|i.ll check|i.ll try)(?:\s+(?:ngoja|nitaangalia|nitajaribu|nijaribu|mkuu|kaka|then|thanks))*[.! ]*$/i.test(newest.trim())) {
+        return result(say('Sawa, ukipata nafasi ya kujaribu niambie ulichoona.', 'When you get a chance to try it, let me know what you see.'));
+      }
+      const details = supportIntake(newest, intakeState, say).support;
+      if (explicitSystem && /^\s*(?:mkuu|kaka|boss|ndugu)?[\s.!]*$/i.test(newest.replace(/\b(?:wote[ -]?fy|ss[ -]?domada|lub[ -]?fy)\b/gi, ''))) {
+        memory.support = { ...details, waitingFor: 'check' };
+        return result(firstSupportStep(details, say) ?? '');
+      }
+      memory.lastSupport = { ...details, checkResult: lateEmail && newest.trim().toLowerCase() === lateEmail
+        ? undefined : newest === '[WhatsApp image]' ? say('Mteja ametuma picha.', 'Customer sent a screenshot.') : newest.slice(0, 280) };
       delete memory.support;
       return result(supportReceipt(memory.lastSupport, say, true), { handoff: true, supportAlert: 'handoff' });
     }
     if (/\b(?:ile ile|ileile|same email|usual email)\b/i.test(newest)) {
       const previous = [...history].reverse().find(line => line.direction === 'inbound' && emailOf(line.body) === line.body.trim().toLowerCase());
       intakeState.email = memory.lastSupport?.email ?? (previous && emailOf(previous.body));
-    }
-    if (intakeState.attempts && intakeState.waitingFor === 'email' && !emailOf(newest) && !/vifaa|devices/i.test(newest)) {
-      memory.lastSupport = { ...intakeState, problem: [intakeState.problem, newest].filter(Boolean).join(' · ').slice(0, 500) };
-      delete memory.support;
-      return result(supportReceipt(memory.lastSupport, say), { handoff: true, supportAlert: 'handoff' });
     }
     const intake = supportIntake(newest, intakeState, say);
     memory.support = intake.support;
@@ -1256,14 +1307,14 @@ async function answer(
     if (guidance) {
       // Answer from the approved troubleshooting entry and keep the chat on the
       // bot; the team is only pulled in when nothing matches.
-      delete memory.support;
+      memory.support = { ...intake.support, waitingFor: 'check' };
       return result([
         say('*Taarifa za tatizo*', '*Issue details*'),
-        supportDetails(intake.support, say),
+        supportDetails(intake.support, say, false),
         say(`*Hatua za kujaribu*\n${guidance.content}`, `*Steps to try*\n${guidance.content}`),
         guidance.source_url ?? '',
-        say('Kama hatua hizo hazijasaidia, niambie "nataka mhudumu" nikuunganishe na timu.',
-          'If those steps do not help, say "I need a human" and I will bring in the team.'),
+        say('Ukijaribu, niambie unachoona. Kama bado inakwama, nitaipeleka kwa timu pamoja na maelezo haya.',
+          'Tell me what you see after trying this. If you’re still stuck, I’ll share the details with the team.'),
       ].filter(Boolean).join('\n\n'), { notify: true, supportAlert: 'guidance' });
     }
     delete memory.support;
@@ -1468,11 +1519,7 @@ async function answer(
         'You sent several photos. Which device should I check first? You can name the model or send one photo of it.');
       return outcome;
     }
-    let model = await printedModel(photo.base64);
-    if (!model) {
-      const seen = await identifyDevice(photo).catch(() => undefined);
-      if (seen && seen.confidence >= 0.8 && /[a-z]/i.test(seen.model) && /[0-9]/.test(seen.model)) model = seen.model;
-    }
+    const model = await readPhotoModel(photo);
     if (model) return photoReply({ model }, memory, say);
     // No legible device. A photo is not always hardware: a customer can send a
     // Wi-Fi package page, a receipt or an error screen. Classify it and answer
@@ -1664,8 +1711,7 @@ async function answer(
     }
     if (decision.sendImage && memory.product && !modelQuery(newest) && !requestedBrand(newest)) decision.query = '';
     if (!decision.query && !memory.product) {
-      return result(say('Unaulizia bidhaa gani? Tuma jina, model au SKU nikague bei na stock.',
-        'Which product? Send its name, model, or SKU so I can check price and stock.'));
+      return result(deviceIdentificationPrompt(say));
     }
     if (decision.sendImage && decision.query && !purchaseWordsWithoutImage(newest) && !config.CSOLUTION_POS_DB_URL && !config.POS_BASE_URL) {
       const uploaded = await uploadedPhoto(client, decision.query);
@@ -1974,6 +2020,13 @@ async function uploadedPhoto(client: PoolClient, query: string) {
     WHERE image_url IS NOT NULL AND (lower(sku)=lower($1) OR lower(name)=lower($1))
     ORDER BY (lower(sku)=lower($1)) DESC,id LIMIT 1`, [query]);
   if (local) return { body: [local.name, local.description].filter(Boolean).join('\n'), imageUrl: local.image_url as string };
+}
+
+async function readPhotoModel(photo: Exclude<IncomingPhoto, { count: number }>) {
+  const printed = await printedModel(photo.base64);
+  if (printed) return printed;
+  const seen = await identifyDevice(photo).catch(() => undefined);
+  if (seen && seen.confidence >= 0.8 && /[a-z]/i.test(seen.model) && /[0-9]/.test(seen.model)) return seen.model;
 }
 
 function purchaseWordsWithoutImage(text: string) {

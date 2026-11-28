@@ -5,7 +5,7 @@ import { log } from './db.js';
 import { deepseekJson } from './deepseek.js';
 import { documentJson, isModelReference, modelQuery, money, readProduct, requestedBrand, searchProducts } from './pos.js';
 import { asksPlanCapacity, cableMeters, cableWords, hardwareCableOrder, installationQuote, installationWords, updateInstallationQuote, type OrderPreview } from './installation-quote.js';
-import { systemFrom } from './customer-text.js';
+import { deviceIdentificationPrompt, systemFrom } from './customer-text.js';
 import type { ReplyHistoryLine } from './reply-policy.js';
 import type { Conversation } from './store.js';
 
@@ -342,8 +342,8 @@ export async function quotationTurn(
   }
 
   memory.documentRequest = draft;
-  if (!draft.product) return { body: say('Niambie brand na modeli ya kifaa, au SKU yake, ili hati iwe ya bidhaa sahihi.',
-    'Which brand and model or SKU should appear on the document?') };
+  if (!draft.product) return { body: say('Tuitambue bidhaa kwanza ili hati iwe na bei sahihi. ',
+    'Let’s identify the item first so the document has the right price. ') + deviceIdentificationPrompt(say) };
   if (!draft.quantity) return { body: say(`Unahitaji ${draft.product.name} ngapi?`, `How many units of ${draft.product.name} do you need?`) };
   delete memory.documentRequest;
   const details = `${draft.product.name} × ${draft.quantity}`;

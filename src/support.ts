@@ -1,85 +1,62 @@
 import { emailOf, emailPattern, smallTalkOnly, supportQuestion, symptomOf, systemFrom, systemLabel } from './customer-text.js';
 import type { Conversation } from './store.js';
 
-/**
- * Support intake. A customer with a broken system is asked for the problem, the
- * system and the login email before any diagnosis, because "sijui nini
- * kinaendelea" is not enough to open an account or read a log. Each answer is
- * kept in memory, so the three questions are asked once and never repeated.
- */
-export function supportIntake(
-  text: string, support: NonNullable<Conversation['memory']['support']>,
-  say: (sw: string, en: string) => string,
-): { support: NonNullable<Conversation['memory']['support']>; reply?: string; ready: boolean } {
+type Intake = NonNullable<Conversation['memory']['support']>;
+type Say = (sw: string, en: string) => string;
+
+const vagueReport = /^(?:(?:kaka|mkuu|boss|bro|dada|tafadhali)\s+)*(?:(?:nina|niko na|kuna|nimepata|naomba|i have|there is|i need)\s+)?(?:shida|tatizo|matatizo|problem|an? issue|support|msaada)(?:\s+(?:ya|la|kwenye|na|katika|with|on|in)\s+(?:(?:the|my|our)\s+)?(?:mfumo|akaunti|system|account)(?:\s+(?:wangu|wetu|wenu|huu|yangu|hii))?)?(?:\s+(?:kaka|mkuu|boss|bro|dada|tafadhali))*$/i;
+const multipleDevices = /^(?:(?:nina|niko na|na|natumia|I have|I use)\s*)?(?:vifaa|devices)\s+(?:viwili|vitatu|vingi|mbili|tatu|\d+)(?:\s+(?:tu|mkuu|kaka))?$|^(?:I have\s+)?(?:two|three|several|multiple|\d+) devices$/i;
+const sameAccountEmail = /^(?:email|imeli|barua pepe)(?:\s+(?:yangu|yang))?\s+(?:(?:ni|ndo|ndio|ndiyo)\s+)?(?:ile ile|ileile|hiyo hiyo)\b|\b(?:same email|usual email)\b|^(?:(?:ni|ndo|ndio|ndiyo)\s+)?(?:ile ile|ileile|hiyo hiyo)(?:\s+(?:mkuu|kaka))?$/i;
+const noSystemName = /\b(?:sijui (?:ni )?(?:mfumo|upi|gani)|sikumbuki (?:mfumo|jina)|not sure which|don.t know (?:which|the system))\b/i;
+
+/** Start with what went wrong. An email helps account-specific checks and remains optional. */
+export function supportIntake(text: string, support: Intake, say: Say): { support: Intake; reply?: string; ready: boolean } {
   const next = { ...support };
   const email = emailOf(text);
   if (email) next.email = email;
   const detectedSystem = systemFrom(text);
   if (detectedSystem) next.system = detectedSystem;
-  // The email answer itself is not the problem description.
   const rest = text.replace(emailPattern, ' ')
     .replace(/\b(?:wote[ -]?fy|ss[ -]?domada|lub[ -]?fy)\b/gi, ' ')
     .replace(/[\s.,!?;:]+/g, ' ').trim();
-  const generic = /^(?:kaka|mkuu|boss|tatizo|shida|problem|support|msaada|nina (?:shida|tatizo)|mfumo wako|nipo .+|niko .+)$/i;
-  // "My email is the same one" is an answer, not a refusal. Asking again is what
-  // made this conversation loop three times.
-  const repeatedEmail = /\b(?:ile ile|ileile|ndo ile|ndiyo ile|ni ile|ndio ile|same (?:email|one)|usual email|hio hio|hiyo hiyo)\b/i.test(text);
-  if (repeatedEmail) next.sameEmail = true;
-  if (next.problem && generic.test(next.problem.trim())) delete next.problem;
-  const onlyIdentityAnswer = generic.test(rest) || rest.length < 3
-    || smallTalkOnly(rest)
-    || /^(?:ndio|ndiyo|sawa|ok|okay|yes|no|hapana|ndo)$/i.test(rest);
-  // "I have three devices" is not a problem description, so it is checked before
-  // the sentence is stored as one.
-  if (/\b(?:vifaa|navifaa|devices)\s+(?:viwili|vitatu|vingi|mbili|\d+)|\b(?:two|three|several|multiple|\d+) devices/i.test(text) && !email) {
+  const repeatsEmail = sameAccountEmail.test(text.trim());
+  if (repeatsEmail) next.sameEmail = true;
+  const vague = (input: string) => vagueReport.test(input.trim().replace(/\s+(?:kwenye|katika|with|on|in|wa)$/i, ''));
+  if (next.problem && (vague(next.problem) || /^(?:[mn]ipo|niko)\s+\S+/i.test(next.problem))) delete next.problem;
+  const contextOnly = !rest || vague(rest) || smallTalkOnly(rest) || repeatsEmail || (rest.length < 40 && noSystemName.test(rest) && !symptomOf(rest)) ||
+    /^(?:ndio|ndiyo|sawa|ok|okay|yes|no|hapana|ndo|[mn]ipo .+|niko .+|(?:email|imeli|barua pepe)(?:\s+ya(?:ngu|ko|\s+akaunti))?)$/i.test(rest);
+  if (multipleDevices.test(rest)) {
     next.waitingFor = 'device';
-    return { support: next, ready: false, reply: say('Ni kipi kati ya hivyo kina shida? Niambie modeli yake au jinsi unavyokitambua, na kinachoonekana unapokiwasha.',
-      'Which device is affected? Tell me its model or how you recognise it, and what happens when you turn it on.') };
+    return { support: next, ready: false, reply: say(
+      'Kipi kati ya hivyo kina tatizo? Unaweza kukitaja kwa mahali kilipo, kama “kile cha nje”.',
+      'Which one is affected? You can describe where it’s installed, for example “the one outside”.') };
   }
-  if (!next.problem && rest.length > 3 && !onlyIdentityAnswer && !repeatedEmail && (supportQuestion(rest) ||
-      (next.waitingFor === 'problem' && rest.split(/\s+/).length >= 3))) {
-    next.problem = rest.slice(0, 500);
-  }
-  if (next.waitingFor === 'device' && !onlyIdentityAnswer) {
-    next.problem = [next.problem, rest].filter(Boolean).join(' · ').slice(0, 500);
-    if (next.system) return { support: next, ready: true };
+  if (!contextOnly && (symptomOf(rest) || supportQuestion(rest) ||
+    (['problem', 'device', 'email'].includes(next.waitingFor ?? '') && rest.split(/\s+/).length >= 2 &&
+      !/^(?:sijui|sifahamu|sikumbuki|samahani|i don.t know|not sure)(?:\s+(?:modeli?|model|sku|jina|email))?$/i.test(rest)))) {
+    if (!next.problem || next.waitingFor === 'device' || next.waitingFor === 'email' || next.waitingFor === 'system') {
+      next.problem = [next.problem, rest].filter((item, index, all) => item && all.indexOf(item) === index).join(' · ').slice(0, 500);
+    }
   }
   if (!next.problem) {
     next.waitingFor = 'problem';
-    // Repeating the same opening question after the system was named makes the
-    // bot look deaf, so the second ask refers to what the customer just said.
-    return { support: next, ready: false, reply: next.sameEmail
-      ? say('Sawa, nitatumia ile email ya awali — timu itaikuta. Sasa niambie kinachotokea: ukurasa au kifaa gani, na unaona ujumbe gani?',
-        'Understood, the team will use the email already on file. Now tell me what happens: which page or device, and what message do you see?')
-      : next.system
-        ? say(`Sawa, shida iko kwenye ${systemLabel(next.system)}. Niambie kinachotokea — ukurasa au kifaa gani, na unaona ujumbe gani?`,
-          `Understood, this is about ${systemLabel(next.system)}. What happens — which page or device, and what message do you see?`)
-        : say(
-          'Pole sana. Nieleze kwa ufupi shida ipoje — nini kinatokea na ulikuwa unafanya nini wakati imetokea?',
-          'Sorry about that. In one or two sentences, what exactly happens and what were you doing when it started?') };
+    const question = next.system
+      ? say('Pole kwa usumbufu kwenye ' + systemLabel(next.system) + '. Ni nini hasa kinachotokea unapoitumia?',
+        'That sounds frustrating. What happens when you try to use ' + systemLabel(next.system) + '?')
+      : say('Pole kwa usumbufu. Kuhusu tatizo hilo, ni hatua ipi inakwama au ujumbe gani unaonekana?',
+        'That sounds frustrating. Tell me which step gets stuck or what message you see.');
+    return { support: next, ready: false, reply: repeatsEmail
+      ? say('Nimeelewa unamaanisha email ya awali. ', 'I understand you mean the previous email. ') + question : question };
   }
-  if (!next.system) {
+  const unknownSystem = noSystemName.test(rest) || (next.waitingFor === 'system' && /^(?:sijui|sikumbuki|not sure|i don.t know)$/i.test(rest));
+  if (!next.system && !unknownSystem) {
     next.waitingFor = 'system';
     return { support: next, ready: false, reply: say(
-      'Asante. Shida hii iko kwenye mfumo upi — WoteFy au LubFy?',
-      'Thanks. Which system is this about — WoteFy or LubFy?') };
+      'Nimepata maelezo ya tatizo. Linatokea kwenye WoteFy au LubFy?',
+      'I have the issue details. Does this happen on WoteFy or LubFy?') };
   }
-  if (!next.email) {
-    if (repeatedEmail) {
-      // They told us it is the address already on file. The team can match it.
-      return { support: next, ready: true };
-    }
-    if (next.waitingFor === 'email') {
-      next.attempts = (next.attempts || 0) + 1;
-      return { support: next, ready: false, reply: say(
-        'Sijapata anwani ya email kwenye ujumbe huo. Unaweza kuendelea bila email. Kifaa au ukurasa gani unaonyesha tatizo?',
-        'I couldn’t find an email address in that message. We can continue without it. Which device or screen shows the problem?') };
-    }
-    next.waitingFor = 'email';
-    return { support: next, ready: false, reply: say(
-      'Asante. Nipe email uliyosajili nayo kwenye akaunti (ile unayoingia nayo) ili timu ikague akaunti yako.',
-      'Thanks. What is the email on your account (the one you sign in with)? The team needs it to check the right account.') };
-  }
+  delete next.waitingFor;
+  delete next.attempts;
   return { support: next, ready: true };
 }
 
@@ -93,7 +70,6 @@ export function supportSummary(support: NonNullable<Conversation['memory']['supp
 }
 
 type SupportDetails = NonNullable<Conversation['memory']['lastSupport']>;
-type Say = (sw: string, en: string) => string;
 export type SupportAlertStatus = 'handoff' | 'guidance' | 'reopened';
 
 function singleLine(value?: string | null) {
@@ -107,7 +83,7 @@ function reportedProblem(value: string, say: Say) {
   return value;
 }
 
-export function supportDetails(support: SupportDetails, say: Say) {
+export function supportDetails(support: SupportDetails, say: Say, includeMissingEmail = true) {
   const problem = singleLine(support.problem);
   const email = support.email || (support.sameEmail
     ? say('Email iliyotajwa awali', 'Previous email referenced')
@@ -116,7 +92,7 @@ export function supportDetails(support: SupportDetails, say: Say) {
   return [
     `*${say('Mfumo', 'System')}* ${support.system ? systemLabel(support.system) : say('Bado haujabainishwa', 'To be confirmed')}`,
     `*${say('Changamoto', 'Reported issue')}* ${problem ? reportedProblem(problem, say) : say('Maelezo bado yanahitajika', 'More details needed')}`,
-    `*${say('Email ya akaunti', 'Account email')}* ${email}`,
+    (includeMissingEmail || support.email || support.sameEmail) && `*${say('Email ya akaunti', 'Account email')}* ${email}`,
     checkResult && `*${say('Matokeo ya ukaguzi', 'Check result')}* ${checkResult}`,
     support.verifiedCheck && `*${say('Hali iliyothibitishwa na mfumo', 'Status confirmed by the platform')}* ${support.verifiedCheck.summary}`,
   ].filter(Boolean).join('\n');
@@ -130,10 +106,13 @@ export function supportReceipt(support: SupportDetails, say: Say, requestEvidenc
       'Our support team will review what you shared and continue helping you here on WhatsApp.');
   return [
     `*${say('Ombi lako la msaada limepokelewa', 'Your support request has been received')}*`,
-    supportDetails(support, say),
+    supportDetails(support, say, false),
     `*${say('Hatua inayofuata', 'What happens next')}*\n${next}`,
-    requestEvidence && say('Ukiweza, tuma modeli ya kifaa au picha ya ujumbe unaoona.',
-      'If you can, send the device model or a screenshot of the message you see.'),
+    !support.email && !support.sameEmail && needsAccountCheck(support.problem ?? '') && say(
+      'Ukiweza, tuma email unayotumia kuingia ili timu ipate akaunti husika. Maelezo uliyotoa tayari yamepokelewa.',
+      'If you can, share the email you use to sign in so the team can find the account. We already have the details you provided.'),
+    requestEvidence && say('Ukiweza, tuma picha ya ujumbe unaoona au eleza unachoona kwenye kifaa.',
+      'If you can, send a screenshot of the message or describe what you see on the device.'),
   ].filter(Boolean).join('\n\n');
 }
 
@@ -197,6 +176,11 @@ export function supportAdminMessage(
   ].filter(Boolean).join('\n\n');
 }
 
+function needsAccountCheck(problem: string) {
+  return symptomOf(problem) === 'access_payment' ||
+    /\b(?:akaunti|account|dashboard|sign in|login|siwezi kuingia|[mn]imeshindwa kuingia|bili|billing|muamala|transaction)\b/i.test(problem);
+}
+
 /** Read-only checks based on the portal, trial and device flows in both platforms. */
 export function firstSupportStep(
   support: NonNullable<Conversation['memory']['support']>,
@@ -204,8 +188,8 @@ export function firstSupportStep(
 ) {
   const symptom = symptomOf(support.problem ?? '');
   if (symptom === 'power') return say(
-    'Angalia kwanza kama adapta au PoE inayotumika ni ile iliyopendekezwa kwa modeli hiyo, halafu hakiki taa ya power. Modeli ni ipi, na taa yoyote inawaka?',
-    'Check that the power adapter or PoE supply is the one recommended for this model, then check the power light. What model is it, and do any lights turn on?');
+    'Tuangalie umeme kwanza. Tatizo likitokea, taa ya power inazimika pia au ni Wi-Fi tu inayopotea?',
+    'Let’s start with power. When it happens, does the power light also go out, or does only Wi-Fi drop?');
   if (!support.system) return;
   if (symptom === 'access_payment') return say(
     `Kwa ${systemLabel(support.system)}, angalia status inayoonekana kwenye portal au dashboard baada ya malipo. Kama pesa tayari imekatwa, subiri timu ihakiki muamala kabla ya kujaribu kulipa tena. Inaonyesha malipo yanasubiri, au yamekamilika huku intaneti bado haifunguki?`,
@@ -221,4 +205,7 @@ export function firstSupportStep(
     'For WoteFy, check the device power and uplink, then look up its status in Omada Controller. Is it offline there too, or only in WoteFy?') : say(
     'Kwa LubFy, hakikisha router ina umeme na WAN ina internet. Kisha angalia muda wa mwisho kifaa kilipoonekana online kwenye dashboard. Tatizo linahusu router moja au router zote za eneo hilo?',
     'For LubFy, check the router power and WAN connection, then look up when the device was last seen online in the dashboard. Does this affect one router or all routers at that site?');
+  if (/\b(?:siwezi kuingia|[mn]imeshindwa kuingia|haikubali kuingia|login (?:inagoma|inashindwa|failed)|can.t log ?in|cannot log ?in)\b/i.test(support.problem ?? '')) return say(
+    'Tuanzie kwenye ujumbe unaoonekana unapojaribu kuingia. Unaweza kunakili ujumbe huo au kutuma picha yake, bila kutuma nenosiri au OTP.',
+    'Let’s start with the message you see when you try to sign in. You can copy it or send a screenshot. Keep your password and one-time code private.');
 }

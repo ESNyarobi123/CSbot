@@ -27,6 +27,8 @@ export interface Conversation {
     diagnosticRequest?: { id: string; system: 'wotefy' | 'lubfy'; email: string; problem: string; expiresAt: string };
     onboarding?: boolean;
     setup?: import('./installation-guide.js').SetupContext;
+    preferredName?: string;
+    nameAddressedAt?: number;
     profile?: import('./customer-text.js').CustomerProfile;
     system?: 'wotefy' | 'lubfy';
     product?: { id: string; name: string };

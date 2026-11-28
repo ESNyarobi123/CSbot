@@ -184,6 +184,19 @@ await sleep(2000);
 assert.equal(outbound(await api(voicePath + '/messages')).length, 2);
 console.log('Passed: CSbot acknowledges voice notes, handles the next message while waiting, and stops on actual staff takeover.');
 
+const simulateCall = (messageId, missedCall) => api(`/v1/accounts/${account}/simulate`, {
+  method: 'POST', status: 202, data: { phone: '+255700100031', messageId, missedCall },
+});
+const call = await simulateCall('missed-voice', 'voice');
+const callPath = '/v1/conversations/' + call.conversationId;
+const missedReply = outbound(await waitFor(callPath + '/messages', value => outbound(value).length === 1))[0];
+assert.match(missedReply.body, /simu yako.*voice note/i);
+await simulateCall('missed-video', 'video');
+await waitFor(callPath + '/messages', value => value.filter(item => item.direction === 'inbound').length === 2);
+await sleep(1600);
+assert.equal(outbound(await api(callPath + '/messages')).length, 1);
+console.log('Passed: missed voice and video calls get one WhatsApp reply within the cooldown.');
+
 const sharp = (await import('sharp')).default;
 const label = await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="640" height="180"><rect width="640" height="180" fill="white"/><text x="36" y="118" font-family="sans-serif" font-size="84" fill="black">WR3000</text></svg>')).png().toBuffer();
 const photoChat = await api(`/v1/accounts/${account}/simulate`, { method: 'POST', status: 202,
@@ -194,6 +207,26 @@ assert.match(outbound(photoMessages)[0].body, /lebo.*WR3000/i);
 assert.match(outbound(photoMessages)[0].body, /99,000/);
 assert.equal((await api(photoPath)).memory.product.id, 'wr3000');
 console.log('Passed: printed model identified from a product photograph, priced from POS and remembered on its own conversation.');
+
+const simulateNamed = (messageId, text, extra = {}) =>
+  api(`/v1/accounts/${account}/simulate`, { method: 'POST', status: 202,
+    data: { phone: '+255700100032', name: 'Asha Juma', messageId, text, ...extra } });
+const named = await simulateNamed('named-greeting', 'Habari za muda huu');
+const namedPath = '/v1/conversations/' + named.conversationId;
+const namedMessages = namedPath + '/messages';
+assert.match(outbound(await waitFor(namedMessages, value => outbound(value).length === 1))[0].body, /Habari, Asha!/);
+await simulateNamed('named-quote', 'Naomba proforma');
+const noModel = outbound(await waitFor(namedMessages, value => outbound(value).length === 2))[0].body;
+assert.match(noModel, /picha ya kifaa au lebo/);
+assert.doesNotMatch(noModel, /Asha|SKU/);
+await simulateNamed('about-to-send-photo', 'Acha nikutumie picha');
+await waitFor(namedMessages, value => outbound(value).length === 3);
+await simulateNamed('quote-label', '', { imageBase64: label.toString('base64') });
+const fromPhoto = await waitFor(namedPath, value => value.memory.documentRequest?.product?.id === 'wr3000');
+assert.equal(fromPhoto.memory.documentRequest.product.name, 'Cudy WR3000');
+assert.equal(fromPhoto.memory.issuedProforma, undefined);
+await waitFor(namedMessages, value => value.some(message => message.direction === 'outbound' && /Cudy WR3000 ngapi/.test(message.body)));
+console.log('Passed: WhatsApp contact name, no repeat greeting, customer can identify a quote item by photo without a product code.');
 
 const invoicePdf = { name: 'INV-1001.pdf', base64: Buffer.from('%PDF-1.7\n% local fixture\n%%EOF\n').toString('base64') };
 const invoice = { method: 'POST', status: 202, data: {
@@ -231,11 +264,22 @@ const onChannel = (channel, phone, messageId, text, quotedMessageId) =>
   api(`/v1/accounts/${channel}/simulate`, { method: 'POST', status: 202,
     data: { phone, messageId, text, quotedMessageId } });
 const supportChat = await onChannel(account, supportPhone, 'support-start',
-  'WoteFy vifaa vyangu vinawaka na kuzima, shida ni mfumo au? mteja@example.test');
+  'Nina shida ya mfumo wa WoteFy');
 const supportPath = '/v1/conversations/' + supportChat.conversationId;
+const supportMessages = supportPath + '/messages';
+const supportOpening = outbound(await waitFor(supportMessages, value => outbound(value).length === 1))[0];
+assert.match(supportOpening.body, /kinachotokea/);
+assert.doesNotMatch(supportOpening.body, /email/);
+await onChannel(account, supportPhone, 'support-symptom', 'Vifaa vyangu vinawaka na kuzima');
+const supportCheck = outbound(await waitFor(supportMessages, value => outbound(value).length === 2))[0];
+assert.match(supportCheck.body, /taa ya power/);
+assert.doesNotMatch(supportCheck.body, /email|modeli/);
+await onChannel(account, supportPhone, 'support-check', 'Taa ya power inazima pia');
 const supportState = await waitFor(supportPath, value => value.outbound.some(
   item => item.origin === 'alert' && item.state === 'sent' && /Msaada wa kiufundi/.test(item.body)));
 const alert = supportState.outbound.find(item => item.origin === 'alert' && /Msaada wa kiufundi/.test(item.body));
+assert.match(alert.body, /Haijatolewa/);
+assert.match(alert.body, /Taa ya power inazima pia/);
 await api(`/v1/accounts/${other}/admin-numbers`, { method: 'PUT', data: { numbers: [adminPhone] } });
 await onChannel(other, adminPhone, 'cross-account', 'Tume fix hili tatizo', alert.provider_id);
 await onChannel(account, adminPhone, 'no-quote', 'Tume fix hili tatizo');
@@ -273,6 +317,8 @@ const optedPhone = '+255700100046';
 const stopped = await onChannel(account, optedPhone, 'optout-case',
   'WoteFy vifaa vyangu vinawaka na kuzima, shida ni mfumo au? mteja@example.test');
 const stoppedPath = '/v1/conversations/' + stopped.conversationId;
+await waitFor(stoppedPath + '/messages', value => value.some(item => item.actor === 'bot' && /taa ya power/.test(item.body)));
+await onChannel(account, optedPhone, 'optout-check', 'Taa ya power inazima pia');
 const stoppedState = await waitFor(stoppedPath, value => value.outbound.some(
   item => item.origin === 'alert' && item.state === 'sent' && /Msaada wa kiufundi/.test(item.body)));
 const stoppedAlert = stoppedState.outbound.find(item => item.origin === 'alert' && /Msaada wa kiufundi/.test(item.body));

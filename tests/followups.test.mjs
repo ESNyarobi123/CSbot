@@ -12,12 +12,12 @@ const { customerOptedOut, setCustomerOptedOut, scheduleFollowUp, dueFollowUps, c
 
 test('opt-out is recognised only for short, unambiguous stop requests', () => {
   for (const text of ['acha', 'STOP', 'acha kunijibu', 'sitaki ujumbe', 'usinitumie',
-    'opt-out', 'unsubscribe', 'niachie', 'nisamehe']) {
+    'opt-out', 'unsubscribe', 'niachie', 'usinitumie ujumbe tena']) {
     assert.equal(optOutRequest(text), true, text);
   }
   // False positives must not silence a real customer.
   for (const text of ['acha nikufahamishe bei', 'nitaacha kuuliza kuhusu kifaa hicho',
-    'acha nimtafute mtu wa installation', 'bei ya router na installation kiasi gani?',
+    'acha nimtafute mtu wa installation', 'acha nikutumie picha', 'router inaandika stop', 'nisamehe', 'bei ya router na installation kiasi gani?',
     'STOP? hapana, endelea', 'je mna kifaa cha acha?']) {
     assert.equal(optOutRequest(text), false, text);
   }

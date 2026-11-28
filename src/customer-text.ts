@@ -51,7 +51,7 @@ export function symptomOf(text: string) {
   if (portalFailure.test(line)) return 'redirect';
   if (/\b(?:offline|kimepoteza connection|disconnected)\b/i.test(line) &&
       /\b(?:device|router|kifaa|gateway|eap|access point|mikrotik|cudy)\b/i.test(line)) return 'offline';
-  if (/\b(?:router|kifaa|access point|switch|eap)\b.{0,40}\b(?:haiwaki|hakiwaki|hakina umeme|no power|won.t power on)\b/i.test(line)) return 'power';
+  if (/\b(?:router|kifaa|vifaa|access point|switch|eap|devices?)\b.{0,55}\b(?:haiwaki|hakiwaki|hakina umeme|no power|won.t power on|(?:vi|ki|i)na\s*waka na kuzima|keeps? restarting|turns? on and off)\b/i.test(line)) return 'power';
   return undefined;
 }
 
@@ -119,13 +119,10 @@ export function emailOf(text: string) {
  * A customer telling the bot to stop. Proactive follow-ups must honour this or
  * the number gets reported and banned, so the message is short and unambiguous.
  */
-const optOutPhrases = /\b(?:acha|niachie|nisamehe|sitaki\s+(?:ujumbe|kuendelea|kupokea)|acha\s+(?:kunijibu|kunitumia|kunitaarifu)|usinijibu|usinitumie|stop|unsubscribe|opt[ -]?out|mute)\b/i;
+const optOutPhrases = /^(?:(?:tafadhali|please) )?(?:acha|niachie|stop|unsubscribe|opt[ -]?out|mute|sitaki (?:ujumbe|kuendelea|kupokea ujumbe)|acha (?:kunijibu|kunitumia(?: ujumbe)?|kunitaarifu)|usinijibu|usinitumie(?: ujumbe)?|stop (?:messaging|contacting|texting)(?: me)?|stop sending me messages)(?:\s+(?:tena|tafadhali|please))?$/i;
 export function optOutRequest(text: string) {
-  // "acha nikufahamishe" is the opposite; only a request about the bot's own
-  // messages counts, and only when it is the whole message.
-  if (text.trim().length > 60) return false;
-  if (/\b(?:hapana|endelea|endlea|continue|nikufahamishe|nitaacha|mtu|kifaa)\b/i.test(text)) return false;
-  return optOutPhrases.test(text);
+  const normalized = text.trim().replace(/[.!]+$/, '').replace(/\s+/g, ' ');
+  return optOutPhrases.test(normalized);
 }
 
 /** Evaluate each original message before the debounce batch is joined or truncated. */
@@ -197,6 +194,27 @@ export function smallTalkReply(text: string, say: (sw: string, en: string) => st
 
 /** What the customer said about their own site, kept between turns. */
 export type CustomerProfile = { equipment?: string; budget?: string; useCase?: string };
+
+/** Only use readable contact names and handles. Never derive a name from a JID or email. */
+export function customerAddress(value: string | null | undefined) {
+  const name = value?.normalize('NFC').replace(/\p{Extended_Pictographic}|[\uFE0E\uFE0F\u200D]/gu, '')
+    .trim().replace(/\s+/g, ' ');
+  if (!name || name.length > 45 || /^(?:unknown|customer|mteja|business|whatsapp|user|admin|support|shop|connect solution|csbot)(?:\s|$)/i.test(name)) return;
+  if (/^@[\p{L}][\p{L}\p{N}_.]{1,24}$/u.test(name) ||
+      /^[\p{L}][\p{L}\p{N}]{1,14}[_\.][\p{L}\p{N}_]{1,10}$/u.test(name)) return name;
+  if (!/^[\p{L}\p{M}][\p{L}\p{M}'’-]*(?: [\p{L}\p{M}][\p{L}\p{M}'’-]*){0,2}$/u.test(name)) return;
+  return name.split(' ')[0];
+}
+
+export function introducedName(text: string) {
+  return customerAddress(/^(?:(?:habari|hello|hi|mambo)[!, ]+)?(?:naitwa|jina langu ni|niite|my name is|call me)\s+([^.!?\n]{2,45})[.! ]*$/iu.exec(text.trim())?.[1]);
+}
+
+export function deviceIdentificationPrompt(say: (sw: string, en: string) => string) {
+  return say('Ukiweza, tuma picha ya kifaa au lebo iliyo chini au nyuma yake. Kama bado unachagua, niambie unataka kifaa kifanye nini.',
+    'If you can, send a photo of the device or the label underneath or on the back. If you’re still choosing, tell me what you need it to do.');
+}
+
 export function customerProfile(text: string, previous: CustomerProfile | undefined) {
   const profile: CustomerProfile = { ...previous };
   for (const line of text.split(/\n+|(?<=[.!?])\s+/)) {
@@ -218,7 +236,7 @@ export function customerProfile(text: string, previous: CustomerProfile | undefi
 const swMarkers = /\b(naomba|nahitaji|ninahitaji|nataka|bei|gani|ngapi|tafadhali|asante|sawa|ndio|habari|mambo|vipi|je|kwa|ya|za|nini|wapi|lini|kwanini|niletee|nipe|niambie|nijibu|tafuta|ipo|zipo|haipo|hauna|mna|una|nina|sina|kama|lakini|bado|hii|hiyo|hizo|zile|wanangu|mimi|wewe|zote|yote|kifaa|bidhaa|pamoja|maelezo|sifa|hadi)\b/i;
 // "details" and "specs" are typed by Kiswahili speakers too ("niambie details zote"),
 // so they say nothing about the language. Only unambiguously English words do.
-const enMarkers = /\b(the|please|how|what|which|where|when|price|cost|stock|available|need|want|does|can|could|would|thanks|thank|hello|hi|hey|are|your|more|other)\b/i;
+const enMarkers = /\b(the|please|how|what|which|where|when|price|cost|stock|available|need|want|does|can|could|would|thanks|thank|hello|hi|hey|are|your|more|other|my name is|call me)\b/i;
 
 /** The language the customer just wrote, when the message makes it obvious. */
 export function messageLanguage(text: string): 'sw' | 'en' | undefined {

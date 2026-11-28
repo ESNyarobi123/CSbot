@@ -66,10 +66,11 @@ test('a payment that did not unlock portal access is technical support, not a de
 
 test('customer and admin see the reported symptom, platform and email on separate WhatsApp lines', async () => {
   const first = await turn('Hivi mbona vifaa vyabgu vina waka na kuzima shida ni mfumo au');
-  assert.match(first.body, /WoteFy au LubFy/);
+  assert.match(first.body, /taa ya power/);
+  assert.doesNotMatch(first.body, /email|modeli/i);
   const second = await turn('Wotefy mkuu', first.memory);
-  assert.match(second.body, /email/i);
-  const final = await turn('mteja@example.test', second.memory);
+  assert.match(second.body, /taa ya power/);
+  const final = await turn('Taa ya power inazimika. Email yangu ni mteja@example.test', second.memory);
   assert.equal(final.handoff, true);
   assert.equal(final.supportAlert, 'handoff');
   assert.match(final.body, /\*Mfumo\* WoteFy\n\*Changamoto\* Vifaa vinawaka na kuzima\.\n\*Email ya akaunti\* mteja@example\.test/);
