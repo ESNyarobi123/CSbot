@@ -18,7 +18,8 @@ import {
   accountQuestion, adEnquiry, customerAddress, customerProfile, deviceIdentificationPrompt, emailOf, emailPattern, introducedName, messageLanguage, modelName, namesNewDevice, platformNotice, profitQuestion, regionQuestion, smallTalkOnly, smallTalkReply,
   supportQuestion, symptomOf, systemFrom, systemLabel,
 } from './customer-text.js';
-import { firstSupportStep, supportDetails, supportIntake, supportProgress, supportReceipt, supportSummary, type SupportAlertStatus } from './support.js';
+import { asksHowToCheck, firstSupportStep, supportCheckHelp, supportCheckPending, supportDetails, supportIntake, supportProgress, supportReceipt, supportSummary, type SupportAlertStatus } from './support.js';
+import { supportConfirmation } from './admin-support.js';
 // Kept exported here because the tests and the dashboard import them from the
 // conversation module; the definitions now live in customer-text.ts and support.ts.
 export { customerProfile, emailOf, messageLanguage, smallTalkOnly, supportQuestion } from './customer-text.js';
@@ -47,6 +48,7 @@ type Decision = z.infer<typeof decisionSchema>;
 type Knowledge = { id: string; system: string; title: string; content: string; source_url: string | null };
 export interface Outcome {
   body: string;
+  confirmedSupportCheck?: true;
   stage?: Stage;
   handoff?: boolean;
   /** Tell the admins without taking the chat away from the bot. */
@@ -1253,6 +1255,7 @@ async function answer(
     && (decision.intent === 'support' || supportQuestion(newest) || awaitingSupport);
   if (monthly && symptomOf(newest) !== 'access_payment') delete memory.support;
   if (!onlyDetect && supportActive) {
+    if (memory.supportUpdate?.status === 'resolved') delete memory.supportUpdate;
     // A new turn can arrive after the intake was already handed off. The system
     // and email are still known facts of this chat, so a follow-up about a device
     // must not start the questions over.
@@ -1267,19 +1270,26 @@ async function answer(
       (!explicitSystem || !intakeState.system || explicitSystem === intakeState.system) &&
       (!symptomOf(newest) || symptomOf(newest) === symptomOf(intakeState.problem ?? ''));
     if (sameCheck) {
-      const resolved = /^(?:imefanya kazi|imefunguka|imekubali|iko sawa|sasa iko sawa|tatizo limeisha|it works|fixed|it opened)[.! ]*$/i.test(newest.trim());
-      if (resolved) {
-        delete memory.support;
-        return result(say('Vizuri, asante kwa kunijulisha. Ukihitaji msaada tena, niandikie hapa.',
-          'Glad it’s working. If you need help again, message us here.'));
-      }
-      if (/^(?:sawa|ok|okay|ngojea|ngo ja|ngoja|nitaangalia|nitajaribu|i.ll check|i.ll try)(?:\s+(?:ngoja|nitaangalia|nitajaribu|nijaribu|mkuu|kaka|then|thanks))*[.! ]*$/i.test(newest.trim())) {
+      if (!photo && supportCheckPending(newest)) {
         return result(say('Sawa, ukipata nafasi ya kujaribu niambie ulichoona.', 'When you get a chance to try it, let me know what you see.'));
       }
       const details = supportIntake(newest, intakeState, say).support;
       if (explicitSystem && /^\s*(?:mkuu|kaka|boss|ndugu)?[\s.!]*$/i.test(newest.replace(/\b(?:wote[ -]?fy|ss[ -]?domada|lub[ -]?fy)\b/gi, ''))) {
         memory.support = { ...details, waitingFor: 'check' };
-        return result(firstSupportStep(details, say) ?? '');
+        return result(firstSupportStep(details, say) ?? supportCheckHelp(details, say));
+      }
+      if (!photo && asksHowToCheck(newest)) {
+        const instruction = supportCheckHelp(details, say);
+        memory.support = { ...details, waitingFor: 'check', checkInstruction: instruction };
+        return result(instruction);
+      }
+      if (!photo && await supportConfirmation(newest, intakeState.problem) === 'confirmed') {
+        const { checkInstruction: _instruction, ...issue } = details;
+        memory.lastSupport = { ...issue, checkResult: newest.slice(0, 280) };
+        memory.supportUpdate = { status: 'resolved', resolvedAt: new Date().toISOString() };
+        delete memory.support;
+        return result(say('Vizuri, asante kwa kunijulisha kuwa sasa inafanya kazi. Nimeweka tatizo hili kuwa limetatuliwa.',
+          'Thanks for confirming it’s working. I’ve marked this issue resolved.'), { confirmedSupportCheck: true });
       }
       memory.lastSupport = { ...details, checkResult: lateEmail && newest.trim().toLowerCase() === lateEmail
         ? undefined : newest === '[WhatsApp image]' ? say('Mteja ametuma picha.', 'Customer sent a screenshot.') : newest.slice(0, 280) };
@@ -1295,6 +1305,7 @@ async function answer(
     const firstStep = firstSupportStep(intake.support, say);
     if (firstStep && intakeState.waitingFor !== 'check') {
       memory.support.waitingFor = 'check';
+      memory.support.checkInstruction = firstStep;
       return result(firstStep);
     }
     if (!intake.ready) return result(intake.reply ?? '');
@@ -1307,7 +1318,7 @@ async function answer(
     if (guidance) {
       // Answer from the approved troubleshooting entry and keep the chat on the
       // bot; the team is only pulled in when nothing matches.
-      memory.support = { ...intake.support, waitingFor: 'check' };
+      memory.support = { ...intake.support, waitingFor: 'check', checkInstruction: guidance.content.slice(0, 300) };
       return result([
         say('*Taarifa za tatizo*', '*Issue details*'),
         supportDetails(intake.support, say, false),

@@ -23,7 +23,7 @@ export interface Conversation {
     replyStatus?: 'waiting' | 'answered';
     handoffPending?: true;
     supportUpdate?: { status: 'resolved' | 'details' | 'resolution_queued' | 'awaiting_confirmation' | 'reopened';
-      alertAt: string; owner?: string; outboundId?: string };
+      alertAt?: string; owner?: string; outboundId?: string; resolvedAt?: string };
     diagnosticRequest?: { id: string; system: 'wotefy' | 'lubfy'; email: string; problem: string; expiresAt: string };
     onboarding?: boolean;
     setup?: import('./installation-guide.js').SetupContext;
@@ -56,7 +56,7 @@ export interface Conversation {
     /** Set while the bot waits for "yes" to its installation/cable offer. */
     awaitingService?: boolean;
     /** Support intake: the problem, the system, and the login email. */
-    support?: { problem?: string; system?: 'wotefy' | 'lubfy'; email?: string; waitingFor?: 'problem' | 'email' | 'system' | 'device' | 'check'; attempts?: number; sameEmail?: boolean };
+    support?: { problem?: string; system?: 'wotefy' | 'lubfy'; email?: string; waitingFor?: 'problem' | 'email' | 'system' | 'device' | 'check'; attempts?: number; sameEmail?: boolean; checkInstruction?: string };
     /** Last completed support intake, kept for the admin alert and audits. */
     lastSupport?: { problem?: string; checkResult?: string; system?: 'wotefy' | 'lubfy'; email?: string; sameEmail?: boolean;
       verifiedCheck?: { summary: string; checkedAt: string } };
@@ -243,7 +243,9 @@ async function applyAdminSupportReply(client: PoolClient, message: Incoming, pho
     AND support_reply AND state IN ('queued','sending','sent') AND created_at>$2::timestamptz LIMIT 1`,
   [conversation.id, alert.alert_at]);
   const previous = conversation.memory.supportUpdate;
-  if (newer || (previous?.alertAt === alert.alert_at && ['resolved', 'resolution_queued', 'awaiting_confirmation', 'reopened'].includes(previous.status))) {
+  const closedAfterAlert = previous?.status === 'resolved' && previous.resolvedAt &&
+    Date.parse(previous.resolvedAt) >= Date.parse(alert.alert_at);
+  if (newer || closedAfterAlert || (previous?.alertAt === alert.alert_at && ['resolved', 'resolution_queued', 'awaiting_confirmation', 'reopened'].includes(previous.status))) {
     await confirm('Kesi hii imefungwa au kuna arifa mpya zaidi. Fungua Inbox uangalie mazungumzo ya sasa.');
     return;
   }

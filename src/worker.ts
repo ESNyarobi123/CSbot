@@ -268,11 +268,12 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
           [update.outboundId, conversationId])) await startSupportConfirmation(client, conversation);
       if (canReply && update?.status === 'awaiting_confirmation' && eligible && !resume &&
         !asksCaseStatus && !smallTalkOnly(newest) && !platformNotice(newest) && !asksNewCommercialQuestion(newest)) {
-        const feedback = await supportConfirmation(newest);
+        const feedback = await supportConfirmation(newest, conversation.memory.lastSupport?.problem);
         if (feedback === 'confirmed' || feedback === 'still_broken') {
           const fixed = feedback === 'confirmed';
           const memory: Conversation['memory'] = { ...conversation.memory,
-            supportUpdate: { ...update, status: fixed ? 'resolved' : 'reopened' },
+            supportUpdate: { ...update, status: fixed ? 'resolved' : 'reopened',
+              resolvedAt: fixed ? new Date().toISOString() : undefined },
             lastSupport: { ...conversation.memory.lastSupport, checkResult: newest.slice(0, 280) },
           };
           await client.query('UPDATE conversations SET memory=$2,updated_at=now() WHERE id=$1', [conversationId, memory]);
@@ -394,6 +395,12 @@ const worker = new Worker<{ conversationId: string; firstMessage: string }>(name
         document,
       });
       const updated = { ...conversation, memory: outcome.memory };
+      if (canReply && outcome.confirmedSupportCheck) {
+        await cancelFollowUps(client, conversationId, ['handoff_ping', 'post_support']);
+        const instruction = conversation.memory.support?.checkInstruction;
+        if (instruction) await queueKnowledgeReview(client, updated, firstMessage, 'resolved',
+          [outcome.memory.lastSupport?.problem, instruction, newest].filter(Boolean).join('\n'));
+      }
       if (outcome.stage) {
         const sale = await currentSale(client, conversationId);
         const receipt = outcome.stage === 'payment_reported'

@@ -123,6 +123,9 @@ export function supportProgress(text: string, memory: Conversation['memory'], sa
   const asksProgress = /\b(?:kesi|tatizo|shida|ombi la msaada|support (?:case|ticket|request))\b/i.test(text) &&
     /\b(?:status|update|hatua gani|mmefikia wapi|mmesha|imesha|imefikia wapi|inaendeleaje|iliishia wapi|any news|what(?:'s| is) the status)\b/i.test(text);
   if (!asksProgress) return;
+  if (memory.support?.waitingFor === 'check') return say(
+    'Bado tunasubiri matokeo ya hatua tuliyojaribu. Ukiwa tayari, niambie kilichotokea.',
+    'We’re waiting for the outcome of the check. When you’re ready, tell me what happened.');
   if (memory.support?.waitingFor) return say(
     'Bado tunakusanya taarifa za tatizo hili. Unaweza kuendelea hapa kwenye chat hii ili nikusaidie.',
     'We’re still collecting details for this issue. You can continue here in this chat.');
@@ -146,6 +149,37 @@ export function supportProgress(text: string, memory: Conversation['memory'], sa
       if (memory.handoffPending) return say(
         'Ombi lako lipo kwenye foleni ya timu. Taarifa mpya ikipatikana, tutaendelea kwenye chat hii.',
         'Your request is in the support queue. We’ll continue in this chat when there’s an update.');
+  }
+}
+
+export function asksHowToCheck(text: string) {
+  return /^(?:(?:sawa|ok|okay|mkuu|kaka|ila|lakini)\b[,. ]+)*(?:naangalia(?:je|\s+(?:vipi|wapi))|niangalie(?:je|\s+wapi)|nitaangaliaje|naipataje|naifunguaje|ninafunguaje|nitajuaje|naonaje|naiona wapi|nifanyeje|naanzia wapi|nitaipata wapi|naipata wapi|sijui (?:nitaangalia|naangalia|pa kuanzia|jinsi|wapi)|sifahamu (?:jinsi|wapi)|how (?:do|can|should) i (?:check|find|see|open|test|know)|where (?:do|can|should) i (?:check|look|find|see))\b/i.test(text.trim());
+}
+
+export function supportCheckPending(text: string) {
+  const reply = text.trim().replace(/[.!]+$/, '').trim()
+    .replace(/^(?:sawa|ok|okay)[,. ]+/i, '')
+    .replace(/\s+(?:mkuu|kaka|boss|thanks|asante)$/i, '');
+  return /^(?:sawa|ok|okay)$|^(?:(?:ngo\s?ja|ngojea)(?: nijaribu| niangalie)?|nitajaribu|nitaangalia|i(?:'ll| will) (?:check|try)|let me (?:check|try))(?:\s+(?:sasa|tena|baadaye|kesho|nikifika(?: site)?|nikirudi(?: site)?|later|tomorrow|when i get there))?(?:[, ]+(?:halafu )?(?:nitakwambia|nitakujulisha|i'll let you know))?$/i.test(reply);
+}
+
+export function supportCheckHelp(support: Intake, say: Say) {
+  switch (symptomOf(support.problem ?? '')) {
+    case 'power': return say(
+      'Angalia taa yenye maandishi “Power” au alama ya umeme kwenye kifaa. Tatizo likitokea, niambie kama taa hiyo inazima au inabaki ikiwaka.',
+      'Look for the light marked “Power” or the power symbol on the device. When the issue occurs, tell me whether that light goes out or stays on.');
+    case 'redirect': return say(
+      'Kwenye simu iliyounganishwa na Wi‑Fi hiyo, fungua browser uangalie kama ukurasa wa kuingia kwenye Wi‑Fi unaonekana. Unaona ukurasa gani?',
+      'On a phone connected to that Wi-Fi, open a browser and check whether the Wi-Fi sign-in page appears. What page do you see?');
+    case 'offline': return say(
+      'Kwanza angalia kama taa za kifaa zinawaka. Kama umefungua dashboard tayari, angalia hali inayoonekana kwenye orodha ya vifaa. Inaonyesha Offline au hali nyingine?',
+      'First, check whether the device lights are on. If you have the dashboard open, check the status shown in the device list. Does it say Offline or something else?');
+    case 'access_payment': return say(
+      'Rudi kwenye ukurasa uleule wa Wi‑Fi uliotumia kulipia, halafu angalia kama unaonyesha hali ya malipo. Je, unaona ujumbe gani hapo?',
+      'Go back to the Wi-Fi page where you made the payment and look for its status. What message does it show?');
+    default: return say(
+      'Ni sehemu gani ya hatua niliyopendekeza huioni? Eleza ukurasa uliofungua au tuma picha yenye taarifa nyeti zimefichwa.',
+      'Which part of the check is hard to find? Tell me what page you’re on or send a screenshot with private information hidden.');
   }
 }
 

@@ -329,3 +329,17 @@ const opted = await waitFor(stoppedPath, value => value.outbound.some(
   item => item.origin === 'alert' && item.state === 'sent' && /Taarifa haijatumwa/.test(item.body)));
 assert.ok(!opted.outbound.some(item => item.origin === 'admin'));
 console.log('Passed: incomplete admin requests are held, commercial questions stay separate, and opted-out customers receive no support update.');
+
+const selfHelpPhone = '+255700100047';
+const selfHelp = await onChannel(account, selfHelpPhone, 'self-help-start', 'WoteFy vifaa vyangu vinawaka na kuzima');
+const selfHelpPath = '/v1/conversations/' + selfHelp.conversationId;
+await waitFor(selfHelpPath + '/messages', value => value.some(item => item.actor === 'bot' && /taa ya power/.test(item.body)));
+await onChannel(account, selfHelpPhone, 'self-help-how', 'Naangaliaje hiyo taa?');
+await waitFor(selfHelpPath + '/messages', value => value.some(item => item.actor === 'bot' && /alama ya umeme/.test(item.body)));
+await onChannel(account, selfHelpPhone, 'self-help-done', 'Asante, sasa imefanya kazi mkuu!');
+const resolvedSelfHelp = await waitFor(selfHelpPath, value => value.memory.supportUpdate?.status === 'resolved');
+assert.equal(resolvedSelfHelp.mode, 'bot');
+assert.ok(!resolvedSelfHelp.outbound.some(item => item.origin === 'alert'));
+assert.ok((await api('/v1/knowledge/review-items')).some(item =>
+  item.kind === 'resolved' && /alama ya umeme.*imefanya kazi mkuu/.test(item.sample)));
+console.log('Passed: the bot clarified its support check and recorded the customer-confirmed outcome for knowledge review.');

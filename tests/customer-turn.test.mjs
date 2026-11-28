@@ -71,6 +71,35 @@ test('a direct request for a human routes to staff with the support issue intact
   assert.equal(reply.memory.lastSupport?.problem, 'Login inagoma');
 });
 
+test('a support check answers a how-to question and closes on conversational confirmation', async () => {
+  const symptom = await say('WoteFy vifaa vyangu vinawaka na kuzima');
+  const help = await say('Sawa, naangaliaje hiyo taa?', symptom.memory);
+  assert.match(help.body, /alama ya umeme/);
+  assert.equal(help.handoff, undefined);
+  assert.equal(help.memory.support.waitingFor, 'check');
+
+  const pending = await say('Nitaangalia nikifika site mkuu', help.memory);
+  assert.equal(pending.handoff, undefined);
+  assert.equal(pending.memory.support.waitingFor, 'check');
+  const confirmation = await say('Asante, sasa imefanya kazi mkuu!', pending.memory);
+  assert.equal(confirmation.confirmedSupportCheck, true);
+  assert.equal(confirmation.memory.supportUpdate.status, 'resolved');
+  assert.match(confirmation.memory.lastSupport.problem, /vinawaka na kuzima/);
+  const status = await say('Mmefikia wapi na tatizo langu?', confirmation.memory);
+  assert.match(status.body, /Kesi imefungwa/);
+  const next = await say('LubFy siwezi kuingia kwenye dashboard', confirmation.memory);
+  assert.equal(next.memory.supportUpdate, undefined);
+  assert.equal(next.memory.support.system, 'lubfy');
+});
+
+test('mixed feedback after a check retains the unresolved observation', async () => {
+  const symptom = await say('WoteFy vifaa vyangu vinawaka na kuzima');
+  const feedback = await say('Kimoja kimewaka lakini kile cha nje bado kinajizima', symptom.memory);
+  assert.equal(feedback.handoff, true);
+  assert.equal(feedback.confirmedSupportCheck, undefined);
+  assert.match(feedback.memory.lastSupport.checkResult, /kile cha nje/);
+});
+
 test('support distinguishes multiple devices and accepts an email already provided in the chat', async () => {
   const one = await say('Nina tatizo kwenye LubFy');
   assert.doesNotMatch(one.body, /email/i);
