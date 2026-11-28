@@ -4,11 +4,19 @@ process.env.DATABASE_URL ??= 'postgres://localhost/csbot';
 process.env.DEEPSEEK_API_KEY = 'learning-fixture';
 const { learningSignal, learningExcerpt, reusableKnowledgeQuestion, writeKnowledgeReply } = await import('../dist/learning.js');
 const { changesCustomerSite, withoutSiteFacts } = await import('../dist/brain.js');
+const { relevantKnowledge } = await import('../dist/assistant.js');
 
 test('reusable technical explanations leave rates, balances and personal setups out', () => {
   assert.equal(reusableKnowledgeQuestion('Mesh ni nini?'), true);
   assert.equal(reusableKnowledgeQuestion('What is the price of Omada Mesh?'), false);
   assert.equal(reusableKnowledgeQuestion('Mesh inafanyaje kazi kwenye site yangu?'), false);
+});
+
+test('a short definition question finds a published article with the exact topic as its title', () => {
+  const mesh = { id: 'mesh', title: 'Mesh', system: 'general', content: 'Mesh huunganisha access points.' };
+  const unrelated = { id: 'mesh-install', title: 'Omada setup', system: 'wotefy', content: 'Mesh troubleshooting.' };
+  assert.equal(relevantKnowledge('Mesh ni nini?', [unrelated, mesh]), mesh);
+  assert.equal(relevantKnowledge('Bei ya Mesh ni nini?', [unrelated, mesh]), undefined);
 });
 
 test('an approved answer is cached only for the same chat and current article contents', async (t) => {

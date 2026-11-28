@@ -11,7 +11,7 @@ import { photoInquiry, photoReply, printedModel, understoodReply } from './produ
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
 import { adviseOnDevice } from './advisor.js';
-import { changesCustomerSite, chatContext, identifyDevice, loadCustomerMemory, recall, saveCustomerMemory, siteDistance, understandImage, withoutSiteFacts } from './brain.js';
+import { changesCustomerSite, chatContext, compose, identifyDevice, loadCustomerMemory, recall, saveCustomerMemory, siteDistance, understandImage, withoutSiteFacts } from './brain.js';
 import { learningSignal, reusableKnowledgeQuestion, writeKnowledgeReply } from './learning.js';
 import { config } from './config.js';
 import {
@@ -763,6 +763,15 @@ const configVerb = /setup|troubleshoot|kufunga|kuunganisha|install/i;
 
 export function relevantKnowledge(text: string, entries: Knowledge[], support = false, system = '') {
   const named = systemFrom(text) || system;
+  const normalize = (value: string) => (value.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).join(' ');
+  const topic = !support && reusableKnowledgeQuestion(text)
+    ? normalize(text).replace(/\b(?:ni nini|inafanyaje kazi|inafanya kazi vipi|maana ya|what is|what are|how does)\b/g, '').trim()
+    : '';
+  if (topic) {
+    const exact = entries.find(entry => entry.id !== 'csolution' && (!named || entry.system === named || entry.system === 'general') &&
+      normalize(entry.title) === topic);
+    if (exact) return exact;
+  }
   const raw = (text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(word => word.length > 3);
   const words = new Set(support ? raw.filter(word => !noiseWords.has(word)) : raw);
   let best: { entry: Knowledge; score: number } | undefined;
@@ -940,7 +949,7 @@ async function answer(
     }
     const previousDevice = /\bmesh(?:ing)?\b/i.test(newest) ? [...history].reverse()
       .find(line => line.direction === 'inbound' && (namesNewDevice(line.body) || existingEap225(line.body, memory))) : undefined;
-    const eap225Mesh = /\bmesh(?:ing)?\b/i.test(newest) && !priceWords.test(newest) &&
+    const eap225Mesh = /\bmesh(?:ing)?\b/i.test(newest) && !priceWords.test(newest) && !reusableKnowledgeQuestion(newest) &&
       (existingEap225(newest, memory) || (!namesNewDevice(newest) && previousDevice && existingEap225(previousDevice.body, memory))) &&
       !supportQuestion(newest);
     if (eap225Mesh) {
@@ -1022,6 +1031,22 @@ async function answer(
   }
   const knownSymptom = symptomOf(newest) || memory.support?.waitingFor === 'check';
   const knowledge = onlyDetect || knownSymptom ? [] : await retrieveKnowledge(client, newest, systemFrom(newest) || memory.system);
+  if (reusableKnowledgeQuestion(newest)) {
+    const article = relevantKnowledge(newest, knowledge);
+    if (article) {
+      const language = messageLanguage(newest) ?? memory.language ?? 'sw';
+      const written = await writeKnowledgeReply(client, conversation.id === 'playground' ? undefined : conversation.id, article.id, {
+        question: newest, language, facts: `APPROVED KNOWLEDGE — ${article.title}\n${article.content}`,
+      });
+      if (written) {
+        memory.trace = [`Answered from knowledge: ${article.title}`, 'cached' in written
+          ? 'Reused this chat’s answer from the current approved entry'
+          : 'Composed from the approved entry'];
+      }
+      return { body: written?.answer ?? [article.content, article.source_url].filter(Boolean).join('\n'),
+        memory: { ...memory, language } };
+    }
+  }
   const decision = knownSymptom ? resolveDecision(newest, memory) : await decide(newest, memory, history, knowledge);
   if (decision.intent === 'document_preview') {
     const language = messageLanguage(newest) ?? memory.language ?? decision.language;
@@ -1912,7 +1937,7 @@ async function answer(
     // answers their situation instead of pasting the whole article.
     const regionQ = regionQuestion(newest);
     const reusable = reusableKnowledgeQuestion(newest);
-    const written = await writeKnowledgeReply(client, conversation.id === 'playground' ? undefined : conversation.id, fact.id, {
+    const written = await compose({
       question: newest, language: decision.language,
       facts: [
         `APPROVED KNOWLEDGE — ${fact.title}\n${fact.content}`,
@@ -1926,9 +1951,7 @@ async function answer(
       context: chatContext(history),
     });
     if (written) {
-      memory.trace = [`Answered from knowledge: ${fact.title}`, 'cached' in written
-        ? 'Reused this chat’s answer from the current approved entry'
-        : 'Composed from the approved entry and relevant context'];
+      memory.trace = [`Answered from knowledge: ${fact.title}`, 'Composed from the approved entry and relevant context'];
       return result(written.answer);
     }
     return result([fact.content, fact.source_url].filter(Boolean).join('\n'));
